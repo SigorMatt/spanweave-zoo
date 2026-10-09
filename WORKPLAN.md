@@ -7,7 +7,7 @@ that runs spanweave and spanweave-live over every capture and writes the
 next series' probes. One batch = one sub-agent = one commit = one concern.
 This file plus git is the only state; any session can resume cold from it.
 
-Last updated: 2026-10-09 (run 1 in progress: A0 done; A1 next).
+Last updated: 2026-10-09 (run 1 in progress: A0, A1 done; A2 next).
 
 ---
 
@@ -148,7 +148,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | ID | Batch | Status | Calls |
 |---|---|---|---|
 | A0 | **Repository skeleton, on `main`.** `pyproject.toml` (package `spanweave_zoo`, CLI `zoo`, Python 3.11–3.14; `spanweave @ git+https://github.com/SigorMatt/spanweave@fec7da27af517ad8b58ae3ec57827916aae60674` and `spanweave-live @ git+https://github.com/SigorMatt/spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d` as an **`audit` extra only**); `uv.lock`; `Makefile` with `check` (ruff, format, `mypy --strict`, pytest, gates), `verify` (re-hash every capture), `install-check`; `.github/workflows/ci.yml` as spanweave-live's (`check` on 3.11–3.14 ubuntu and 3.12 macos); `CLAUDE.md` with §0.6; `CONTRIBUTING.md` with the batch bar; `SPEC.md` §1 non-goals (the zoo parses nothing, fixes nothing, improves nothing) and §2 the capture layout: `captures/<project>/<run-id>/raw/NNNN.body` + `NNNN.headers.json`, `captures/<project>/<run-id>/json/NNNN.json` (Collector re-encoding), `MANIFEST.json`; `tests/gates.py` with one gate: no module under `spanweave_zoo/` imports `spanweave` or `spanweave_live` except `audit.py`; `README.md`; `CHANGELOG.md`; copies of `EXPORT-CONTRACT.md` and `ZOO-BRIEFS.md` at the root, byte-identical to the ones handed to the projects (sha256 in README). `make check` green, CI green on `main`. Then `git switch -c zoo`; every later batch lands on `zoo`. | done (d33059e) | 10 |
-| A1 | **The sink records bytes, and nothing else.** `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` (SPEC §3): stdlib `http.server`; `POST /v1/traces` with **any** `Content-Type` and `Content-Encoding` is written as `NNNN.body` (the bytes exactly as received, still encoded if gzip) with `NNNN.headers.json` (method, path, every header, length, receipt time from an injected `now`), and answered `200` with an empty body and the request's content type echoed; any other path is `404` and still recorded under `rejected/`. The sink never decodes, decompresses or parses. Tests red on the parent: a protobuf body, a JSON body and a gzip body round-trip byte for byte; two POSTs in flight are numbered in receipt order; `zoo verify` on the result passes and fails after one byte of one body is changed. Mutation: a sink that decompresses before writing fails the gzip case. | awaiting A0 | 8 |
+| A1 | **The sink records bytes, and nothing else.** `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` (SPEC §3): stdlib `http.server`; `POST /v1/traces` with **any** `Content-Type` and `Content-Encoding` is written as `NNNN.body` (the bytes exactly as received, still encoded if gzip) with `NNNN.headers.json` (method, path, every header, length, receipt time from an injected `now`), and answered `200` with an empty body and the request's content type echoed; any other path is `404` and still recorded under `rejected/`. The sink never decodes, decompresses or parses. Tests red on the parent: a protobuf body, a JSON body and a gzip body round-trip byte for byte; two POSTs in flight are numbered in receipt order; `zoo verify` on the result passes and fails after one byte of one body is changed. Mutation: a sink that decompresses before writing fails the gzip case. | done (69fb6bd) | 8 |
 | A2 | **The Collector re-encodes beside the raw.** `collector/config.yaml` (SPEC §4): stock OpenTelemetry Collector (contrib, exact version pinned in `collector/VERSION`, fetched by `make collector` from the release URL with its sha256 checked), `otlp` receiver on 4317/4318, `otlphttp` exporter with `encoding: json` to the sink on a second port, batch processor at defaults; `zoo capture --project z4 --run-id <id>` starts two sinks (raw on 4318 for the app, json on 4319 for the Collector) **and** the Collector pointed at the raw sink's port — the app's traffic reaches the raw sink first and the Collector second (a tee: the raw sink forwards each body unchanged to the Collector after writing it; SPEC states this and that the forward is byte-identical). Tests: a synthetic protobuf export through the tee yields `raw/0001.body` (protobuf) and `json/0001.json` (valid OTLP JSON with the same span ids); the Collector version in the manifest equals `collector/VERSION`. If the Collector cannot run in CI, the test is marked and `make check` still runs it locally — say so in the body. | awaiting A1 | 12 |
 | A3 | **The capture is a manifest, immutable.** `zoo capture` ends by writing `MANIFEST.json` (SPEC §5): the project's own `MANIFEST.json` (copied from a path the operator passes), the zoo's `sink_version`, `collector_version`, `kind` (`recorded` \| `real`), `started_at`/`ended_at` from the injected clock, and `bodies: [{"file": ..., "sha256": ..., "content_type": ..., "content_encoding": ..., "bytes": ...}]` for raw and json; `zoo verify [path]` re-hashes everything under `captures/` and exits non-zero on any difference or any body without a manifest entry; `make check` runs `zoo verify` (already wired in A0; A3 extends it from refusal to manifest re-hashing). `README.md` §"Running a pet project's real run": the five commands an operator types. Tests red on the parent: a manifest with a stale hash fails verify; a body not listed fails verify; `kind` is required. **End of run 1: the sink is ready for the pilot project's real run.** | awaiting A2 | 6 |
 | A4 | **The replayer re-sends what was captured.** `zoo replay captures/<project>/<run-id> --to http://host:port [--raw\|--json] [--timing]` (SPEC §6): re-sends each body with its captured headers (content type and encoding intact) in receipt order; `--timing` sleeps the captured inter-arrival gaps through an injected `sleep`; prints each response status; exits non-zero if any status is not 2xx but still sends the rest. Tests: replaying a capture into a fresh sink produces byte-identical bodies and headers; `--timing` on a fake clock sleeps the recorded gaps. | awaiting A3 | 6 |
@@ -194,6 +194,30 @@ land on `zoo`.
   The A0 row did not say and the batch did not invent one; both sibling
   repos are MIT. Awaiting the maintainer; it blocks nothing in run 1 and
   should land before the A6 PR.
+- 2026-10-09 A1 (69fb6bd): the sink records and parses nothing; CI green on
+  all five legs. The digest tension in A1's row (verify needs a recorded
+  hash; §0.6 puts it in the manifest; the manifest is A3's) was resolved by
+  having the sink write `MANIFEST.json` incrementally with **`bodies:
+  [{file, sha256, bytes}]` only** — one home for the digest, nothing copied
+  into `headers.json`. `content_type`/`content_encoding` were deliberately
+  **not** copied into the manifest: SPEC §1.1 says the sink does not look at
+  the content type except to echo it, and both values are already verbatim
+  in `NNNN.headers.json`. A3 still owns the rest, and SPEC §5 now lists it.
+- 2026-10-09 A1: "a body present on disk but absent from the manifest fails
+  verify" was left **deliberately unimplemented** so that A3's row test is
+  not pre-satisfied. A3's row stands as written.
+- 2026-10-09 A1: for A2 — `zoo sink` defaults to `--port 4318 --host
+  127.0.0.1` with `--out` required, and refuses a `--out` that already
+  holds a body. The tee's two sinks must therefore be given **different**
+  `--out` directories (`raw/` and `json/`); two Recorders on one directory
+  would share `rejected/` and `MANIFEST.json`, which A2 must specify rather
+  than discover. `received_at` comes straight from the `now` seam, so A3's
+  `started_at`/`ended_at` can reuse `cli._system_clock` unchanged.
+- 2026-10-09 A1 (process, for the cold reader): the batch ran its parent
+  check against `d33059e` rather than its own derived parent `0bdab8e`
+  (`69fb6bd^`). Neither contains the sink, so both runs are vacuous and the
+  named mutation is what carried the bar; no re-run was ordered. §0.2's
+  derived-parent rule is unchanged and still binds later batches.
 
 ## 5. Origins
 
