@@ -3,6 +3,49 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A1 — the sink records bytes, and nothing else
+
+- `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` (`SPEC.md` §3),
+  on stdlib `http.server` and **no new dependency**: a `POST /v1/traces` with
+  any `Content-Type` and any `Content-Encoding` becomes `raw/NNNN.body` -- the
+  bytes exactly as received, still gzipped if they arrived gzipped -- beside
+  `raw/NNNN.headers.json` (method, path, **every** header as a list of
+  `[name, value]` pairs so a repeated header survives, body length, and a
+  receipt time from the injected `now`). Answered `200`, empty body, the
+  request's own content type echoed back.
+- A POST to any other path is answered `404` and **still recorded**, under
+  `rejected/` with its own counter (`SPEC.md` §3.4). An exporter aimed at the
+  wrong endpoint is a fact to hold, and a 404 that dropped the bytes would
+  lose it.
+- The sink never decodes, decompresses, parses or validates a body, and never
+  edits a capture: it **refuses to start** if `--out` already holds a body
+  (`SPEC.md` §3.1). A body that is empty, truncated, mislabelled or lying
+  about its encoding is recorded like any other; a POST with no
+  `Content-Length` is recorded as a zero-byte body rather than having its
+  framing guessed at (`SPEC.md` §3.7).
+- `MANIFEST.json`'s `bodies` entries -- `file`, `sha256`, `bytes` -- written
+  incrementally as the sink records (`SPEC.md` §3.5). This is the one part of
+  the manifest `CLAUDE.md` §0.6 rule 2 already mandated, and `zoo verify` had
+  nothing to re-hash against without it. The digest has exactly one home: it
+  is **not** also copied into `NNNN.headers.json`. Everything else the
+  manifest will carry is still A3's, added to this same file and these same
+  entries (`SPEC.md` §5, which now also records what A1 did *not* do: fail on
+  a body present on disk but absent from the manifest).
+- `zoo verify` therefore stops refusing every capture and re-hashes: non-zero
+  on a changed byte, a wrong length, a listed body that is missing, or a
+  manifest it cannot read. A run with no readable manifest is still a refusal.
+- Seams, all injected and all named in `SPEC.md` §3.6: `now` (the one real
+  clock in the package lives in `cli.py`), the listener factory (tests bind
+  `127.0.0.1` on port `0`, so the suite cannot collide with a port in use),
+  and `before_record` / `after_record` -- which is how the receipt-order test
+  holds two POSTs genuinely in flight **without sleeping**.
+- Twenty new tests over a real socket, plus one in `tests/test_cli.py`
+  asserting that no module but `cli.py` reads a clock: a protobuf, a JSON and
+  a gzip body each round-tripping byte for byte; two POSTs in flight numbered
+  in receipt order; `zoo verify` passing on a sink-written capture and failing
+  after one bit of one byte changes. Mutation shown caught: a sink that
+  decompresses before writing fails the gzip case.
+
 ## A0 — the repository skeleton
 
 - `pyproject.toml`: package `spanweave_zoo`, console script `zoo`, Python

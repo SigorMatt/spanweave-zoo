@@ -28,14 +28,31 @@ are all unfrozen and will change. The one thing meant to be durable is the
 
 | | |
 |---|---|
-| `zoo --help`, `zoo verify` | the entry point, and the capture re-hash |
-| `SPEC.md` §1, §2 | the non-goals, and the capture layout on disk |
-| `SPEC.md` §§3-7 | headings only: the sink, the Collector, the manifest, the replayer, the audit |
+| `zoo sink` | records every POST's bytes and headers, and parses nothing |
+| `zoo verify` | re-hashes every recorded body against the manifest's sha256 |
+| `SPEC.md` §1, §2, §3 | the non-goals, the capture layout, and the sink |
+| `SPEC.md` §§4-7 | headings only: the Collector, the manifest, the replayer, the audit |
 
-The subcommands those sections name (`sink`, `capture`, `replay`, `audit`) are
-not implemented and are not stubbed. `zoo verify` today exits 0 on a tree with
-no captures and **fails** on a capture it cannot yet re-hash, rather than
-reporting an unchecked capture as verified.
+The subcommands those later sections name (`capture`, `replay`, `audit`) are
+not implemented and are not stubbed.
+
+```bash
+zoo sink --port 4318 --out captures/z4/2026-10-09T12-00-00Z/raw
+```
+
+Every `POST /v1/traces` becomes `raw/NNNN.body` -- the bytes exactly as
+received, **still gzipped if they arrived gzipped** -- beside
+`raw/NNNN.headers.json`, and is answered `200` with an empty body. A POST to
+any other path is answered `404` and recorded anyway, under `rejected/`: an
+exporter aimed at the wrong endpoint is exactly the kind of fact this
+repository exists to hold. The sink never decodes, decompresses or parses, and
+its `200` means "recorded", never "understood" (`SPEC.md` §3).
+
+`zoo verify` exits 0 on a tree with no captures, re-hashes every body a run's
+`MANIFEST.json` lists, and **fails** both on a body whose bytes have changed
+and on a run whose manifest it cannot read -- rather than reporting an
+unchecked capture as verified. The sha256s are the only part of
+`MANIFEST.json` written so far; the rest is `SPEC.md` §5.
 
 ## Running the gates
 

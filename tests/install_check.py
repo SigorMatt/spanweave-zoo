@@ -100,7 +100,8 @@ def install_and_run(wheel: Path) -> None:
 
         # The console script, from outside the repo: what a stranger types.
         helped = run([str(venv / "bin" / "zoo"), "--help"], cwd=outside)
-        assert "verify" in helped.stdout, helped.stdout
+        for subcommand in ("sink", "verify"):
+            assert subcommand in helped.stdout, helped.stdout
         versioned = run([str(venv / "bin" / "zoo"), "--version"], cwd=outside)
         print(f"  zoo --version -> {versioned.stdout.strip()}")
 
