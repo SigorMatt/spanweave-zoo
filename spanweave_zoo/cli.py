@@ -4,11 +4,13 @@ Three subcommands today:
 
 - `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` records what an
   exporter POSTs, byte for byte (`SPEC.md` §3, A1);
-- `zoo capture --project z4 --run-id <id>` runs the whole tee: the raw sink the
-  exporter talks to, the stock Collector behind it, and the json sink the
-  Collector's JSON re-encoding lands in (`SPEC.md` §4, A2);
-- `zoo verify [path]` re-hashes every capture against its manifest
-  (`SPEC.md` §3.5; the rest of `MANIFEST.json` is §5, A3).
+- `zoo capture --project z4 --run-id <id> --kind real --project-manifest <path>`
+  runs the whole tee: the raw sink the exporter talks to, the stock Collector
+  behind it, the json sink the Collector's JSON re-encoding lands in
+  (`SPEC.md` §4, A2), and the `MANIFEST.json` it ends by completing
+  (`SPEC.md` §5, A3);
+- `zoo verify [path]` re-hashes every capture against its manifest -- a whole
+  capture root, or one run directory (`SPEC.md` §3.5, §5).
 
 `replay` (A4) and `audit` (A5) are not here and are not stubbed; `SPEC.md` §§6
 and 7 are the headings they will fill.
@@ -20,9 +22,16 @@ module under `spanweave_zoo/` reads either: the sink takes `now` as an argument
 and `_system_clock` below is the single place the real time enters the package.
 
 `verify` refuses rather than reassures. A run with no readable `MANIFEST.json`
-has nothing to re-hash against, and saying so with a non-zero exit is the one
-failure mode this command exists to prevent (`CLAUDE.md`, "Honest refusal
-beats a reassuring pass").
+has nothing to re-hash against, a body on disk that the manifest never
+recorded is not part of the capture, and a path that looks like nothing is not
+a tree that verified -- saying so with a non-zero exit is the one failure mode
+this command exists to prevent (`CLAUDE.md`, "Honest refusal beats a
+reassuring pass").
+
+`--kind` is required on `capture` and has no default. A `recorded` capture and
+a `real` one differ by that declaration alone, the audit reads it as the
+truth, and argparse refusing the command is better than the zoo guessing
+(`SPEC.md` §5).
 """
 
 from __future__ import annotations
@@ -71,10 +80,24 @@ def _system_sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
+def _is_run(path: Path) -> bool:
+    """Whether `path` is itself one run directory rather than a capture root.
+
+    A run directory holds `MANIFEST.json`, or a `raw/` the sink made. This is
+    asked because `zoo verify captures/z4/<run-id>` is a thing an operator
+    types -- the README tells them to -- and globbing two levels down from a
+    run directory would find nothing and say so with a **zero** exit, which is
+    the one reassuring pass this command exists to refuse (`CLAUDE.md`).
+    """
+    return (path / manifest.MANIFEST_NAME).exists() or (path / capture.RAW_DIR).is_dir()
+
+
 def _run_directories(root: Path) -> list[Path]:
     """Every `<project>/<run-id>` directory under `root`, in sorted order."""
     if not root.is_dir():
         return []
+    if _is_run(root):
+        return [root]
     runs = [
         path
         for path in root.glob("/".join(["*"] * _RUN_DEPTH))
@@ -94,7 +117,13 @@ def verify(root: Path) -> int:
     for run in runs:
         found = manifest.problems(run)
         bodies = manifest.body_count(run)
-        print(f"  {run}: {bodies} body/bodies, {len(found)} problem(s)")
+        # The declaration the audit keys off, printed as the capture carries
+        # it -- and as nothing where the capture carries nothing (`zoo sink`
+        # alone writes no `kind`).
+        declared = manifest.kind_of(run) or "none declared"
+        print(
+            f"  {run}: kind={declared}, {bodies} body/bodies, {len(found)} problem(s)"
+        )
         problems.extend(found)
     if problems:
         for problem in problems:
@@ -181,7 +210,16 @@ def run_capture(args: argparse.Namespace) -> int:
     try:
         run = _run_directory(Path(args.captures), args.project, args.run_id)
         pinned = collector.pin(Path(args.collector_dir))
-    except (ValueError, collector.CollectorRefused) as refused:
+        # Read before anything is started and before any directory is made
+        # (`SPEC.md` §5): a capture that cannot carry the document saying what
+        # produced it is a capture to refuse now, not one to discover at the
+        # end with bytes already on disk and no way to complete it.
+        project_manifest = manifest.read_project_manifest(Path(args.project_manifest))
+    except (
+        ValueError,
+        collector.CollectorRefused,
+        manifest.ProjectManifestUnreadable,
+    ) as refused:
         print(f"zoo capture: refusing to start: {refused}", file=sys.stderr)
         return 2
 
@@ -200,6 +238,8 @@ def run_capture(args: argparse.Namespace) -> int:
             args.host, args.collector_port, timeout=args.forward_timeout
         ),
         pin=pinned,
+        kind=args.kind,
+        project_manifest=project_manifest,
         host=args.host,
         raw_port=args.port,
         json_port=args.json_port,
@@ -278,6 +318,24 @@ def _parser() -> argparse.ArgumentParser:
         "--run-id", required=True, help="one path segment, not starting with a dot"
     )
     capture_parser.add_argument(
+        "--kind",
+        required=True,
+        choices=sorted(manifest.KINDS),
+        help=(
+            "what this capture is: a run against a key-free stub (recorded) "
+            "or against a real model (real). Required: there is no default "
+            "and nothing is inferred (SPEC.md section 5)"
+        ),
+    )
+    capture_parser.add_argument(
+        "--project-manifest",
+        required=True,
+        help=(
+            "path to the pet project's own MANIFEST.json "
+            "(EXPORT-CONTRACT.md section 1), copied into the capture verbatim"
+        ),
+    )
+    capture_parser.add_argument(
         "--captures", default=str(CAPTURES), help=f"capture root (default: {CAPTURES})"
     )
     capture_parser.add_argument(
@@ -338,7 +396,9 @@ def _parser() -> argparse.ArgumentParser:
         "path",
         nargs="?",
         default=str(CAPTURES),
-        help=f"capture root to verify (default: {CAPTURES}/)",
+        help=(
+            f"a capture root, or one run directory, to re-hash (default: {CAPTURES}/)"
+        ),
     )
     return parser
 

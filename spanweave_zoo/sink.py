@@ -54,7 +54,10 @@ BODY_SUFFIX = ".body"
 # The json sink's bodies are `json/NNNN.json`, because `SPEC.md` §2.4 names
 # that file: the same number, the other form of one export.
 JSON_SUFFIX = ".json"
-HEADERS_SUFFIX = ".headers.json"
+# One home for the name: `manifest.finish` reads these files to carry each
+# body's content headers across (`SPEC.md` §5), so both ends name the same
+# constant rather than the same string twice.
+HEADERS_SUFFIX = manifest.HEADERS_SUFFIX
 
 # (method, path, headers as received, body) -> the forwarded request's status.
 # Raises on a forward that did not happen. `SPEC.md` §4.8.
@@ -113,13 +116,25 @@ class Recorder:
             (self.raw, body_suffix),
             (self.rejected, BODY_SUFFIX),
         ):
-            existing = sorted(directory.glob("*" + suffix))
-            if existing:
+            # A headers file is not a body, and the json sink's bodies are
+            # `*.json` (`SPEC.md` §4.5) -- so `*` + suffix would also match
+            # `NNNN.headers.json` and count it as one. Observed in the real
+            # flow: a re-used run id refused with "2 body file(s), starting
+            # 0001.headers.json", which is a true refusal told wrong, and a
+            # refusal nobody can read is most of the way to no refusal.
+            headers = sorted(directory.glob("*" + HEADERS_SUFFIX))
+            bodies = sorted(
+                path
+                for path in directory.glob("*" + suffix)
+                if not path.name.endswith(HEADERS_SUFFIX)
+            )
+            if bodies or headers:
                 raise CaptureExists(
-                    f"{directory} already holds {len(existing)} body file(s), "
-                    f"starting {existing[0].name}. A run directory is never "
-                    f"reused and a capture is never edited (SPEC.md section "
-                    f"2.1): use a new run id."
+                    f"{directory} already holds {len(bodies)} body file(s) "
+                    f"and {len(headers)} headers file(s) from an earlier "
+                    f"capture, starting {(bodies or headers)[0].name}. A run "
+                    f"directory is never reused and a capture is never edited "
+                    f"(SPEC.md section 2.1): use a new run id."
                 )
         self.raw.mkdir(parents=True, exist_ok=True)
 

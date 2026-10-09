@@ -145,6 +145,8 @@ def test_a_protobuf_export_through_the_tee_comes_back_as_json_with_the_same_ids(
         ),
         forward=forward.HttpForward(HOST, collector_port, timeout=30.0),
         pin=pinned,
+        kind="recorded",
+        project_manifest={"contract_version": "1.1", "mode": "recorded"},
         host=HOST,
         raw_port=0,
         json_port=0,

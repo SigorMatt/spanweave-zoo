@@ -20,7 +20,15 @@ from pathlib import Path
 
 import pytest
 
-from spanweave_zoo import capture, cli, collector, forward, manifest, sink
+from spanweave_zoo import (
+    __version__,
+    capture,
+    cli,
+    collector,
+    forward,
+    manifest,
+    sink,
+)
 from tests import otlp
 
 REPO = Path(__file__).resolve().parent.parent
@@ -28,6 +36,18 @@ COLLECTOR_DIR = REPO / "collector"
 
 PROTOBUF = otlp.export_trace_service_request()
 TIMEOUT = 5.0
+
+# A pet project's own `MANIFEST.json`, as `EXPORT-CONTRACT.md` §1 has it. The
+# zoo copies this document into the capture's manifest and reads no field of
+# it (`SPEC.md` §5); these tests assert it arrives unchanged, not that it is
+# valid anything.
+PROJECT_MANIFEST = {
+    "contract_version": "1.0",
+    "framework": "openai",
+    "framework_version": "2.6.1",
+    "mode": "real",
+    "model": "gpt-4.1-mini",
+}
 
 
 class Clock:
@@ -97,7 +117,21 @@ class Straight:
         )
 
 
-def running_capture(run: Path, *, forwarder=None, version: str | None = None):
+def project_manifest_file(tmp_path: Path) -> Path:
+    """The path an operator passes with `--project-manifest` (`SPEC.md` §5)."""
+    path = tmp_path / "streaming-concierge" / "MANIFEST.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_json(path, PROJECT_MANIFEST)
+    return path
+
+
+def running_capture(
+    run: Path,
+    *,
+    forwarder=None,
+    version: str | None = None,
+    kind: str = "recorded",
+):
     """A started `Capture` on ports the OS picked, with a fake Collector."""
     straight = forwarder if forwarder is not None else Straight()
     launcher = FakeLauncher(version or pinned_version())
@@ -107,6 +141,8 @@ def running_capture(run: Path, *, forwarder=None, version: str | None = None):
         launcher=launcher,
         forward=straight,
         pin=collector.pin(COLLECTOR_DIR),
+        kind=kind,
+        project_manifest=PROJECT_MANIFEST,
         raw_port=0,
         json_port=0,
         log=lambda line: None,
@@ -328,8 +364,12 @@ def test_the_capture_command_refuses_without_a_collector_directory(tmp_path, cap
             "z4",
             "--run-id",
             "run-1",
+            "--kind",
+            "recorded",
             "--captures",
             str(tmp_path / "captures"),
+            "--project-manifest",
+            str(project_manifest_file(tmp_path)),
             "--collector-dir",
             str(tmp_path / "nowhere"),
         ]
@@ -353,8 +393,12 @@ def test_the_capture_command_refuses_without_the_binary(tmp_path, capsys):
             "z4",
             "--run-id",
             "run-1",
+            "--kind",
+            "recorded",
             "--captures",
             str(tmp_path / "captures"),
+            "--project-manifest",
+            str(project_manifest_file(tmp_path)),
             "--collector-dir",
             str(elsewhere),
             "--port",
@@ -383,8 +427,12 @@ def test_the_capture_command_refuses_a_run_id_that_is_not_one_segment(
             "z4",
             "--run-id",
             run_id,
+            "--kind",
+            "recorded",
             "--captures",
             str(tmp_path / "captures"),
+            "--project-manifest",
+            str(project_manifest_file(tmp_path)),
             "--collector-dir",
             str(COLLECTOR_DIR),
         ]
@@ -457,3 +505,179 @@ def test_serve_forever_returns_once_stopped(tmp_path):
     started.stop()
     waiter.join(timeout=TIMEOUT)
     assert not waiter.is_alive()
+
+
+# --- A3: the capture ends by writing the whole manifest (`SPEC.md` §5) ------
+
+
+def test_the_capture_ends_by_writing_every_field_the_manifest_carries(tmp_path):
+    # The A3 row, end to end over a socket: a real POST through the tee, then
+    # the manifest the capture wrote when it stopped.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    started, _ = running_capture(run, kind="real")
+    try:
+        status, _ = post(
+            started.raw.port,
+            "/v1/traces",
+            PROTOBUF,
+            {"Content-Type": "application/x-protobuf", "Content-Encoding": "gzip"},
+        )
+    finally:
+        started.stop()
+    assert status == 200
+
+    document = manifest.read(run)
+    assert document[manifest.KIND] == "real"
+    assert document[manifest.PROJECT_MANIFEST] == PROJECT_MANIFEST
+    assert document[manifest.SINK_VERSION] == __version__
+    assert document[manifest.COLLECTOR_VERSION] == pinned_version()
+    # Both timestamps come from the injected clock and from nowhere else
+    # (`SPEC.md` §3.6), so they are values this test chose.
+    assert document[manifest.STARTED_AT] == "2026-10-09T12:00:01+00:00"
+    assert document[manifest.ENDED_AT].startswith("2026-10-09T12:00:")
+    assert document[manifest.ENDED_AT] > document[manifest.STARTED_AT]
+    # Carried across from each body's own `headers.json`, for raw AND json:
+    # the Collector's forward kept the exporter's content headers (§4.3).
+    assert [
+        (entry["file"], entry["content_type"], entry["content_encoding"])
+        for entry in document[manifest.BODIES]
+    ] == [
+        ("raw/0001.body", "application/x-protobuf", "gzip"),
+        ("json/0001.json", "application/x-protobuf", "gzip"),
+    ]
+    assert cli.verify(tmp_path / "captures") == 0
+
+
+def test_a_capture_cannot_be_constructed_without_declaring_its_kind(tmp_path):
+    # No default, no inference (`SPEC.md` §5): the declaration is the only
+    # difference between a recorded capture and a real one.
+    with pytest.raises(TypeError):
+        capture.Capture(
+            tmp_path / "captures" / "z4" / "run-1",
+            now=Clock(),
+            launcher=FakeLauncher(pinned_version()),
+            forward=Straight(),
+            pin=collector.pin(COLLECTOR_DIR),
+            project_manifest=PROJECT_MANIFEST,
+        )
+
+
+def test_the_manifest_declares_the_kind_before_the_first_body_can_arrive(tmp_path):
+    # A capture stopped the hard way still says what it was: the declaration
+    # and the pin are written at the start, `ended_at` at the end.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    started, _ = running_capture(run, kind="real")
+    try:
+        document = manifest.read(run)
+        assert document[manifest.KIND] == "real"
+        assert document[manifest.STARTED_AT] == "2026-10-09T12:00:01+00:00"
+        assert manifest.ENDED_AT not in document
+    finally:
+        started.stop()
+    assert manifest.ENDED_AT in manifest.read(run)
+
+
+def test_the_capture_command_requires_a_kind(tmp_path, capsys):
+    # The A3 row's third acceptance test, at the one place an operator meets
+    # it. A missing declaration is argparse's own refusal and exits non-zero.
+    with pytest.raises(SystemExit) as exited:
+        cli.main(
+            [
+                "capture",
+                "--project",
+                "z4",
+                "--run-id",
+                "run-1",
+                "--captures",
+                str(tmp_path / "captures"),
+                "--project-manifest",
+                str(project_manifest_file(tmp_path)),
+                "--collector-dir",
+                str(COLLECTOR_DIR),
+            ]
+        )
+    assert exited.value.code == 2
+    error = capsys.readouterr().err
+    assert "required" in error and "--kind" in error
+    assert not (tmp_path / "captures").exists()
+
+
+def test_the_capture_command_refuses_a_kind_the_spec_does_not_name(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exited:
+        cli.main(
+            [
+                "capture",
+                "--project",
+                "z4",
+                "--run-id",
+                "run-1",
+                "--kind",
+                "live",
+                "--captures",
+                str(tmp_path / "captures"),
+                "--project-manifest",
+                str(project_manifest_file(tmp_path)),
+                "--collector-dir",
+                str(COLLECTOR_DIR),
+            ]
+        )
+    assert exited.value.code == 2
+    error = capsys.readouterr().err
+    assert "recorded" in error and "real" in error
+    assert not (tmp_path / "captures").exists()
+
+
+def test_the_capture_command_refuses_a_project_manifest_it_cannot_read(
+    tmp_path, capsys
+):
+    # `SPEC.md` §5: loudly, at the start, before any bytes are on disk --
+    # rather than at the end, when the capture is already a capture and the
+    # one thing missing from it cannot be added without editing it.
+    status = cli.main(
+        [
+            "capture",
+            "--project",
+            "z4",
+            "--run-id",
+            "run-1",
+            "--kind",
+            "real",
+            "--captures",
+            str(tmp_path / "captures"),
+            "--project-manifest",
+            str(tmp_path / "nowhere" / "MANIFEST.json"),
+            "--collector-dir",
+            str(COLLECTOR_DIR),
+        ]
+    )
+    assert status == 2
+    error = capsys.readouterr().err
+    assert str(tmp_path / "nowhere" / "MANIFEST.json") in error
+    assert not (tmp_path / "captures").exists()
+
+
+def test_the_refusal_counts_bodies_and_headers_apart_in_the_json_sink(tmp_path):
+    # Found by running the real flow (`SPEC.md` §3.1): the json sink's bodies
+    # are `*.json`, so one glob matched `0001.headers.json` too and the
+    # refusal said "2 body file(s), starting 0001.headers.json" for one
+    # recorded export. The refusal was right and unreadable.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    (run / "json").mkdir(parents=True)
+    (run / "json" / "0001.json").write_bytes(b"{}")
+    manifest.write_json(run / "json" / ("0001" + manifest.HEADERS_SUFFIX), {})
+    with pytest.raises(sink.CaptureExists) as refused:
+        running_capture(run)
+    assert "1 body file(s) and 1 headers file(s)" in str(refused.value)
+    assert "starting 0001.json" in str(refused.value)
+
+
+def test_a_directory_holding_only_a_headers_file_is_still_refused(tmp_path):
+    # Degenerate, and the safe answer: half a capture is a capture to refuse.
+    # Writing `0001.json` beside a left-over `0001.headers.json` would
+    # overwrite the half that is there.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    (run / "raw").mkdir(parents=True)
+    manifest.write_json(run / "raw" / ("0001" + manifest.HEADERS_SUFFIX), {})
+    with pytest.raises(sink.CaptureExists) as refused:
+        running_capture(run)
+    assert "0 body file(s) and 1 headers file(s)" in str(refused.value)

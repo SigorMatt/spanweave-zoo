@@ -30,10 +30,10 @@ are all unfrozen and will change. The one thing meant to be durable is the
 |---|---|
 | `zoo sink` | records every POST's bytes and headers, and parses nothing |
 | `zoo capture` | the tee: the raw sink, the stock Collector behind it, the json sink |
-| `zoo verify` | re-hashes every recorded body against the manifest's sha256 |
+| `zoo verify` | re-hashes a capture against its `MANIFEST.json`, both directions |
 | `collector/` | the pinned Collector's version, digests and config -- `make collector` fetches the binary |
-| `SPEC.md` §1-§4 | the non-goals, the capture layout, the sink, the Collector and the tee |
-| `SPEC.md` §§5-7 | headings only: the manifest, the replayer, the audit |
+| `SPEC.md` §1-§5 | the non-goals, the layout, the sink, the Collector and the tee, the manifest |
+| `SPEC.md` §§6-7 | headings only: the replayer, the audit |
 
 The subcommands those later sections name (`replay`, `audit`) are not
 implemented and are not stubbed.
@@ -72,11 +72,118 @@ else; the ~100 MB binary is gitignored, because the pin is the record and the
 bytes are a download. `zoo capture` refuses to start if the binary reports a
 version that is not the pin.
 
-`zoo verify` exits 0 on a tree with no captures, re-hashes every body a run's
-`MANIFEST.json` lists, and **fails** both on a body whose bytes have changed
-and on a run whose manifest it cannot read -- rather than reporting an
-unchecked capture as verified. The sha256s are the only part of
-`MANIFEST.json` written so far; the rest is `SPEC.md` §5.
+### The manifest, and `zoo verify`
+
+Every run directory holds one `MANIFEST.json` saying what the capture is: the
+pet project's own `MANIFEST.json` copied **verbatim** (`EXPORT-CONTRACT.md`
+§1), the zoo's `sink_version` and the Collector's pinned `collector_version`,
+`kind` (`recorded` or `real`), `started_at` / `ended_at`, one `bodies` entry
+per recorded body with its `sha256`, `bytes` and the `content_type` /
+`content_encoding` the request declared, and one `forwards` entry per attempt
+to reach the Collector (`SPEC.md` §5).
+
+**`--kind` is required and is never inferred.** A recorded capture and a real
+one differ by that declaration alone -- the bytes look the same -- and the
+audit reads it as the truth, so the zoo refuses the command rather than
+guessing. The project's own manifest is **copied, not merged and not
+validated**: no field of it is read, and if its `mode` disagrees with `--kind`,
+both declarations sit in the record and a reader can see the disagreement. The
+zoo records; improving the record is the one thing it must not do.
+
+```bash
+zoo verify                                      # every capture under captures/
+zoo verify captures/z4/2026-10-09T12-00-00Z     # one run
+```
+
+`zoo verify` exits 0 on a tree with no captures and otherwise checks **both
+directions**: every body the manifest lists is on disk with the sha256 and the
+length it recorded, **and** every file on disk is one the manifest accounts
+for. It fails on a changed byte, a stale digest, a missing body, a **body the
+manifest never listed**, and a manifest it cannot read -- rather than reporting
+an unchecked capture as verified. The second direction is why it walks the
+directory and not only the list: a check that iterated the manifest could never
+notice a body nobody recorded.
+
+## Running a pet project's real run
+
+**Five commands, in two terminals.** `z4` (`streaming-concierge`) is the pilot;
+`<run-id>` is yours to choose, a run directory is never reused, and a timestamp
+reads well a month later.
+
+In the zoo's checkout, after `uv sync --extra dev` once (the `uv run` prefix
+is what makes these typeable from a bare checkout; drop it if `.venv` is
+activated):
+
+```bash
+make collector
+```
+
+```bash
+uv run zoo capture --project z4 --run-id 2026-10-10T09-00-00Z \
+                   --kind real \
+                   --project-manifest ../streaming-concierge/MANIFEST.json
+```
+
+In the pet project's checkout, in a second terminal, once the capture says it
+is recording:
+
+```bash
+make run-real ENDPOINT=http://localhost:4318
+```
+
+Back in the first terminal, once the project's run has exited:
+
+```
+Ctrl-C
+```
+
+```bash
+make verify
+```
+
+That is the whole flow. What each command is for:
+
+1. **`make collector`** downloads the pinned Collector and checks its sha256
+   against the release's own digest. Once per machine; `zoo capture` refuses to
+   start if the binary is missing or is not the pin.
+2. **`zoo capture`** brings up the raw sink on **4318** -- the port every brief
+   gave the pet projects -- the Collector behind it, and the json sink the
+   re-encoding lands in. It prints one line per recorded body as it arrives.
+   `--kind real` is the declaration the audit keys off and has no default;
+   `--project-manifest` is the project's own `MANIFEST.json`, copied into the
+   capture verbatim. Both are checked **before** anything is recorded.
+3. **`make run-real ENDPOINT=...`** is the project's own command
+   (`EXPORT-CONTRACT.md` §1). The zoo does not run the project, know its
+   dependencies, or care what it does -- it is a recorder, and the project
+   knows nothing about it either.
+4. **Ctrl-C** ends the capture: it stops the raw sink, lets the Collector flush
+   its last batch, stops the json sink, completes `MANIFEST.json` and prints
+   what it recorded. `SIGTERM` does the same, so a supervisor can end a run.
+   The exit status is non-zero if any body failed to reach the Collector -- the
+   capture is intact either way and the manifest says which bodies those were.
+5. **`make verify`** re-hashes every capture under `captures/` against its
+   manifest. `make check` depends on it, so from now on every run of the gates
+   re-checks this capture's bytes. `uv run zoo verify
+   captures/z4/<run-id>` re-hashes just this one.
+
+Two things to know before you start, both of which are refusals rather than
+surprises:
+
+- **The project's `MANIFEST.json` must already exist** when the capture starts.
+  The contract has the project write it on every run (`EXPORT-CONTRACT.md` §1),
+  so a checkout that has been run once has one; if yours has none, run the
+  project's own `make run` once first -- it is the recorded mode, needs no
+  credentials, and writes the file. The capture copies what is there when it
+  starts and makes no claim that the project wrote it during the run it
+  recorded: what the zoo claims, it writes itself (`SPEC.md` §5.3).
+- **A run directory is never reused.** A second attempt is a second
+  `--run-id`; pointing a capture at a directory that already holds part of one
+  is refused by name, because the fix for a half-recorded run is another run,
+  never an edited capture.
+
+A **recorded** run is the same five commands with `--kind recorded` and the
+project's `make run-recorded`. Nothing else changes -- which is exactly why
+`kind` is a declaration and not something the zoo works out for itself.
 
 ## Running the gates
 

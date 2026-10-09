@@ -109,11 +109,35 @@ def install_and_run(wheel: Path) -> None:
         verified = run([str(venv / "bin" / "zoo"), "verify"], cwd=outside)
         assert "nothing to re-hash" in verified.stdout, verified.stdout
 
+        # `kind` is required in what SHIPS, not only in the source tree
+        # (`SPEC.md` §5.2): a capture the audit cannot tell apart from a
+        # recorded one is the failure this declaration exists to prevent, and
+        # the console script is where an operator meets it.
+        undeclared = subprocess.run(
+            [
+                str(venv / "bin" / "zoo"),
+                "capture",
+                "--project",
+                "z4",
+                "--run-id",
+                "install-check",
+            ],
+            cwd=outside,
+            capture_output=True,
+            text=True,
+        )
+        assert undeclared.returncode != 0, undeclared.stdout
+        assert "--kind" in undeclared.stderr, undeclared.stderr
+        assert "--project-manifest" in undeclared.stderr, undeclared.stderr
+        print("  zoo capture with no --kind -> refused")
+
         # `collector/` is repository data and is NOT in the wheel (above), so
         # the installed `zoo capture` has no pin to read. It must say so and
         # exit non-zero rather than start a capture it cannot label
         # (`SPEC.md` §4.6) -- the shipped artifact's honest refusal, asserted
         # where it actually ships.
+        project_manifest = outside / "MANIFEST.json"
+        project_manifest.write_text('{"contract_version": "1.1"}', encoding="utf-8")
         refused = subprocess.run(
             [
                 str(venv / "bin" / "zoo"),
@@ -122,6 +146,10 @@ def install_and_run(wheel: Path) -> None:
                 "z4",
                 "--run-id",
                 "install-check",
+                "--kind",
+                "recorded",
+                "--project-manifest",
+                str(project_manifest),
             ],
             cwd=outside,
             capture_output=True,

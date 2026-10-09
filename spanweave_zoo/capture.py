@@ -102,6 +102,8 @@ class Capture:
         launcher: collector.Launcher,
         forward: sink.Forward,
         pin: collector.Pin,
+        kind: str,
+        project_manifest: object,
         host: str = "127.0.0.1",
         raw_port: int = DEFAULT_RAW_PORT,
         json_port: int = DEFAULT_JSON_PORT,
@@ -115,6 +117,11 @@ class Capture:
         self._launcher = launcher
         self._forward = forward
         self._pin = pin
+        # `kind` and the project's manifest have no defaults on purpose
+        # (`SPEC.md` §5): a capture that could be written without declaring
+        # what it is would be a capture the audit has to guess about.
+        self._kind = kind
+        self._project_manifest = project_manifest
         self._raw_port = raw_port
         self._json_port = json_port
         self._make_server = make_server
@@ -129,6 +136,11 @@ class Capture:
         self.json: _Listener | None = None
         self.collector: collector.Running | None = None
         self._stopping = threading.Event()
+        # Whether there is a manifest to close, and whether it was closed.
+        # `stop()` runs on the way out of a failed `start()` as well as at the
+        # end of a run, and `ended_at` is written exactly once.
+        self._labelled = False
+        self._finished = False
 
     # -- the parts of the run ------------------------------------------------
 
@@ -164,7 +176,14 @@ class Capture:
         """
         version = collector.check_version(self._launcher, self._pin)
         self.run.mkdir(parents=True, exist_ok=True)
-        manifest.set_collector_version(self.run, version)
+        manifest.label(
+            self.run,
+            kind=self._kind,
+            collector_version=version,
+            project_manifest=self._project_manifest,
+            started_at=self._now(),
+        )
+        self._labelled = True
 
         self.json = self._listener(
             self.run / JSON_DIR,
@@ -229,6 +248,11 @@ class Capture:
         That order and no other: the exporter is told nothing more will be
         recorded, then the Collector is asked to shut down -- which flushes its
         last batch -- and only then does the thing it flushes into go away.
+
+        Then, and only then, the manifest is closed (`SPEC.md` §5): `ended_at`
+        is the end of the run, and the content headers are carried across from
+        the headers files of every body -- including the ones the Collector's
+        last flush only just landed.
         """
         self._stopping.set()
         if self.raw is not None:
@@ -238,6 +262,21 @@ class Capture:
             self.collector = None
         if self.json is not None:
             self.json.stop()
+        self._finish()
+
+    def _finish(self) -> None:
+        """Write `ended_at` and the body entries' content headers, once.
+
+        Guarded both ways: nothing is written for a run that never got as far
+        as a labelled manifest (there is no capture to close, and no directory
+        to put one in), and nothing is written twice when `stop()` is called
+        again -- `zoo capture` calls it from a `finally` and `start()` calls it
+        on the way out of a failure.
+        """
+        if not self._labelled or self._finished:
+            return
+        self._finished = True
+        manifest.finish(self.run, ended_at=self._now())
 
     # -- what it recorded ----------------------------------------------------
 
@@ -250,7 +289,10 @@ class Capture:
     def summary(self) -> str:
         bodies = manifest.body_count(self.run)
         failures = len(self.failed_forwards)
-        line = f"zoo capture: {bodies} body/bodies under {self.run}/"
+        line = (
+            f"zoo capture: {bodies} body/bodies under {self.run}/, "
+            f"{manifest.MANIFEST_NAME} written: kind={self._kind}"
+        )
         if failures:
             return (
                 f"{line}, {failures} forward(s) FAILED -- json/ is incomplete "

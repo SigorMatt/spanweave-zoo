@@ -8,8 +8,10 @@ Status: §1 and §2 are specified (A0); §3 is specified and implemented (A1,
 which also wrote the one part of §5 that `CLAUDE.md` §0.6 already required --
 see §3.5); §4 is specified and implemented (A2: the Collector, the tee and
 `zoo capture`, which also writes the two manifest fields its own behaviour
-needs -- see §4.5). §§5-7 are headings naming what the batches after A2 will
-fill; nothing in them is implemented today.
+needs -- see §4.5); §5 is specified and implemented (A3: the whole of
+`MANIFEST.json` and a `zoo verify` that checks the capture in both
+directions). §§6-7 are headings naming what the batches after A3 will fill;
+nothing in them is implemented today.
 
 ---
 
@@ -27,9 +29,24 @@ except to echo it back. Whether a payload is well-formed OTLP is not a question
 the zoo asks, because asking it is how a recorder starts preferring the
 payloads it understands.
 
-The one exception is the stock OpenTelemetry Collector (§4), which parses
-because that is what it is — and its output is kept *beside* the raw bytes,
-never instead of them.
+Two things are not that, and are named here rather than discovered as
+exceptions:
+
+- the stock OpenTelemetry Collector (§4) parses, because that is what it is —
+  and its output is kept *beside* the raw bytes, never instead of them;
+- two documents that are not payloads are read as documents: the capture's own
+  `MANIFEST.json`, which the zoo wrote, and the pet project's `MANIFEST.json`,
+  which the zoo copies into it verbatim and reads no field of (§5).
+
+The sentence above about the content type is about the **sink**, and stays
+exactly true of it: the sink echoes a content type and decides nothing from
+it. When a run ends, the manifest writer copies each body's `Content-Type` and
+`Content-Encoding` **across from the record it already made** — the body's own
+`NNNN.headers.json`, where the request put them verbatim (§5). That is a copy
+of what the exporter claimed, not an inspection of what it sent, and no byte
+of a body is read to do it. (A1 left those two fields out for exactly the
+reason this paragraph now resolves; A3's row required them, and this is the
+amendment that makes both texts say the same thing.)
 
 ### 1.2 The zoo fixes nothing
 
@@ -112,7 +129,10 @@ body length in bytes, and the receipt time. Headers are the record of what the
 exporter claimed about its own bytes — `Content-Type`, `Content-Encoding`,
 `User-Agent` — and are therefore part of the capture, not metadata about it.
 
-A1 (§3.2) writes the first key names; A3 (§5) may fix them.
+A1 (§3.2) wrote these key names and A3 kept them. The manifest carries two
+of these values across — `Content-Type` and `Content-Encoding` — so that a
+reader of one `bodies` entry knows what the request claimed, and this file
+stays the record of everything the request said, repeats included (§5.4).
 
 ### 2.4 `json/NNNN.json`
 
@@ -137,11 +157,13 @@ implementer to write it, the zoo's and the Collector's versions, whether the
 run was `recorded` or `real`, when it started and ended, and a sha256 of every
 body in `raw/` and every file in `json/`.
 
-Specified in §5, written by A3 -- except the sha256 of every body in `raw/`
-and in `rejected/`, which `CLAUDE.md` §0.6 rule 2 puts in the manifest and
-which the sink therefore writes as it records (§3.5). `zoo verify` re-hashes
-those; a run whose manifest is missing or unreadable is still refused rather
-than reported verified.
+Specified in §5, which lists every field and when each is written. The
+sha256 of every body is written by the sink as it records, because
+`CLAUDE.md` §0.6 rule 2 puts it in the manifest and there is nothing to
+re-hash against without it (§3.5); the rest is written by `zoo capture` at the
+two ends of a run. `zoo verify` re-hashes it and also refuses a body the
+manifest does not list; a run whose manifest is missing or unreadable is
+refused rather than reported verified.
 
 ---
 
@@ -167,9 +189,19 @@ stranger's telemetry listens on the loopback unless an operator says
 otherwise.
 
 The sink **refuses to start** — exits non-zero, writing nothing — if `--out`
-already contains a `*.body` file. A run directory is never reused (§2.1) and a
-capture is never edited (`CLAUDE.md`, "Halt points"), so a sink pointed at an
-existing capture must stop rather than renumber into it or overwrite it.
+already contains a body **or** a `NNNN.headers.json` from an earlier capture. A
+run directory is never reused (§2.1) and a capture is never edited
+(`CLAUDE.md`, "Halt points"), so a sink pointed at an existing capture must
+stop rather than renumber into it or overwrite it — and half a capture is still
+a capture to refuse, because renumbering into it would overwrite the half that
+is there.
+
+The refusal counts bodies and headers files **separately**, and says which it
+found. The json sink's bodies are `json/NNNN.json` (§4.5), so a glob for its
+suffix also matches `NNNN.headers.json`: counting the two together reported
+"2 body file(s), starting 0001.headers.json" for one recorded export, which is
+a true refusal told wrong. A refusal an operator cannot read is most of the way
+to no refusal.
 
 ### 3.2 What one POST becomes
 
@@ -200,7 +232,8 @@ A `POST` to `/v1/traces` — that exact path, no other — is recorded as the ne
   JSON object would silently keep one of them. `path` is the request target
   verbatim, query string included. `bytes` is the length of `NNNN.body` on
   disk. `received_at` comes from the injected `now` (§3.6) and is the only
-  clock the record has. (§2.3: A1 writes these key names; A3 may fix them.)
+  clock the record has. (§2.3: A1 wrote these key names and A3 kept them;
+  §5.4 carries two of these values into the manifest and changes nothing here.)
 
 `NNNN` is a zero-padded four-digit counter in **receipt order**, starting at
 `0001`, assigned when the body has been read and under a lock, so two POSTs in
@@ -246,16 +279,20 @@ entry per body and rewriting the file atomically:
 
 `file` is the body's path relative to the run directory, so a rejected body is
 distinguishable from an accepted one; entries are in the order the bodies were
-recorded. **This is the whole of what A1 writes**: everything else `MANIFEST.json`
-carries — the project's own manifest, `sink_version`, `collector_version`,
-`kind`, `started_at`/`ended_at`, the `json/` hashes — is §5's, added by A3 to
-this same file and these same entries. There is exactly one home for a digest.
+recorded. **This is the whole of what the sink writes**: everything else
+`MANIFEST.json` carries — the project's own manifest, `sink_version`,
+`collector_version`, `kind`, `started_at`/`ended_at`, each entry's
+`content_type`/`content_encoding` — is §5's, written by `zoo capture` into this
+same file and these same entries. There is exactly one home for a digest, and
+the sink is where it is written.
 
-`zoo verify` therefore stops refusing (§5) and re-hashes: for every run
-directory under `captures/`, it reads `MANIFEST.json`, re-reads every listed
-body, and exits non-zero if a digest differs, a length differs, a listed body
-is missing, or the manifest is absent or unreadable. A run with a manifest it
-cannot read is still a refusal, not a pass.
+`zoo verify` therefore stops refusing and re-hashes: for every run directory
+under `captures/`, it reads `MANIFEST.json`, re-reads every listed body, and
+exits non-zero if a digest differs, a length differs, a listed body is missing,
+or the manifest is absent or unreadable. A run with a manifest it cannot read
+is still a refusal, not a pass. §5.6 is the whole of what `verify` checks,
+including the other direction — a body on disk that the manifest never
+listed.
 
 ### 3.6 The seams
 
@@ -427,9 +464,9 @@ thing it was supposed to observe.
 
 `zoo capture` runs **two recorders in one process** on one run directory
 (`SPEC.md` §2): the raw sink on `raw/` and the json sink on `json/`. They write
-**one `MANIFEST.json`**, in the run directory, which is the file A3 extends and
-`zoo verify` re-hashes. There is one manifest per run and there always was; the
-two recorders share it.
+**one `MANIFEST.json`**, in the run directory, which is the file §5 completes
+and `zoo verify` re-hashes. There is one manifest per run and there always was;
+the two recorders share it.
 
 Three things follow, and each is a decision rather than an accident:
 
@@ -477,20 +514,23 @@ contents — which is the one kind of claim the sink does not make.
   own and not a field on a `bodies` entry: A1 pinned those to `file`, `sha256`
   and `bytes`, and `zoo verify`'s re-hash reads only those (§3.5).
 
-Everything else in `MANIFEST.json` is still §5's, and A3 extends these same
-entries rather than replacing them.
+Everything else in `MANIFEST.json` is §5's, and §5 extends these same entries
+rather than replacing them: `collector_version` is written once at the start
+beside `kind`, `project_manifest`, `sink_version` and `started_at` (§5.5).
 
 ### 4.6 `zoo capture`
 
 ```bash
-zoo capture --project z4 --run-id 2026-10-09T12-00-00Z
+zoo capture --project z4 --run-id 2026-10-09T12-00-00Z \
+            --kind real --project-manifest ../streaming-concierge/MANIFEST.json
 ```
 
-It creates `captures/<project>/<run-id>/`, writes `collector_version`, starts
+It creates `captures/<project>/<run-id>/`, labels the manifest (§5.5), starts
 the json sink, starts the Collector, waits for the Collector's receiver to
 accept a connection, starts the raw sink, and serves until interrupted. Then it
-stops the raw sink, stops the Collector, stops the json sink, prints what it
-recorded and exits non-zero if any forward failed (§4.4).
+stops the raw sink, stops the Collector, stops the json sink, **completes the
+manifest** (§5.5), prints what it recorded and exits non-zero if any forward
+failed (§4.4).
 
 **`SIGINT` and `SIGTERM` both end a run**, through a handler that only asks it
 to stop; the shutdown itself happens on the main thread, which is where the
@@ -506,6 +546,8 @@ an operator who has to find it.
 |---|---|---|
 | `--project` | required | `z1` … `z6`, as `ZOO-BRIEFS.md` names it (§2.1) |
 | `--run-id` | required | one path segment, not starting with a dot (§2.1) |
+| `--kind` | required | `recorded` \| `real`, never inferred (§5.2) |
+| `--project-manifest` | required | the project's own `MANIFEST.json`, copied verbatim (§5.3) |
 | `--captures` | `captures` | the capture root |
 | `--port` | `4318` | the raw sink: **the app's port** |
 | `--json-port` | `4319` | the json sink, where the Collector exports |
@@ -518,8 +560,10 @@ an operator who has to find it.
 It **refuses to start**, writing nothing, when: the run directory already holds
 a body (§3.1, both sinks); `--collector-dir` has no `VERSION` or no
 `config.yaml`; the binary is absent — naming `make collector`; the binary's
-`--version` does not match the pin; or the Collector does not accept a
-connection within the readiness budget. A capture that was never re-encoded is
+`--version` does not match the pin; `--kind` is missing or is not one of the
+two (§5.2); `--project-manifest` names a path that is not a readable JSON
+document (§5.3); or the Collector does not accept a connection within the
+readiness budget. A capture that was never re-encoded is
 a fact worth refusing for, because the operator can still fix it; a capture
 *silently* missing its `json/` is a fact discovered a week later.
 
@@ -571,18 +615,218 @@ real protobuf export comes back as JSON with the same ids — and a test that
 quietly passed without proving it would be the kind of reassuring pass this
 repository exists to refuse (`CLAUDE.md`). It skips loudly instead.
 
-## 5. The manifest, and verification — A3
+## 5. The manifest, and verification
 
-`MANIFEST.json`'s fields, and `zoo verify`: re-hash everything under
-`captures/`, and exit non-zero on any difference and on any body without a
-manifest entry. Not specified yet; §2.5 is its sketch.
+One `MANIFEST.json` per run directory (§2.5, §4.5), written as the run goes and
+**completed when `zoo capture` ends**. It says what this capture is, what is in
+it, and what hash each body had when it was recorded — and `zoo verify`
+re-hashes the tree against it on every `make check`.
 
-A1 wrote the part of this that `CLAUDE.md` §0.6 rule 2 already mandated and no
-more: the `bodies` entries' `file`, `sha256` and `bytes` (§3.5), and a `zoo
-verify` that re-hashes them. Still A3's, and still unspecified here: every
-other field of `MANIFEST.json`, the `content_type` / `content_encoding` of each
-entry, the `json/` hashes, and **failing on a body present on disk but absent
-from the manifest** — which today's `verify` does not check.
+```json
+{
+  "bodies": [
+    {"bytes": 1234,
+     "content_encoding": "gzip",
+     "content_type": "application/x-protobuf",
+     "file": "raw/0001.body",
+     "sha256": "9f86d0..."},
+    {"bytes": 2048,
+     "content_encoding": null,
+     "content_type": "application/json",
+     "file": "json/0001.json",
+     "sha256": "2c2616..."}
+  ],
+  "collector_version": "0.162.0",
+  "ended_at": "2026-10-09T12:04:11.902000+00:00",
+  "forwards": [{"file": "raw/0001.body", "status": 200}],
+  "kind": "real",
+  "project_manifest": {"contract_version": "1.0", "framework": "openai",
+                       "instrumentation": ["..."], "mode": "real"},
+  "sink_version": "0.0.1",
+  "started_at": "2026-10-09T12:00:00.117000+00:00"
+}
+```
+
+| Field | What it is |
+|---|---|
+| `kind` | `recorded` or `real` — **required** (§5.2) |
+| `project_manifest` | the pet project's own `MANIFEST.json`, copied verbatim (§5.3) |
+| `sink_version` | `spanweave_zoo.__version__`: the recorder that wrote this |
+| `collector_version` | `collector/VERSION`, the pin that re-encoded it (§4.5) |
+| `started_at` / `ended_at` | the run's two ends, from the injected `now` (§3.6) |
+| `bodies` | one entry per recorded body, `raw/` and `json/` and rejected alike (§3.5, §5.4) |
+| `forwards` | one entry per attempted forward: delivery, not bytes (§4.5) |
+
+Nothing else. The manifest has no field for how many spans a capture holds, how
+long an export was, which project the bytes came from beyond what the project's
+own manifest says, or whether anything about the capture is good: the zoo counts
+bodies and bytes (§1.4).
+
+### 5.1 `zoo capture`'s two new options
+
+```bash
+zoo capture --project z4 --run-id 2026-10-09T12-00-00Z \
+            --kind real \
+            --project-manifest ../streaming-concierge/MANIFEST.json
+```
+
+| Option | Default | |
+|---|---|---|
+| `--kind` | **required** | `recorded` \| `real` (§5.2) |
+| `--project-manifest` | **required** | path to the project's own `MANIFEST.json` (§5.3) |
+
+Both are refusals when absent, before anything is started and before a
+directory is made: a capture that cannot say what it is, or cannot carry the
+document saying what produced it, is one to refuse while the operator can still
+fix it — not one to discover at the end with bytes already on disk, which could
+only be completed by editing a capture (`CLAUDE.md`, "Halt points").
+
+### 5.2 `kind` is required, and is never inferred
+
+A `recorded` capture and a `real` capture differ **only** by this declaration.
+The bytes look the same, the layout is the same, the Collector is the same; what
+differs is whether a real model answered, and nothing in the traffic says so in
+a way the zoo is willing to read. So `kind` has no default, and is not inferred
+— not from the project's own manifest, not from the endpoint, not from how long
+the run took, not from whether a key was in the environment.
+
+`recorded` means the run went against the key-free stub the contract requires
+(`EXPORT-CONTRACT.md` §1, `make run-recorded`). `real` means it went against a
+real model (`make run-real`). The audit (§7) reads this field as the truth about
+which it was, and A5's report is organized by it, which is exactly why a guess
+here would be a lie there.
+
+An unknown value is refused the same way a missing one is: `zoo capture` has
+`choices`, and `manifest.label` raises rather than writing a manifest it cannot
+label.
+
+### 5.3 The project's own manifest is copied, not merged and not validated
+
+`EXPORT-CONTRACT.md` §1 tells every pet project to write a `MANIFEST.json`
+recording the contract version, the framework and its version, the
+instrumentation packages pinned, the SDK and exporter, the Python version and
+platform, the model, `recorded` | `real`, the endpoint and the start time. That
+document is **the** record of what made these bytes, written by the
+implementer, and the zoo carries it **verbatim** under `project_manifest`.
+
+The zoo does not re-derive any of it (it could not: it never sees the project's
+environment), does not check it for required keys, does not reconcile it with
+anything, and reads **no field of it** — including `mode`, which the contract
+asks the project to record and which is **not** where `kind` comes from (§5.2).
+If the project's `mode` and the capture's `kind` disagree, both are in the
+record side by side and a reader can see the disagreement: the zoo records, and
+improving the record is the one thing it must not do (§1.3).
+
+The one thing checked is that the path holds a readable JSON **document**,
+because a document is what the manifest carries. A path that is missing,
+unreadable or not JSON is a refusal at the start of the capture (§5.1), with
+the path in the message.
+
+The project's manifest describes the **project's run**; the zoo's own fields
+describe the **capture**. They are two records of one event, and they are kept
+apart on purpose — including their `started_at`s, which are two different
+clocks and are not reconciled. (A practical consequence, because operators hit
+it: the project writes its manifest when it runs, so the file the capture
+copies is the one the project's own run left behind. The zoo takes what is
+there when the capture starts and makes no claim that it was written by the run
+it recorded; what it does claim — the pin, the digests, the two timestamps, the
+declaration — it writes itself.)
+
+### 5.4 `content_type` and `content_encoding`
+
+Every `bodies` entry carries the two headers the request made its claim with,
+as the request sent them, and `null` where it sent neither: the zoo has no
+content type of its own to invent (§3.3).
+
+They are **carried across from `NNNN.headers.json`** when the run ends, not
+observed by the sink as the POST arrives. That is the whole of why they can be
+here without the sink acquiring a taste (§1.1): the values are already verbatim
+in the record beside the body, and copying two of them into the manifest reads
+no byte of any body. The header name is matched case-insensitively, because
+HTTP says header names are; a header that legally repeats is carried **once**,
+first-as-received, and `headers.json` stays the record of the repeat because it
+is the record of the request.
+
+A1's three keys are untouched: `file`, `sha256` and `bytes` mean exactly what
+they meant, and `zoo verify`'s re-hash still reads only those. There is still
+exactly one home for a digest (§3.5).
+
+### 5.5 When each field is written
+
+| When | What |
+|---|---|
+| `zoo capture` starts, before a body can arrive | `kind`, `project_manifest`, `sink_version`, `collector_version`, `started_at` |
+| each POST, as it is recorded (§3.5) | one `bodies` entry: `file`, `sha256`, `bytes` |
+| each forward, as it completes (§4.5) | one `forwards` entry |
+| `zoo capture` stops, after both sinks and the Collector have | `ended_at`, and each entry's `content_type` / `content_encoding` |
+
+The declaration is written **first** so that a run stopped the hard way still
+says what it was, and the completion happens **after** the Collector has flushed
+and both sinks are down, so the last `json/NNNN.json` is in `bodies` with its
+headers carried like every other. The completion runs once per capture: `stop()`
+is also what a failed `start()` unwinds through, and a capture that never got as
+far as a labelled manifest is left with nothing written at all.
+
+Both timestamps come from the injected `now` (§3.6) and from nowhere else, so a
+test's manifest carries the values the test chose and `cli.py` stays the one
+place the real clock enters the package.
+
+### 5.6 `zoo verify`
+
+```bash
+zoo verify                                      # the capture root
+zoo verify captures/z4/2026-10-09T12-00-00Z     # one run
+```
+
+`[path]` is a capture root **or one run directory**; a directory holding
+`MANIFEST.json` or a `raw/` is a run. Both are accepted because both are typed:
+globbing two levels down from a run directory would find nothing, say so, and
+exit **zero** — a reassuring pass over a capture nobody checked, which is the
+one failure mode this command exists to prevent (`CLAUDE.md`).
+
+For every run it finds, `zoo verify` reads `MANIFEST.json` and then checks
+**both directions**:
+
+1. every body the manifest lists is on disk, and its sha256 and its length are
+   what the manifest recorded;
+2. every file in the run directory is one the manifest accounts for — a body by
+   its own entry, a `NNNN.headers.json` by the entry of the body beside it, and
+   `MANIFEST.json` by being the manifest.
+
+It exits non-zero, printing one line per problem, on: a digest that differs, a
+length that differs, a listed body that is missing, a **body on disk that the
+manifest does not list**, a headers file with no listed body beside it, and a
+manifest that is absent or unreadable. A manifest it cannot read is a refusal,
+never a pass.
+
+The second direction is why the check walks the **directory** and not only the
+list. A verify that iterated the manifest can only ever confirm what the
+manifest already says; it cannot notice a body nobody recorded, and would report
+a capture with a file in it from somewhere else as verified. A capture is the
+bytes that were recorded, so a file nothing recorded is a problem with the
+capture even when every digest in it agrees.
+
+`zoo verify` prints each run's `kind` as the capture declares it, and `none
+declared` where it declares nothing — a `zoo sink` run (§3) writes bodies and
+digests and no declaration, and inventing one for the line would be inventing
+the one field the audit reads.
+
+`make verify` is `zoo verify` over `captures/`, and `make check` depends on it:
+the immutability claim is worth making only because something checks it on every
+run. A tree with no captures at all is nothing to re-hash and exits zero.
+
+### 5.7 What the manifest is not
+
+It is not frozen (`CLAUDE.md`, "Nothing is frozen"): these field names will
+change while the zoo is pre-release, and `schema_version` is deliberately
+absent because a version on an unfrozen shape is a promise nobody is making
+yet. What is durable is the **bytes** of a capture — and `bodies`' digests are
+how that is checkable.
+
+It is also not a summary, not an index and not an analysis. The audit (§7)
+writes what a capture *means* to a receiver, in its own file, naming the
+repository that owns each finding. The manifest says what arrived, when, how
+big it was and what it hashed to.
 
 ## 6. The replayer — A4
 

@@ -3,6 +3,62 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A3 — the capture is a manifest, immutable
+
+- **`zoo capture` ends by writing the whole `MANIFEST.json`** (`SPEC.md` §5):
+  the pet project's own `MANIFEST.json` copied **verbatim** from a path the
+  operator passes (`--project-manifest`), the zoo's `sink_version`, the pinned
+  `collector_version`, `kind`, `started_at` / `ended_at` from the injected
+  clock, and `bodies` entries carrying `content_type` / `content_encoding`
+  beside A1's `file`, `sha256` and `bytes` -- for `raw/`, for `json/` and for
+  rejected bodies alike. Nothing else: no span counts, no durations, no
+  judgement of a capture (`SPEC.md` §1.4).
+- **`--kind` is required, and is never inferred** (`SPEC.md` §5.2).
+  `recorded` | `real`, no default, nothing derived from the project's own
+  `mode`, the endpoint or the environment: a recorded capture and a real one
+  differ by that declaration alone and the audit reads it as the truth.
+  `zoo capture` refuses the command, and `manifest.label` refuses to write a
+  manifest it cannot label.
+- **The project's manifest is copied, not merged and not validated**
+  (`SPEC.md` §5.3). No field of it is read -- including `mode` -- and if it
+  disagrees with `kind`, both declarations sit in the record. The one thing
+  checked is that the path holds a readable JSON **document**, and a path that
+  is missing, unreadable or not JSON is a refusal **at the start** of the
+  capture, before any bytes are on disk: the alternative is a capture that can
+  only be completed by editing it.
+- **The content headers are carried across, not inspected** (`SPEC.md` §5.4,
+  and §1.1 is amended to say so in place). A1 deliberately left
+  `content_type` / `content_encoding` out because the sink does not look at a
+  content type except to echo it; the values were already verbatim in each
+  body's `NNNN.headers.json`, so the manifest writer copies them from the
+  record at the end of the run. No byte of a body is read to do it, the sink
+  is unchanged, and a header that legally repeats is carried once with
+  `headers.json` still the record of the repeat.
+- **`zoo verify` checks both directions** (`SPEC.md` §5.6): every body the
+  manifest lists is on disk with the digest and the length it recorded, **and
+  every file on disk is one the manifest accounts for**. A body present on
+  disk but absent from the manifest now fails -- A1 left that deliberately
+  unimplemented -- as does a headers file with no listed body beside it. The
+  check walks the **directory** as well as the list, because a check that
+  iterated the manifest can only confirm what the manifest already says.
+- `zoo verify [path]` now accepts **one run directory** as well as a capture
+  root, which is what an operator types after a run. It used to glob two
+  levels down from it, find nothing, say so and exit **zero** -- a reassuring
+  pass over a capture nobody checked. Each run's line also prints the `kind`
+  the capture declares, and `none declared` for a `zoo sink` run that declares
+  nothing.
+- `README.md` gains **"Running a pet project's real run"**: the five commands
+  an operator types, exercised end to end against the real Collector with a
+  real OTLP protobuf export and stopped with `SIGINT` the way the section says
+  to stop it.
+- **A defect the real run surfaced, fixed here** (`SPEC.md` §3.1): the sink's
+  refusal to start in a directory that already holds a capture globbed `*` +
+  its body suffix, and the json sink's bodies are `*.json` -- so it counted
+  `NNNN.headers.json` as a body and refused a re-used run id with "2 body
+  file(s), starting 0001.headers.json". Bodies and headers files are now
+  counted apart and named accurately, and a directory holding only a headers
+  file is still refused: half a capture is a capture to refuse.
+
 ## A2 — the Collector re-encodes beside the raw
 
 - `collector/`: the **stock** OpenTelemetry Collector (contrib), pinned at
