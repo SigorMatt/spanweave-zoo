@@ -1,0 +1,52 @@
+# The acceptance harness. `make check` is THE gate a batch must pass before it
+# counts as done (CONTRIBUTING.md, "The bar"): it wraps the exact toolchain
+# commands plus the invariant gate and the capture re-hash as runnable checks.
+
+.PHONY: check lint types test gates verify install-check clean
+
+check: lint types test gates verify
+	uv run zoo --version
+
+lint:
+	uv run ruff check .
+	uv run ruff format --check .
+
+types:
+	uv run mypy --strict spanweave_zoo
+
+test:
+	uv run pytest
+
+# The invariant gate. Its own target so a failure names the invariant that
+# broke rather than "some test failed": no module under spanweave_zoo/ imports
+# spanweave or spanweave_live except audit.py (CLAUDE.md section 0.6). `check`
+# runs it too, via `test`; this target is how you run it alone, and how CI
+# names it in a log.
+gates:
+	uv run pytest tests/test_gates.py -v
+
+# Re-hash every capture against its manifest. A capture is immutable (CLAUDE.md
+# section 0.6), and that claim is worth making only if something checks it on
+# every run -- so this is a prerequisite of `check` and not an errand someone
+# remembers. With no captures in the tree it says so and exits 0: nothing to
+# re-hash is not a failure. SPEC.md section 5 is the manifest, and A3
+# implements the re-hash; until then a capture found on disk makes this target
+# FAIL rather than pass silently, because reporting an unchecked capture as
+# verified is the one thing this target exists to prevent.
+verify:
+	uv run zoo verify
+
+# Prove that what SHIPS works: builds the sdist and the wheel, installs the
+# wheel into a throwaway venv, and runs `zoo --help` from a working directory
+# outside the repo -- the only gate that can catch a packaging break. It
+# installs NO extras, which is also how A0-A4's independence from `spanweave`
+# and `spanweave_live` is held (pyproject.toml, the `audit` extra).
+#
+# Deliberately not a prerequisite of `check`: it builds a wheel and a venv, and
+# `check` is the fast gate a batch must pass. CI runs both.
+install-check:
+	uv run python -m tests.install_check
+
+clean:
+	rm -rf .mypy_cache .ruff_cache .pytest_cache dist/
+	find . -type d -name __pycache__ -prune -exec rm -rf {} +

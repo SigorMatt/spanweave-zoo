@@ -1,0 +1,125 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spanweave-zoo"
+version = "0.0.1"
+description = "Record what real OTLP exporters send, byte for byte. Pre-release: nothing is frozen."
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["telemetry", "tracing", "opentelemetry", "otlp", "capture"]
+classifiers = [
+    # Pre-release, and saying so in the two places a tool reads: the version
+    # number and this classifier. Nothing here is frozen -- not the CLI, not
+    # the capture layout, not `MANIFEST.json`.
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    # Held equal to the matrix in `.github/workflows/ci.yml`. A harness that
+    # records a stranger's exporter must not narrow the runtime the stranger's
+    # app happens to run on.
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+# ZERO RUNTIME DEPENDENCIES, and not by accident. The sink is `http.server`,
+# the manifest is `json`, the hashes are `hashlib`: a recorder that must be
+# believed byte for byte is better with nothing between it and the socket.
+# `spanweave` and `spanweave_live` are NOT dependencies of this package --
+# they are what it captures for, and the `audit` extra below is the only
+# place they appear (`CLAUDE.md` §0.6).
+dependencies = []
+
+[project.scripts]
+zoo = "spanweave_zoo.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8",
+]
+# A5 ONLY (`SPEC.md` §7). The audit runs both libraries over a capture and
+# writes down what they did with it; every other batch -- the sink, the
+# Collector config, the replayer, `zoo verify` -- works with this extra
+# uninstalled, which is why CI never installs it and `make install-check`
+# installs the bare wheel.
+#
+# Pinned by git sha, not by version range, because an audit finding is a
+# reproduction: "this capture, this command, this result". A floating
+# dependency would make yesterday's finding irreproducible tomorrow, with no
+# commit anywhere to explain the change.
+audit = [
+    "spanweave @ git+https://github.com/SigorMatt/spanweave@fec7da27af517ad8b58ae3ec57827916aae60674",
+    "spanweave-live @ git+https://github.com/SigorMatt/spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d",
+]
+
+[project.urls]
+Homepage = "https://github.com/SigorMatt/spanweave-zoo"
+Issues = "https://github.com/SigorMatt/spanweave-zoo/issues"
+
+[tool.hatch.metadata]
+# The `audit` extra's two entries are direct references, and hatchling refuses
+# to build metadata containing one unless this says so. It is deliberate, not
+# a convenience: a sha is only expressible this way.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+# Ship the library only. `tests/` is development, `captures/` is the record
+# and belongs in the repository rather than in anyone's site-packages.
+#
+# The PEP 561 marker `spanweave_zoo/py.typed` ships because it lives inside
+# the package directory this line names. What holds it shipped is a test, not
+# a declaration: `make install-check` asserts the wheel and the installed
+# distribution both carry it.
+packages = ["spanweave_zoo"]
+
+[tool.hatch.build.targets.sdist]
+# Declared rather than defaulted: hatchling's default sdist is "everything
+# `.gitignore` does not exclude", which also ships untracked scratch lying in
+# the builder's working directory.
+include = [
+    "/spanweave_zoo",
+    "/tests",
+    "/collector",
+    "/.github",
+    "/*.md",
+    "/Makefile",
+    "/pyproject.toml",
+    "/uv.lock",
+]
+# `captures/` is the record, and a record is distributed by `git clone`, not
+# by an sdist that quietly grows to gigabytes.
+exclude = ["/captures"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+# Markdown code blocks in these docs are shell transcripts and illustrative
+# sketches, not library code. `EXPORT-CONTRACT.md` and `ZOO-BRIEFS.md` in
+# particular are the record as handed to the pet projects and are never
+# reformatted by anything (`README.md`, "Provenance").
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ANN", "PTH"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and the harnesses under tests/ are not the library.
+"tests/**" = ["ANN"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+strict = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

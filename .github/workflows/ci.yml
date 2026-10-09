@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# setup-uv resolves its version by fetching a manifest from
+# raw.githubusercontent.com. That fetch is a known intermittent failure
+# (astral-sh/setup-uv#849, #869). Passing github-token authenticates it.
+# The token is provided automatically by Actions -- nothing to create.
+
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        # Held equal to the `Programming Language :: Python` classifiers in
+        # pyproject.toml. A harness that records a stranger's exporter must not
+        # narrow the runtime the stranger's app happens to run on.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # One macOS job running the whole suite. The sink binds a socket and
+        # the captures are files on disk, so "it works" is not a claim one
+        # operating system can make on the other's behalf. One interpreter and
+        # not four, because what is being proved here is the platform.
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.11.25"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      # `--extra dev` and NOT `--extra audit`. The audit extra pins spanweave
+      # and spanweave-live by git sha and is needed by A5 alone; every other
+      # batch must work without them, and a CI that installed them would hide
+      # the day that stopped being true (pyproject.toml, the `audit` extra).
+      - run: uv sync --extra dev --python ${{ matrix.python-version }}
+      # make check wraps the exact toolchain commands (ruff, ruff format, mypy
+      # --strict, pytest) plus the invariant gate and `zoo verify`.
+      - run: make check
+      # make check runs everything under `uv run`, with the source tree on the
+      # path -- so it can only answer questions about the repository. This is
+      # the only gate that builds the distribution, installs the wheel into a
+      # throwaway venv and runs it from outside the repo. It never publishes.
+      - run: make install-check
