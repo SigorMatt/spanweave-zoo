@@ -100,7 +100,7 @@ def install_and_run(wheel: Path) -> None:
 
         # The console script, from outside the repo: what a stranger types.
         helped = run([str(venv / "bin" / "zoo"), "--help"], cwd=outside)
-        for subcommand in ("sink", "verify"):
+        for subcommand in ("sink", "capture", "verify"):
             assert subcommand in helped.stdout, helped.stdout
         versioned = run([str(venv / "bin" / "zoo"), "--version"], cwd=outside)
         print(f"  zoo --version -> {versioned.stdout.strip()}")
@@ -108,6 +108,29 @@ def install_and_run(wheel: Path) -> None:
         # `zoo verify` on a directory that has no captures: exit 0, cleanly.
         verified = run([str(venv / "bin" / "zoo"), "verify"], cwd=outside)
         assert "nothing to re-hash" in verified.stdout, verified.stdout
+
+        # `collector/` is repository data and is NOT in the wheel (above), so
+        # the installed `zoo capture` has no pin to read. It must say so and
+        # exit non-zero rather than start a capture it cannot label
+        # (`SPEC.md` §4.6) -- the shipped artifact's honest refusal, asserted
+        # where it actually ships.
+        refused = subprocess.run(
+            [
+                str(venv / "bin" / "zoo"),
+                "capture",
+                "--project",
+                "z4",
+                "--run-id",
+                "install-check",
+            ],
+            cwd=outside,
+            capture_output=True,
+            text=True,
+        )
+        assert refused.returncode != 0, refused.stdout
+        assert "VERSION" in refused.stderr, refused.stderr
+        assert not (outside / "captures").exists(), "the refusal still wrote something"
+        print("  zoo capture with no collector/ -> refused, wrote nothing")
 
         probed = run([str(python), "-c", PROBE], cwd=outside)
         facts = json.loads(probed.stdout)

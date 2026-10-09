@@ -16,6 +16,12 @@ the `json/` hashes -- is `SPEC.md` §5, added by A3 to this same file and these
 same entries. A3 extends; it does not replace, and it has no second source of
 truth to reconcile.
 
+A2 added the two fields its own behaviour needs and no others (`SPEC.md` §4.5):
+`collector_version`, the pin that re-encoded the capture, and `forwards`, one
+entry per attempted forward to the Collector -- a record of *delivery* beside
+the record of bytes. A2 also brought a second recorder into the same run
+directory, which is why writing this file now goes through one lock per run.
+
 Nothing here parses a body. It hashes bytes and counts them.
 """
 
@@ -23,6 +29,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +39,13 @@ MANIFEST_NAME = "MANIFEST.json"
 
 # The key under which the per-body entries live. A3's fields sit beside it.
 BODIES = "bodies"
+
+# A2's two keys (`SPEC.md` §4.5). `forwards` is one entry per attempted forward
+# and is about *delivery*, not about bytes -- which is why it is a list of its
+# own rather than a field on a `bodies` entry: A1 pinned those to `file`,
+# `sha256` and `bytes`, and `zoo verify`'s re-hash reads only those.
+FORWARDS = "forwards"
+COLLECTOR_VERSION = "collector_version"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +60,54 @@ class BodyEntry:
 
     def as_document(self) -> dict[str, Any]:
         return {"bytes": self.bytes, "file": self.file, "sha256": self.sha256}
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardEntry:
+    """One attempted forward to the Collector (`SPEC.md` §4.4, §4.5).
+
+    Either the Collector's HTTP `status` or the `error` that stopped the
+    forward, never both and never neither. A failed forward loses nothing --
+    the body, its headers and its digest are already recorded -- and is never
+    silent, and this is where it stops being silent.
+    """
+
+    file: str
+    """The forwarded body's path relative to the run directory."""
+
+    status: int | None = None
+    error: str | None = None
+
+    def as_document(self) -> dict[str, Any]:
+        if self.error is not None:
+            return {"error": self.error, "file": self.file}
+        return {"file": self.file, "status": self.status}
+
+    @property
+    def failed(self) -> bool:
+        return self.error is not None or self.status is None or self.status >= 400
+
+
+# One lock per run directory, shared by every recorder writing into it.
+#
+# `zoo capture` runs TWO recorders on one run directory (`SPEC.md` §4.5) -- the
+# raw sink and the json sink -- and they write ONE manifest. A recorder
+# serializes its own writes, but the manifest is shared, so the
+# read-modify-write that appends an entry is serialized here, per run
+# directory, across recorders. The recorder's own lock is always taken first
+# and this one last, so the two can never deadlock.
+_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_LOCK = threading.Lock()
+
+
+def _lock_for(run: Path) -> threading.Lock:
+    key = str(run.resolve())
+    with _LOCKS_LOCK:
+        lock = _LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _LOCKS[key] = lock
+        return lock
 
 
 def digest(data: bytes) -> str:
@@ -86,6 +149,29 @@ def read(run: Path) -> dict[str, Any]:
     return document
 
 
+def update(run: Path, change: Callable[[dict[str, Any]], None]) -> None:
+    """Read, change and rewrite the run's manifest under the run's lock.
+
+    The one way anything here writes `MANIFEST.json`, so that two recorders on
+    one run directory (`SPEC.md` §4.5) cannot interleave a read-modify-write
+    and lose an entry. `change` mutates the document in place and returns
+    nothing; it must not do anything slow, because it runs holding the lock.
+    """
+    path = run / MANIFEST_NAME
+    with _lock_for(run):
+        document: dict[str, Any] = {BODIES: []}
+        if path.exists():
+            document = read(run)
+        change(document)
+        write_json(path, document)
+
+
+def _append(document: dict[str, Any], key: str, entry: dict[str, Any]) -> None:
+    listed: list[Any] = list(document.get(key) or [])
+    listed.append(entry)
+    document[key] = listed
+
+
 def append_body(run: Path, entry: BodyEntry) -> None:
     """Add one body to the run's manifest, creating the file if need be.
 
@@ -93,14 +179,26 @@ def append_body(run: Path, entry: BodyEntry) -> None:
     bodies were recorded -- which is receipt order, the only ordering a capture
     carries (`SPEC.md` §2.2).
     """
-    path = run / MANIFEST_NAME
-    document: dict[str, Any] = {BODIES: []}
-    if path.exists():
-        document = read(run)
-    bodies: list[Any] = list(document[BODIES])
-    bodies.append(entry.as_document())
-    document[BODIES] = bodies
-    write_json(path, document)
+    update(run, lambda document: _append(document, BODIES, entry.as_document()))
+
+
+def append_forward(run: Path, entry: ForwardEntry) -> None:
+    """Add one attempted forward to the run's manifest (`SPEC.md` §4.5).
+
+    In the order the forwards *completed*, which is receipt order unless two
+    exports were in flight at once.
+    """
+    update(run, lambda document: _append(document, FORWARDS, entry.as_document()))
+
+
+def set_collector_version(run: Path, version: str) -> None:
+    """Record which Collector re-encoded this capture (`SPEC.md` §4.5).
+
+    The pin from `collector/VERSION`, written before the first body arrives.
+    `zoo capture` refuses to start if the binary does not report that version,
+    so this is never a guess about what ran.
+    """
+    update(run, lambda document: document.__setitem__(COLLECTOR_VERSION, version))
 
 
 def problems(run: Path) -> list[str]:

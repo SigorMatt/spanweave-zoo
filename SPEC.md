@@ -6,8 +6,10 @@ section marked as a later batch's is deliberately empty rather than guessed at.
 
 Status: §1 and §2 are specified (A0); §3 is specified and implemented (A1,
 which also wrote the one part of §5 that `CLAUDE.md` §0.6 already required --
-see §3.5). §§4-7 are headings naming what the batches after A1 will fill;
-nothing in them is implemented today.
+see §3.5); §4 is specified and implemented (A2: the Collector, the tee and
+`zoo capture`, which also writes the two manifest fields its own behaviour
+needs -- see §4.5). §§5-7 are headings naming what the batches after A2 will
+fill; nothing in them is implemented today.
 
 ---
 
@@ -119,6 +121,10 @@ the same `NNNN`, so the two forms of one export are named by one number. It is
 a convenience made by a standards-conformant tool and it is kept **beside** the
 raw bytes, never instead of them: if the two ever disagree, the raw bytes are
 what the exporter sent.
+
+The shared `NNNN` is a convenience and not a promise: `json/NNNN.json` is the
+NNNN-th POST the *Collector* made, and a batch processor may coalesce or split.
+§4.7 says what that means and why nothing is renumbered to hide it.
 
 A capture may have no `json/` at all — when the Collector did not run, or could
 not read a body. That is a fact about the capture, recorded in the manifest.
@@ -282,11 +288,288 @@ guess one it was not: decoding a `Transfer-Encoding` is decoding. What it could
 see is what the capture says it saw, and the header that said so is in the
 record.
 
-## 4. The Collector — A2
+## 4. The Collector, and the tee
 
-`collector/config.yaml` and `zoo capture`: the stock OpenTelemetry Collector at
-a pinned version, re-encoding each body to JSON beside the raw bytes, fed by a
-byte-identical forward from the raw sink. Not specified yet.
+The sink records bytes (§3). The Collector makes those same bytes readable as
+JSON **without the zoo parsing one of them**, and its output is kept *beside*
+the record, never instead of it (`CLAUDE.md` §0.6 rule 4). It is the one
+component here that parses, because that is what it is (§1.1).
+
+```
+   the pet project                 zoo capture
+   ---------------                 -----------------------------------------
+   OTLP/HTTP exporter  --POST-->   raw sink        :4318   writes raw/NNNN
+                                       |  forward (byte-identical)
+                                       v
+                                   Collector       :4320   re-encodes to JSON
+                                       |  otlp_http exporter, encoding: json
+                                       v
+                                   json sink       :4319   writes json/NNNN
+```
+
+### 4.1 Stock, pinned, checked in — and not committed
+
+`collector/` holds three files and no binary:
+
+| File | What it is |
+|---|---|
+| `collector/VERSION` | the pinned release, one line, no leading `v` |
+| `collector/SHA256SUMS` | the release's own sha256 of each platform's tarball |
+| `collector/config.yaml` | the config the Collector runs, verbatim |
+
+`make collector` downloads
+`otelcol-contrib_<VERSION>_<os>_<arch>.tar.gz` from the
+`open-telemetry/opentelemetry-collector-releases` release of exactly that
+version, **checks its sha256 against the matching line in
+`collector/SHA256SUMS`**, refuses to unpack on a mismatch or on a platform the
+file does not pin, and extracts `collector/otelcol-contrib`. The digests are
+the release's own: each asset is published with a `.sha256` beside it, and
+those are the bytes copied here.
+
+The binary is about 100 MB and is **gitignored**. The version and the digest
+are the record; the bytes are a download. Nothing in `make check` fetches it,
+and `make collector` is never a prerequisite of a gate: a build that reaches
+the network to decide whether it passes is a build that fails when GitHub does.
+
+The Collector is **stock**. No custom build, no components beyond those named
+in §4.2, and no patch. A zoo that shipped its own Collector would be back to
+re-encoding bytes with code nobody else has reviewed.
+
+### 4.2 `collector/config.yaml`
+
+One `otlp` receiver, the `batch` processor **at its defaults**, one
+`otlp_http` exporter with `encoding: json`, one traces pipeline. Each endpoint
+is written as `${env:NAME:-default}` — the stock confmap environment-variable
+form — so that the file that is checked in is also the file that runs, with the
+ports supplied rather than edited:
+
+| Variable | Default | What it is |
+|---|---|---|
+| `ZOO_COLLECTOR_OTLP_GRPC` | `127.0.0.1:4317` | the receiver's gRPC endpoint |
+| `ZOO_COLLECTOR_OTLP_HTTP` | `127.0.0.1:4318` | the receiver's HTTP endpoint |
+| `ZOO_JSON_SINK` | `http://127.0.0.1:4319` | where the JSON goes |
+
+The defaults are the canonical OTLP pair — 4317 and 4318 — which is what the
+config means standing alone: a project pointed straight at the Collector,
+without a zoo in front of it. Under `zoo capture` the defaults do not apply to
+the HTTP receiver, because **4318 belongs to the exporter**: every brief gave
+the pet projects `$ENDPOINT/v1/traces` on 4318, the raw sink holds that port,
+and the Collector sits behind the sink on a third port (§4.4). The app's port
+is the one thing the zoo does not move.
+
+Two settings are not defaults and are here for a reason:
+
+- **`compression: none`** on the exporter. `otlp_http` compresses with gzip by
+  default; the sink never decompresses anything (§1.1), so a compressed
+  forward would make `json/NNNN.json` a gzip member rather than the JSON §2.4
+  promises. The re-encoding must arrive readable or it is not a re-encoding.
+- **`service.telemetry.metrics.level: none`** and `logs.level: warn`. The
+  Collector's own internal metrics endpoint is a fourth listening port the zoo
+  never reads, and a recorder should not open one. Its own telemetry is not
+  part of a capture.
+
+The `WORKPLAN.md` A2 row names this exporter `otlphttp`. At the pinned version
+that spelling is a **deprecated alias** and the Collector says so on every
+start; the config uses the current name, `otlp_http`, for the same component.
+
+### 4.3 The tee: write first, then forward, byte for byte
+
+The raw sink forwards every body it **accepts** (§3.2 — a POST to
+`/v1/traces`) to the Collector, and the forward is **byte-identical**:
+
+- the body is the bytes on disk, the same object that was written as
+  `raw/NNNN.body`. Still gzipped if it arrived gzipped, still protobuf if it
+  arrived as protobuf. The sink does not decompress, decode, re-encode or
+  re-frame it to forward it, exactly as it does not to record it;
+- the headers are **every header as received, in order, repeats included**,
+  with two exceptions that name the connection rather than the payload:
+  `Host` (which names the destination, and the destination has changed) and
+  the hop-by-hop headers of RFC 9110 §7.6.1 — `Connection`, `Keep-Alive`,
+  `Transfer-Encoding`, `TE`, `Upgrade`, `Proxy-Authorization`,
+  `Proxy-Authenticate`. `Content-Type`, `Content-Encoding`, `Content-Length`
+  and `User-Agent` go through untouched, because they are what the Collector
+  needs in order to read the bytes the exporter actually sent.
+
+**The body is on disk before the forward is attempted.** That order is the
+whole point: the record is made first and the convenience second, so there is
+no arrangement of failures in which the zoo forwarded something it did not
+record.
+
+A POST the sink **rejects** (§3.4, any other path) is recorded and *not*
+forwarded. Forwarding it would invent traffic the exporter never aimed at the
+Collector, and the Collector's answer to it would be a fact about the zoo
+rather than about the capture.
+
+The answer to the exporter is still §3.3's: `200`, empty body, its own content
+type echoed. It does not depend on the bytes and it does not depend on the
+forward. The sink's `200` means "recorded"; it has never meant "understood",
+and it must not start meaning "re-encoded".
+
+### 4.4 A forward that fails
+
+The Collector is a separate process and may be absent, starting, stopped or
+wedged. A failed forward **loses nothing and is never silent** (`CLAUDE.md`
+§0.6):
+
+- the body, its headers and its digest are already recorded, and are not
+  touched;
+- the failure is written into `MANIFEST.json` as a `forwards` entry (§4.5);
+- it is printed, naming the body and the error;
+- `zoo capture` exits **non-zero** when any forward failed, so a run whose
+  `json/` is incomplete cannot be mistaken for one that is complete.
+
+The forward has a timeout (5 seconds by default, `--forward-timeout`). A
+Collector that never answers must not become an exporter that never gets an
+answer, and a recorder that blocks the system it is recording has changed the
+thing it was supposed to observe.
+
+### 4.5 One run directory, one manifest, two sinks
+
+`zoo capture` runs **two recorders in one process** on one run directory
+(`SPEC.md` §2): the raw sink on `raw/` and the json sink on `json/`. They write
+**one `MANIFEST.json`**, in the run directory, which is the file A3 extends and
+`zoo verify` re-hashes. There is one manifest per run and there always was; the
+two recorders share it.
+
+Three things follow, and each is a decision rather than an accident:
+
+1. **Different `--out` directories.** `raw/` and `json/`. Two recorders on one
+   directory would share a counter and a rejected directory and would
+   overwrite each other's bodies.
+2. **A lock on the manifest, not just on each recorder.** A recorder
+   serializes its own writes (§3.2); the manifest is shared, so the
+   read-modify-write that appends an entry is serialized **per run
+   directory**, across recorders, in `manifest.py`. The recorder's own lock is
+   always taken first and the manifest's last, so the two can never deadlock.
+3. **A rejected directory per sink.** The raw sink keeps `rejected/` (§3.4).
+   The json sink, whose only caller is our own Collector with our own config,
+   writes to `rejected-json/` — so a misdirected POST is still recorded (§3.4)
+   and the two counters cannot collide. A POST in `rejected-json/` means the
+   zoo's own exporter endpoint is wrong, which is worth finding out.
+
+The json sink writes `json/NNNN.json` rather than `NNNN.body`, because §2.4
+names that file. Its `NNNN.headers.json` is written beside it like any other
+request's: the Collector is an HTTP client like any other and the sink does not
+keep less of what one caller sent than of another's. A **rejected** body keeps
+`.body` in either sink (§3.4): it is not a re-encoding of anything, it is bytes
+aimed at the wrong path, and naming it `.json` would be a claim about its
+contents — which is the one kind of claim the sink does not make.
+
+`zoo capture` adds two fields to the manifest, and no more:
+
+```json
+{"bodies": [...],
+ "collector_version": "0.162.0",
+ "forwards": [{"file": "raw/0001.body", "status": 200},
+              {"file": "raw/0002.body",
+               "error": "ConnectionRefusedError: [Errno 111] ..."}]}
+```
+
+- **`collector_version`** is `collector/VERSION` — the pin, not a guess. It is
+  written before the first body arrives. `zoo capture` runs the binary's
+  `--version` and **refuses to start** if it does not match the pin (§4.6): a
+  capture labelled with a version that did not re-encode it would be worse
+  than one labelled with nothing.
+- **`forwards`** is one entry per attempted forward, in the order the forwards
+  *completed* (which is receipt order unless two exports were in flight),
+  carrying either the Collector's HTTP `status` or the `error` that stopped it.
+  It is about **delivery**, not about bytes, which is why it is a list of its
+  own and not a field on a `bodies` entry: A1 pinned those to `file`, `sha256`
+  and `bytes`, and `zoo verify`'s re-hash reads only those (§3.5).
+
+Everything else in `MANIFEST.json` is still §5's, and A3 extends these same
+entries rather than replacing them.
+
+### 4.6 `zoo capture`
+
+```bash
+zoo capture --project z4 --run-id 2026-10-09T12-00-00Z
+```
+
+It creates `captures/<project>/<run-id>/`, writes `collector_version`, starts
+the json sink, starts the Collector, waits for the Collector's receiver to
+accept a connection, starts the raw sink, and serves until interrupted. Then it
+stops the raw sink, stops the Collector, stops the json sink, prints what it
+recorded and exits non-zero if any forward failed (§4.4).
+
+**`SIGINT` and `SIGTERM` both end a run**, through a handler that only asks it
+to stop; the shutdown itself happens on the main thread, which is where the
+Collector gets stopped rather than orphaned holding its port. This is installed
+rather than relied upon, and the caller waits in short hops rather than once
+and forever: a capture has three threads blocked in `select`, the kernel may
+hand the signal to any of them, and a main thread parked in an untimed wait
+never runs the Python handler that would have noticed. A run that cannot be
+stopped with Ctrl-C is not a detail — it is a Collector left holding 4320 and
+an operator who has to find it.
+
+| Option | Default | |
+|---|---|---|
+| `--project` | required | `z1` … `z6`, as `ZOO-BRIEFS.md` names it (§2.1) |
+| `--run-id` | required | one path segment, not starting with a dot (§2.1) |
+| `--captures` | `captures` | the capture root |
+| `--port` | `4318` | the raw sink: **the app's port** |
+| `--json-port` | `4319` | the json sink, where the Collector exports |
+| `--collector-port` | `4320` | the Collector's OTLP/HTTP receiver |
+| `--collector-grpc-port` | `4317` | its gRPC receiver, which the tee never feeds |
+| `--host` | `127.0.0.1` | what all three bind |
+| `--collector-dir` | `collector` | where `VERSION`, `SHA256SUMS` and `config.yaml` are |
+| `--forward-timeout` | `5.0` | seconds (§4.4) |
+
+It **refuses to start**, writing nothing, when: the run directory already holds
+a body (§3.1, both sinks); `--collector-dir` has no `VERSION` or no
+`config.yaml`; the binary is absent — naming `make collector`; the binary's
+`--version` does not match the pin; or the Collector does not accept a
+connection within the readiness budget. A capture that was never re-encoded is
+a fact worth refusing for, because the operator can still fix it; a capture
+*silently* missing its `json/` is a fact discovered a week later.
+
+Only the HTTP receiver is fed. An exporter that speaks OTLP/gRPC reaches the
+Collector directly or not at all, and the raw sink — which is HTTP — never sees
+it, so it is never captured. Every brief gave the projects OTLP/HTTP; a gRPC
+export is an unrecorded export, and that is stated here rather than discovered
+from an empty `raw/`.
+
+### 4.7 `raw/NNNN` and `json/NNNN` are not a promise
+
+§2.4 says the two forms of one export are named by one number, and under one
+export at a time they are. They are **not guaranteed** to be, and the reason is
+in this section's own config: the `batch` processor at defaults may coalesce
+two exports into one JSON POST, or split one large export into several. The
+Collector may also retry, which sends the same spans twice.
+
+So: `json/NNNN.json` is the **NNNN-th POST the Collector made**, and
+`raw/NNNN.body` is the NNNN-th POST the exporter made. The manifest records
+both sequences and `zoo verify` re-hashes both. The pairing is a convenience
+that holds for the common case, and the raw bytes are the record either way
+(§2.4). The zoo does not renumber, split or merge anything to make the two
+columns line up — that would be improving the capture.
+
+### 4.8 The seams §4 introduces
+
+| Seam | What it is | Why |
+|---|---|---|
+| `forward` | called with the method, path, headers and body once the body is on disk; returns the forwarded request's HTTP status or raises | the only outbound socket in the package. A test drives the tee with a forward that records what it was handed, so the tee's mechanics need no Collector |
+| `launch` | called with the resolved config, environment and ports; returns a handle that can be stopped | starting a process is touching the world. A test passes a launcher that starts nothing and reports the pinned version |
+| `sleep` | the readiness wait between connection attempts, a bounded number of them | no module under `spanweave_zoo/` reads a clock or sleeps on its own (`CLAUDE.md`); `cli.py` passes the one real `sleep`, as it passes the one real `now` |
+| `after_forward` | called with each forward's outcome once it is in the manifest | one printed line per forward, and the way a test observes a forward without polling a file |
+
+### 4.9 The Collector in CI, and locally
+
+The integration test — a hand-built OTLP protobuf export through the tee into
+the real binary, asserting `json/0001.json` is OTLP JSON carrying **the same
+trace and span ids** — runs when `collector/otelcol-contrib` is present and is
+**skipped when it is absent**, which is how it behaves in CI: nothing in CI
+downloads a 100 MB binary. `make check` is therefore green both with the binary
+and without it, and on a developer machine that has run `make collector` it is
+green having actually run the Collector.
+
+What holds in CI without the binary: the config and the pin are asserted as
+text, the tee's mechanics are asserted against the `forward` seam, and
+`collector_version` in the manifest is asserted equal to `collector/VERSION`
+through the `launch` seam. What only a machine with the binary proves is that a
+real protobuf export comes back as JSON with the same ids — and a test that
+quietly passed without proving it would be the kind of reassuring pass this
+repository exists to refuse (`CLAUDE.md`). It skips loudly instead.
 
 ## 5. The manifest, and verification — A3
 

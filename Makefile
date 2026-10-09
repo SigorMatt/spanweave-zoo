@@ -2,7 +2,7 @@
 # counts as done (CONTRIBUTING.md, "The bar"): it wraps the exact toolchain
 # commands plus the invariant gate and the capture re-hash as runnable checks.
 
-.PHONY: check lint types test gates verify install-check clean
+.PHONY: check lint types test gates verify collector install-check clean
 
 check: lint types test gates verify
 	uv run zoo --version
@@ -35,6 +35,19 @@ gates:
 # verified is the one thing this target exists to prevent.
 verify:
 	uv run zoo verify
+
+# Fetch the pinned stock OpenTelemetry Collector and check its sha256 against
+# the release's own digest (SPEC.md section 4.1). The version lives in
+# collector/VERSION and the digests in collector/SHA256SUMS; the ~100MB binary
+# is gitignored, because the pin is the record and the bytes are a download.
+#
+# Deliberately NOT a prerequisite of anything. `make check` is green with the
+# binary and without it: the integration test that runs the real Collector is
+# skipped when it is absent, which is how it behaves in CI (SPEC.md section
+# 4.9). A gate that reaches the network to decide whether it passes is a gate
+# that fails when GitHub does.
+collector:
+	uv run python collector/fetch.py
 
 # Prove that what SHIPS works: builds the sdist and the wheel, installs the
 # wheel into a throwaway venv, and runs `zoo --help` from a working directory

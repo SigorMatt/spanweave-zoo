@@ -1,0 +1,65 @@
+# The stock OpenTelemetry Collector's config, verbatim (`SPEC.md` §4.2).
+#
+# This is the whole of the Collector the zoo runs: one `otlp` receiver, the
+# `batch` processor at its defaults, one `otlp_http` exporter that re-encodes to
+# JSON, one traces pipeline. No custom build, no components beyond these, no
+# patch -- a zoo that shipped its own Collector would be back to re-encoding a
+# stranger's bytes with code nobody else has reviewed (`CLAUDE.md` §0.6 rule 4).
+#
+# Every endpoint is a `${env:NAME:-default}`, the stock confmap form, so that
+# the file checked in is the file that runs and the ports are supplied rather
+# than edited. The defaults are the canonical OTLP pair, 4317 and 4318, which is
+# what this config means standing alone: an exporter pointed straight at the
+# Collector with no zoo in front of it. Under `zoo capture` the HTTP default
+# does NOT apply, because 4318 belongs to the exporter -- every brief gave the
+# pet projects `$ENDPOINT/v1/traces` there, the raw sink holds that port, and
+# the Collector sits behind the sink on a third one (`SPEC.md` §4.4, §4.6).
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        # Never fed by the tee: the raw sink speaks HTTP, so a gRPC export
+        # reaches the Collector directly or not at all and is not captured
+        # (`SPEC.md` §4.6). It is declared because the stock OTLP receiver is
+        # both protocols and this config is also run standing alone.
+        endpoint: ${env:ZOO_COLLECTOR_OTLP_GRPC:-127.0.0.1:4317}
+      http:
+        endpoint: ${env:ZOO_COLLECTOR_OTLP_HTTP:-127.0.0.1:4318}
+
+processors:
+  # At its defaults, and named here only because a pipeline must list what it
+  # runs. The defaults are what make `raw/NNNN` and `json/NNNN` a convenience
+  # rather than a promise: a batch may coalesce two exports or split one
+  # (`SPEC.md` §4.7). Nothing is renumbered to hide that.
+  batch: {}
+
+exporters:
+  # `WORKPLAN.md`'s A2 row calls this `otlphttp`. At the pinned version that
+  # spelling is a deprecated alias the Collector warns about on every start;
+  # `otlp_http` is the current name for the same component (`SPEC.md` §4.2).
+  otlp_http:
+    endpoint: ${env:ZOO_JSON_SINK:-http://127.0.0.1:4319}
+    # The whole reason the Collector is here.
+    encoding: json
+    # Not a default. `otlp_http` gzips by default, and the sink never
+    # decompresses anything (`SPEC.md` §1.1) -- a compressed forward would make
+    # `json/NNNN.json` a gzip member rather than the JSON §2.4 promises. The
+    # re-encoding must arrive readable or it is not a re-encoding.
+    compression: none
+
+service:
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      # Not a default either. The Collector's internal metrics endpoint is a
+      # fourth listening port the zoo never reads, and a recorder holding a
+      # stranger's telemetry should not open one. Its own telemetry is not part
+      # of a capture.
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http]

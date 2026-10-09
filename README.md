@@ -29,12 +29,14 @@ are all unfrozen and will change. The one thing meant to be durable is the
 | | |
 |---|---|
 | `zoo sink` | records every POST's bytes and headers, and parses nothing |
+| `zoo capture` | the tee: the raw sink, the stock Collector behind it, the json sink |
 | `zoo verify` | re-hashes every recorded body against the manifest's sha256 |
-| `SPEC.md` §1, §2, §3 | the non-goals, the capture layout, and the sink |
-| `SPEC.md` §§4-7 | headings only: the Collector, the manifest, the replayer, the audit |
+| `collector/` | the pinned Collector's version, digests and config -- `make collector` fetches the binary |
+| `SPEC.md` §1-§4 | the non-goals, the capture layout, the sink, the Collector and the tee |
+| `SPEC.md` §§5-7 | headings only: the manifest, the replayer, the audit |
 
-The subcommands those later sections name (`capture`, `replay`, `audit`) are
-not implemented and are not stubbed.
+The subcommands those later sections name (`replay`, `audit`) are not
+implemented and are not stubbed.
 
 ```bash
 zoo sink --port 4318 --out captures/z4/2026-10-09T12-00-00Z/raw
@@ -47,6 +49,28 @@ any other path is answered `404` and recorded anyway, under `rejected/`: an
 exporter aimed at the wrong endpoint is exactly the kind of fact this
 repository exists to hold. The sink never decodes, decompresses or parses, and
 its `200` means "recorded", never "understood" (`SPEC.md` §3).
+
+### The tee
+
+```bash
+make collector                                   # fetch the pinned binary, sha256 checked
+zoo capture --project z4 --run-id 2026-10-09T12-00-00Z
+```
+
+One run, three listeners: the **raw sink on 4318** -- the port every pet
+project was given -- the stock **OpenTelemetry Collector** behind it, and a
+**json sink on 4319** where the Collector's JSON re-encoding lands. The raw
+sink writes the body to disk and *then* forwards the same bytes, unchanged, to
+the Collector: the record is made first and the convenience second. If the
+Collector is down, the capture is still a capture and `MANIFEST.json` says
+which bodies never reached it (`SPEC.md` §4).
+
+The Collector is **stock**, pinned in `collector/VERSION`, with its sha256 in
+`collector/SHA256SUMS` and its config checked in at `collector/config.yaml`.
+`make collector` downloads exactly that release and refuses to unpack anything
+else; the ~100 MB binary is gitignored, because the pin is the record and the
+bytes are a download. `zoo capture` refuses to start if the binary reports a
+version that is not the pin.
 
 `zoo verify` exits 0 on a tree with no captures, re-hashes every body a run's
 `MANIFEST.json` lists, and **fails** both on a body whose bytes have changed
@@ -63,7 +87,14 @@ uv sync --extra dev        # ruff, mypy, pytest -- and nothing else
 make check                 # THE gate: lint, mypy --strict, pytest, the gate, zoo verify
 make verify                # re-hash every capture on its own
 make install-check         # build the wheel, install it, run `zoo --help` from outside the repo
+make collector             # fetch the pinned Collector (not a prerequisite of anything)
 ```
+
+`make check` is green **with and without** `collector/otelcol-contrib` on
+disk. The one test that runs the real Collector -- a protobuf export through
+the tee, asserted to come back as JSON with the same span ids -- is skipped
+when the binary is absent, which is how it behaves in CI: nothing in CI
+downloads 100 MB. It skips loudly rather than passing quietly (`SPEC.md` §4.9).
 
 `make check` never installs the `audit` extra, and neither does CI. That extra
 pins `spanweave` and `spanweave-live` by git sha and is needed by the audit
@@ -103,6 +134,7 @@ checked.
 captures/<project>/<run-id>/raw/NNNN.body          the bytes as received
 captures/<project>/<run-id>/raw/NNNN.headers.json  the request, verbatim
 captures/<project>/<run-id>/json/NNNN.json         the Collector's re-encoding
+captures/<project>/<run-id>/rejected/NNNN.body     a POST aimed at another path
 captures/<project>/<run-id>/MANIFEST.json          what this capture is, and its hashes
 ```
 

@@ -3,6 +3,95 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A2 — the Collector re-encodes beside the raw
+
+- `collector/`: the **stock** OpenTelemetry Collector (contrib), pinned at
+  **0.162.0** in `collector/VERSION`, with the release's own sha256 for each
+  platform in `collector/SHA256SUMS` and its config checked in at
+  `collector/config.yaml` (`SPEC.md` §4.1, §4.2). `make collector` downloads
+  exactly that release, **refuses to unpack anything whose digest is not the
+  pinned one** -- or a platform with no line at all -- and extracts the
+  binary, which is **gitignored**: the pin is the record, the bytes are a
+  download. Nothing in `make check` fetches it.
+- The config is one `otlp` receiver, `batch` at its defaults, one `otlp_http`
+  exporter with `encoding: json`, one traces pipeline, and no components
+  beyond those. Its endpoints are `${env:NAME:-default}`, the stock confmap
+  form, so **the file checked in is the file that runs** and the ports are
+  supplied rather than edited. Two settings are not defaults and say why in
+  place: `compression: none` (the sink never decompresses, so a gzipped
+  re-encoding would make `json/NNNN.json` a gzip member rather than JSON) and
+  `service.telemetry.metrics.level: none` (a recorder should not open a fourth
+  listening port it never reads). The A2 row's `otlphttp` is a deprecated
+  alias at this version; `otlp_http` is the same component's current name.
+- `zoo capture --project z4 --run-id <id>` (`SPEC.md` §4.6): **two recorders
+  in one process on one run directory** -- the raw sink on **4318**, the port
+  every brief gave the pet projects, and the json sink on **4319** where the
+  Collector exports -- with the Collector itself behind the raw sink on a
+  third port. Start order is json sink, Collector, raw sink; stop order is the
+  reverse, so the Collector's last batch has somewhere to flush.
+- **The tee** (`SPEC.md` §4.3): the raw sink writes the body, its headers and
+  its digest to disk and **then** forwards the same bytes to the Collector.
+  Byte-identical -- still gzipped if it arrived gzipped, still protobuf if it
+  arrived as protobuf -- and header-identical, in order and with repeats,
+  minus only `Host` and the hop-by-hop headers of RFC 9110 §7.6.1, which name
+  the connection rather than the payload. A **rejected** POST (`SPEC.md` §3.4)
+  is recorded and *not* forwarded: forwarding it would invent traffic the
+  exporter never aimed at the Collector. The answer to the exporter is still
+  `200`, empty, its own content type echoed -- it does not depend on the bytes
+  and it does not depend on the forward.
+- **A forward that fails loses nothing and is never silent** (`SPEC.md` §4.4):
+  the body is already recorded and is untouched, the failure is written into
+  `MANIFEST.json` as a `forwards` entry, it is printed naming the body, and
+  `zoo capture` exits non-zero -- so a run whose `json/` is incomplete cannot
+  be mistaken for one that is complete.
+- **One manifest, two sinks** (`SPEC.md` §4.5), which is what A3 inherits:
+  one `MANIFEST.json` per run directory carrying `bodies` for raw *and* json,
+  written under **one lock per run directory** so two recorders cannot
+  interleave a read-modify-write. The two sinks get different `--out`
+  directories and different rejected directories (`rejected/` and
+  `rejected-json/`), because two recorders on one directory would share a
+  counter and overwrite each other. A2 added exactly two manifest fields:
+  `collector_version` (the pin, written before the first body) and `forwards`
+  (delivery, not bytes -- so A1's three-key `bodies` entries are untouched).
+- Refusals rather than reassurance (`SPEC.md` §4.6): no `VERSION` or no
+  `config.yaml`; no binary, naming `make collector`; a binary whose
+  `--version` is not the pin; a run directory that already holds a body, in
+  either sink; a `--run-id` that is not one path segment; a Collector that
+  does not accept a connection within the readiness budget. `make
+  install-check` asserts the last of these on the **shipped** wheel, where
+  `collector/` is absent by design.
+- **`SIGINT` and `SIGTERM` end a run cleanly** (`SPEC.md` §4.6), through a
+  handler that only asks it to stop, with the shutdown on the main thread.
+  Found by running the real thing rather than by reasoning about it: a capture
+  has three threads blocked in `select`, the kernel may deliver the signal to
+  any of them, and a main thread parked in an *untimed* wait never runs the
+  Python handler -- so Ctrl-C did nothing and the Collector stayed up holding
+  its port. The caller now waits in short hops, as
+  `socketserver.serve_forever` does and for the same reason.
+- `raw/NNNN` and `json/NNNN` are documented as a **convenience, not a
+  promise** (`SPEC.md` §4.7): the batch processor may coalesce or split, so
+  `json/NNNN.json` is the NNNN-th POST the *Collector* made. Nothing is
+  renumbered, merged or split to make the columns line up.
+- Seams, injected and named in `SPEC.md` §4.8: `forward`, `launch`, `sleep`
+  (the Collector's readiness wait -- a bounded number of connection attempts,
+  never a clock read) and `after_forward`. `cli.py` is still the only module
+  that reads the world, and now holds the one real `sleep` beside the one real
+  `now`.
+- Thirty-eight new tests. The tee's mechanics run everywhere, against the
+  `forward` seam, including the degenerate cases: a Collector that refuses the
+  connection, one that answers `503`, a rejected POST that is not forwarded,
+  two rejected directories that must not collide. The **real Collector**
+  integration test -- hand-built OTLP protobuf through the tee, asserted to
+  come back as `json/0001.json` with **the same trace and span ids**, plus a
+  gzipped second export -- runs when `collector/otelcol-contrib` is present
+  and is **skipped when it is absent**, so `make check` is green both ways and
+  CI never downloads 100 MB. It skips loudly rather than passing quietly.
+  There is no protobuf library here and there is not going to be one:
+  `tests/otlp.py` encodes the export by hand, field number by field number.
+  Mutation shown caught: a tee that forwards a decompressed body fails
+  `test_the_forwarded_body_is_the_bytes_that_arrived`, and one that forwards
+  before writing fails `test_the_body_is_on_disk_before_the_forward_is_attempted`.
+
 ## A1 — the sink records bytes, and nothing else
 
 - `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` (`SPEC.md` §3),

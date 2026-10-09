@@ -19,6 +19,13 @@ Every point where this touches the world is a seam the caller passes in
 socket, and `before_record` / `after_record` so a test can hold two POSTs in
 flight at a chosen point rather than sleeping and hoping. Nothing in this
 module reads a clock, sleeps, or draws a random number.
+
+A2 added one more seam and no new taste (`SPEC.md` §4.3): `forward`, which the
+recorder calls with the body **once the body is on disk**, so the Collector can
+re-encode the same bytes to JSON beside the record. The order is the point --
+the record is made first and the convenience second -- and a forward that fails
+is written into the manifest rather than swallowed (§4.4). The forward is still
+not a decode: it hands on the bytes and the headers it was given.
 """
 
 from __future__ import annotations
@@ -38,8 +45,20 @@ TRACES_PATH = "/v1/traces"
 # Where a POST to any other path is recorded, beside `raw/` (`SPEC.md` §3.4).
 REJECTED_DIR = "rejected"
 
+# The json sink's own, so that two recorders on one run directory cannot share
+# a counter and overwrite each other (`SPEC.md` §4.5). A body in here means the
+# zoo's own exporter endpoint is wrong, which is worth finding out.
+REJECTED_JSON_DIR = "rejected-json"
+
 BODY_SUFFIX = ".body"
+# The json sink's bodies are `json/NNNN.json`, because `SPEC.md` §2.4 names
+# that file: the same number, the other form of one export.
+JSON_SUFFIX = ".json"
 HEADERS_SUFFIX = ".headers.json"
+
+# (method, path, headers as received, body) -> the forwarded request's status.
+# Raises on a forward that did not happen. `SPEC.md` §4.8.
+Forward = Callable[[str, str, Sequence[tuple[str, str]], bytes], int]
 
 
 class CaptureExists(Exception):
@@ -66,20 +85,35 @@ class Recorder:
         raw: Path,
         *,
         now: Callable[[], str],
+        rejected: Path | None = None,
+        body_suffix: str = BODY_SUFFIX,
+        forward: Forward | None = None,
         before_record: Callable[[bytes], None] | None = None,
         after_record: Callable[[manifest.BodyEntry], None] | None = None,
+        after_forward: Callable[[manifest.ForwardEntry], None] | None = None,
     ) -> None:
         self.raw = raw
         self.run = raw.parent
-        self.rejected = self.run / REJECTED_DIR
+        # `rejected` is a parameter because `zoo capture` runs two recorders on
+        # one run directory (`SPEC.md` §4.5): the raw sink keeps `rejected/`,
+        # the json sink is given `rejected-json/`, and the two counters cannot
+        # collide. One recorder, as `zoo sink` runs it, keeps A1's default.
+        self.rejected = rejected if rejected is not None else self.run / REJECTED_DIR
+        self.body_suffix = body_suffix
         self._now = now
+        self._forward = forward
         self._before_record = before_record
         self._after_record = after_record
+        self._after_forward = after_forward
         self._lock = threading.Lock()
         self._counters: dict[Path, int] = {self.raw: 0, self.rejected: 0}
+        self.forwards: list[manifest.ForwardEntry] = []
 
-        for directory in (self.raw, self.rejected):
-            existing = sorted(directory.glob("*" + BODY_SUFFIX))
+        for directory, suffix in (
+            (self.raw, body_suffix),
+            (self.rejected, BODY_SUFFIX),
+        ):
+            existing = sorted(directory.glob("*" + suffix))
             if existing:
                 raise CaptureExists(
                     f"{directory} already holds {len(existing)} body file(s), "
@@ -111,12 +145,17 @@ class Recorder:
             self._before_record(body)
 
         directory = self.raw if accepted else self.rejected
+        # A rejected body keeps `.body` whichever sink took it (`SPEC.md` §3.4):
+        # it is not a re-encoding of anything, it is bytes aimed at the wrong
+        # path, and naming it `.json` would be a claim about its contents.
+        suffix = self.body_suffix if accepted else BODY_SUFFIX
         with self._lock:
             number = self._counters[directory] + 1
             self._counters[directory] = number
             stem = f"{number:04d}"
             directory.mkdir(parents=True, exist_ok=True)
-            (directory / (stem + BODY_SUFFIX)).write_bytes(body)
+            body_file = directory / (stem + suffix)
+            body_file.write_bytes(body)
             manifest.write_json(
                 directory / (stem + HEADERS_SUFFIX),
                 {
@@ -127,7 +166,6 @@ class Recorder:
                     "received_at": self._now(),
                 },
             )
-            body_file = directory / (stem + BODY_SUFFIX)
             entry = manifest.BodyEntry(
                 file=body_file.relative_to(self.run).as_posix(),
                 sha256=manifest.digest(body),
@@ -137,7 +175,51 @@ class Recorder:
 
         if self._after_record is not None:
             self._after_record(entry)
+        if accepted:
+            self._tee(method, path, headers, body, entry)
         return entry
+
+    def _tee(
+        self,
+        method: str,
+        path: str,
+        headers: Sequence[tuple[str, str]],
+        body: bytes,
+        entry: manifest.BodyEntry,
+    ) -> None:
+        """Hand the recorded bytes to the Collector (`SPEC.md` §4.3).
+
+        Called **after** the body, its headers and its digest are on disk, and
+        outside the recorder's lock: a forward crosses a socket, and holding
+        the lock across one would make the record of the next body wait on
+        another process. A forward that raises is recorded as a failure
+        (`SPEC.md` §4.4) -- never swallowed, and never allowed to change the
+        bytes or the answer.
+
+        A rejected POST (`SPEC.md` §3.4) is not forwarded at all: forwarding it
+        would invent traffic the exporter never aimed at the Collector.
+        """
+        if self._forward is None:
+            return
+        try:
+            status = self._forward(method, path, headers, body)
+        except Exception as failure:
+            outcome = manifest.ForwardEntry(
+                file=entry.file,
+                error=f"{type(failure).__name__}: {failure}",
+            )
+        else:
+            outcome = manifest.ForwardEntry(file=entry.file, status=status)
+        with self._lock:
+            self.forwards.append(outcome)
+        manifest.append_forward(self.run, outcome)
+        if self._after_forward is not None:
+            self._after_forward(outcome)
+
+    @property
+    def failed_forwards(self) -> list[manifest.ForwardEntry]:
+        """Every forward that did not deliver. `zoo capture` exits on these."""
+        return [outcome for outcome in self.forwards if outcome.failed]
 
 
 class _Handler(BaseHTTPRequestHandler):
