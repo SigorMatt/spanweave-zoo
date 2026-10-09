@@ -65,6 +65,13 @@ the Collector: the record is made first and the convenience second. If the
 Collector is down, the capture is still a capture and `MANIFEST.json` says
 which bodies never reached it (`SPEC.md` §4).
 
+The capture directory is created **last**: all three listeners accept and the
+Collector has logged its own ready line before anything is written, and then
+`zoo capture` prints one line -- `the raw bytes are the record. Ctrl-C to
+stop.` A refusal before that names the port or the cause, exits 2 and leaves
+nothing behind, so a capture directory means a capture was made (`SPEC.md`
+§4.6).
+
 The Collector is **stock**, pinned in `collector/VERSION`, with its sha256 in
 `collector/SHA256SUMS` and its config checked in at `collector/config.yaml`.
 `make collector` downloads exactly that release and refuses to unpack anything

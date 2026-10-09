@@ -51,7 +51,14 @@ exporters:
 service:
   telemetry:
     logs:
-      level: warn
+      # Left at the stock `info`, deliberately. The Collector logs "Everything
+      # is ready. Begin running and processing data." at `info` once every
+      # component has started, and that line is what `zoo capture` waits for
+      # before it makes a capture directory (`SPEC.md` §4.6): at `warn` a
+      # healthy Collector says nothing at all, and readiness would have to be
+      # guessed from a port accepting a connection -- which a stranger holding
+      # that port does too.
+      level: info
     metrics:
       # Not a default either. The Collector's internal metrics endpoint is a
       # fourth listening port the zoo never reads, and a recorder holding a

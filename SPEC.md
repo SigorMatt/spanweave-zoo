@@ -183,6 +183,12 @@ zoo sink --port 4318 --out captures/z4/2026-10-09T12-00-00Z/raw
 writes two things beside it, in the **run directory** — `--out`'s parent:
 `rejected/` (§3.4) and `MANIFEST.json` (§3.5). Nothing else is created.
 
+`zoo capture` is the one caller that does not want the directory made up
+front: under it a capture exists on disk only once the whole tee is ready
+(§4.6), so its two recorders create what they write into when they write it.
+Either way a recorder makes its own directory; what differs is *when* one
+appears, and nothing else.
+
 `--out` is required; `--port` defaults to `4318` (the OTLP/HTTP port every
 brief gave the pet projects) and `--host` to `127.0.0.1`. A recorder holding a
 stranger's telemetry listens on the loopback unless an operator says
@@ -400,10 +406,20 @@ Two settings are not defaults and are here for a reason:
   default; the sink never decompresses anything (§1.1), so a compressed
   forward would make `json/NNNN.json` a gzip member rather than the JSON §2.4
   promises. The re-encoding must arrive readable or it is not a re-encoding.
-- **`service.telemetry.metrics.level: none`** and `logs.level: warn`. The
-  Collector's own internal metrics endpoint is a fourth listening port the zoo
-  never reads, and a recorder should not open one. Its own telemetry is not
-  part of a capture.
+- **`service.telemetry.metrics.level: none`**. The Collector's own internal
+  metrics endpoint is a fourth listening port the zoo never reads, and a
+  recorder should not open one. Its own telemetry is not part of a capture.
+
+One setting is written out although it *is* the stock default, because
+`zoo capture` depends on it: **`service.telemetry.logs.level: info`**. The
+Collector logs `Everything is ready. Begin running and processing data.` at
+`info` once every component in its pipeline has started, and that line is what
+readiness means (§4.6). At `warn` — which this config asked for until A3a — a
+healthy Collector says nothing at all on startup, and readiness would have to
+be guessed from a port accepting a connection, which a stranger holding that
+port does too. The Collector's log is the Collector's own: the zoo reads one
+line of it to know it is running, echoes it to the operator, and copies none of
+it into a capture.
 
 The `WORKPLAN.md` A2 row names this exporter `otlphttp`. At the pinned version
 that spelling is a **deprecated alias** and the Collector says so on every
@@ -499,7 +515,8 @@ contents — which is the one kind of claim the sink does not make.
  "collector_version": "0.162.0",
  "forwards": [{"file": "raw/0001.body", "status": 200},
               {"file": "raw/0002.body",
-               "error": "ConnectionRefusedError: [Errno 111] ..."}]}
+               "error": "ConnectionRefusedError: [Errno 111] ..."}],
+ "problems": ["collector exited: 137"]}
 ```
 
 - **`collector_version`** is `collector/VERSION` — the pin, not a guess. It is
@@ -513,6 +530,13 @@ contents — which is the one kind of claim the sink does not make.
   It is about **delivery**, not about bytes, which is why it is a list of its
   own and not a field on a `bodies` entry: A1 pinned those to `file`, `sha256`
   and `bytes`, and `zoo verify`'s re-hash reads only those (§3.5).
+- **`problems`** is one line per thing that went wrong during the run which the
+  capture cannot fix — today exactly one kind, `collector exited: <code>`
+  (§4.6). It is written when the problem is noticed rather than at the end, so
+  a capture whose Collector died says so even if the run is then stopped the
+  hard way. The key is **absent** from a capture that had none, rather than an
+  empty list: a reader asking "did anything go wrong here" should not have to
+  tell `[]` from a field nobody wrote.
 
 Everything else in `MANIFEST.json` is §5's, and §5 extends these same entries
 rather than replacing them: `collector_version` is written once at the start
@@ -525,12 +549,71 @@ zoo capture --project z4 --run-id 2026-10-09T12-00-00Z \
             --kind real --project-manifest ../streaming-concierge/MANIFEST.json
 ```
 
-It creates `captures/<project>/<run-id>/`, labels the manifest (§5.5), starts
-the json sink, starts the Collector, waits for the Collector's receiver to
-accept a connection, starts the raw sink, and serves until interrupted. Then it
-stops the raw sink, stops the Collector, stops the json sink, **completes the
-manifest** (§5.5), prints what it recorded and exits non-zero if any forward
-failed (§4.4).
+**A capture exists on disk only once it is ready**, and ready means two things,
+both of them:
+
+- all three listeners accept: the json sink, the raw sink, and the Collector's
+  OTLP/HTTP receiver;
+- the Collector child is alive and has said so **itself** — its own ready line,
+  `Everything is ready. Begin running and processing data.`, read from its own
+  log (§4.2).
+
+Both, because neither implies the other. A connection the receiver accepts says
+only that *something* holds that port: a stranger already on 4320 accepts one
+too, while the Collector that could not have the port has meanwhile exited —
+and the run gets recorded as if it were fine, with a `json/` that could only
+ever be empty. A ready line without a connection is the mirror image: a
+Collector that reported itself started on a port the forward cannot reach.
+
+So the order is, and these steps are in this order for that reason:
+
+1. read the pin, and confirm the binary reports it (§4.5);
+2. construct both recorders and **bind** both sinks — which is where a run
+   directory that already holds a body (§3.1) and a port something else is
+   holding are both refused;
+3. start the Collector and wait for it, a bounded number of looks with the
+   injected `sleep` between them (§4.8);
+4. **then** create `captures/<project>/<run-id>/` and label the manifest
+   (§5.5);
+5. set the sinks serving, raw last, so a forward always has somewhere to go and
+   no body can be recorded before the manifest says what the capture is;
+6. print the one readiness line:
+
+```
+zoo capture: the raw bytes are the record. Ctrl-C to stop.
+```
+
+That line is printed **once**, after the directory exists, and it is the only
+line that means a capture is up. `zoo sink`'s banner (§3) says a different
+thing — bytes being recorded with nothing behind the sink — and says it
+differently: each names its own command and neither is a prefix of the other,
+because an operator reading a log should not have to work out which command
+wrote it. The lines after it name the ports and the directories of the run that
+is now up.
+
+A **refusal** is therefore a refusal before anything exists. Any of the three
+ports held, the Collector exiting, a config it cannot load, a binary that is
+not the pin: each names the port or the cause — the Collector's refusals quote
+its own last log lines, which is where `bind: address already in use` and the
+port it is about are written — and `zoo capture` exits **2** leaving **no run
+directory at all**. That is what makes a capture directory mean a capture was
+made.
+
+Then it serves until interrupted. Then it stops the raw sink, stops the
+Collector, stops the json sink, **completes the manifest** (§5.5), prints what
+it recorded and exits non-zero if any forward failed (§4.4) or the Collector
+exited (below).
+
+**A Collector that exits during the run** is recorded, not absorbed. The
+caller's wait notices it on its next hop, writes
+`problems: ["collector exited: <code>"]` into `MANIFEST.json` there and then
+(§4.5), prints it, and `zoo capture` exits non-zero. It is recorded once,
+however often it is looked at. The raw sink keeps recording, because the raw
+bytes are the record and an exporter still exporting must still be recorded;
+what has stopped is the re-encoding, and the manifest says so rather than
+leaving an operator to find a `json/` that quietly stopped filling. (`zoo
+verify` reads `problems` in A3b; until then the non-zero exit and the manifest
+entry are what report it.)
 
 **`SIGINT` and `SIGTERM` both end a run**, through a handler that only asks it
 to stop; the shutdown itself happens on the main thread, which is where the
@@ -558,14 +641,17 @@ an operator who has to find it.
 | `--forward-timeout` | `5.0` | seconds (§4.4) |
 
 It **refuses to start**, writing nothing, when: the run directory already holds
-a body (§3.1, both sinks); `--collector-dir` has no `VERSION` or no
-`config.yaml`; the binary is absent — naming `make collector`; the binary's
-`--version` does not match the pin; `--kind` is missing or is not one of the
-two (§5.2); `--project-manifest` names a path that is not a readable JSON
-document (§5.3); or the Collector does not accept a connection within the
-readiness budget. A capture that was never re-encoded is
-a fact worth refusing for, because the operator can still fix it; a capture
-*silently* missing its `json/` is a fact discovered a week later.
+a body (§3.1, both sinks); any of `--port`, `--json-port` and
+`--collector-port` is held by something else — the sinks' own binds say so, and
+a port held under the Collector is the Collector exiting and saying so in its
+log; `--collector-dir` has no `VERSION` or no `config.yaml`; the binary is
+absent — naming `make collector`; the binary's `--version` does not match the
+pin; `--kind` is missing or is not one of the two (§5.2);
+`--project-manifest` names a path that is not a readable JSON document (§5.3);
+or the Collector does not report ready within the readiness budget. A capture
+that was never re-encoded is a fact worth refusing for, because the operator
+can still fix it; a capture *silently* missing its `json/` is a fact discovered
+a week later.
 
 Only the HTTP receiver is fed. An exporter that speaks OTLP/gRPC reaches the
 Collector directly or not at all, and the raw sink — which is HTTP — never sees
@@ -593,8 +679,8 @@ columns line up — that would be improving the capture.
 | Seam | What it is | Why |
 |---|---|---|
 | `forward` | called with the method, path, headers and body once the body is on disk; returns the forwarded request's HTTP status or raises | the only outbound socket in the package. A test drives the tee with a forward that records what it was handed, so the tee's mechanics need no Collector |
-| `launch` | called with the resolved config, environment and ports; returns a handle that can be stopped | starting a process is touching the world. A test passes a launcher that starts nothing and reports the pinned version |
-| `sleep` | the readiness wait between connection attempts, a bounded number of them | no module under `spanweave_zoo/` reads a clock or sleeps on its own (`CLAUDE.md`); `cli.py` passes the one real `sleep`, as it passes the one real `now` |
+| `launch` | called with the resolved config, environment and ports; returns a handle that can be stopped **and asked whether the child is still there** | starting a process is touching the world. A test passes a launcher that starts nothing, reports the pinned version, and can say the child exited — which is how §4.6's mid-run failure is driven without killing anything |
+| `sleep` | the readiness wait between looks, a bounded number of them | no module under `spanweave_zoo/` reads a clock or sleeps on its own (`CLAUDE.md`); `cli.py` passes the one real `sleep`, as it passes the one real `now` |
 | `after_forward` | called with each forward's outcome once it is in the manifest | one printed line per forward, and the way a test observes a forward without polling a file |
 
 ### 4.9 The Collector in CI, and locally
@@ -608,9 +694,15 @@ and without it, and on a developer machine that has run `make collector` it is
 green having actually run the Collector.
 
 What holds in CI without the binary: the config and the pin are asserted as
-text, the tee's mechanics are asserted against the `forward` seam, and
+text, the tee's mechanics are asserted against the `forward` seam,
 `collector_version` in the manifest is asserted equal to `collector/VERSION`
-through the `launch` seam. What only a machine with the binary proves is that a
+through the `launch` seam, and §4.6's readiness and refusals are asserted
+against a **stand-in child process** — a few lines that bind the receiver
+endpoint they are given through `ZOO_COLLECTOR_OTLP_HTTP` and log the way the
+Collector does. It stands in for the Collector's *lifecycle*, which is all
+readiness is about: a port it cannot have, a ready line it does or does not
+log, a config it cannot load. It stands in for no re-encoding, which is the one
+thing it is not allowed to claim. What only a machine with the binary proves is that a
 real protobuf export comes back as JSON with the same ids — and a test that
 quietly passed without proving it would be the kind of reassuring pass this
 repository exists to refuse (`CLAUDE.md`). It skips loudly instead.
@@ -656,6 +748,7 @@ re-hashes the tree against it on every `make check`.
 | `started_at` / `ended_at` | the run's two ends, from the injected `now` (§3.6) |
 | `bodies` | one entry per recorded body, `raw/` and `json/` and rejected alike (§3.5, §5.4) |
 | `forwards` | one entry per attempted forward: delivery, not bytes (§4.5) |
+| `problems` | what went wrong during the run — **absent** above because nothing did (§4.5, §4.6) |
 
 Nothing else. The manifest has no field for how many spans a capture holds, how
 long an export was, which project the bytes came from beyond what the project's
@@ -758,6 +851,7 @@ exactly one home for a digest (§3.5).
 | `zoo capture` starts, before a body can arrive | `kind`, `project_manifest`, `sink_version`, `collector_version`, `started_at` |
 | each POST, as it is recorded (§3.5) | one `bodies` entry: `file`, `sha256`, `bytes` |
 | each forward, as it completes (§4.5) | one `forwards` entry |
+| the Collector child is seen to have exited (§4.6) | one `problems` entry |
 | `zoo capture` stops, after both sinks and the Collector have | `ended_at`, and each entry's `content_type` / `content_encoding` |
 
 The declaration is written **first** so that a run stopped the hard way still

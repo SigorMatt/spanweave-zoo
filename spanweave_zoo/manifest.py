@@ -74,6 +74,12 @@ SINK_VERSION = "sink_version"
 STARTED_AT = "started_at"
 ENDED_AT = "ended_at"
 
+# What went wrong during a run that the capture cannot fix: today, a Collector
+# child that exited (`SPEC.md` §4.6). The key is **absent** from a capture that
+# had none, rather than an empty list, because a reader asking "did anything go
+# wrong here" should not have to tell `[]` from a field nobody wrote.
+PROBLEMS = "problems"
+
 # The two values a body entry carries across from its own headers file. The
 # header names are matched case-insensitively -- HTTP says they are -- and the
 # *values* are copied exactly as the request sent them.
@@ -210,7 +216,12 @@ def update(run: Path, change: Callable[[dict[str, Any]], None]) -> None:
         write_json(path, document)
 
 
-def _append(document: dict[str, Any], key: str, entry: dict[str, Any]) -> None:
+def _append(document: dict[str, Any], key: str, entry: object) -> None:
+    """Append to one of the manifest's lists, creating it if it is not there.
+
+    `entry` is whatever that list holds: a `bodies` or `forwards` document, or
+    a `problems` line (`SPEC.md` §4.6).
+    """
     listed: list[Any] = list(document.get(key) or [])
     listed.append(entry)
     document[key] = listed
@@ -233,6 +244,17 @@ def append_forward(run: Path, entry: ForwardEntry) -> None:
     exports were in flight at once.
     """
     update(run, lambda document: _append(document, FORWARDS, entry.as_document()))
+
+
+def append_problem(run: Path, problem: str) -> None:
+    """Record one thing that went wrong during the run (`SPEC.md` §4.6).
+
+    Written when it is noticed rather than at the end, so a capture whose
+    Collector died says so even if the run is then stopped the hard way. One
+    line per distinct problem: the caller records a problem once, not once per
+    look at it.
+    """
+    update(run, lambda document: _append(document, PROBLEMS, problem))
 
 
 def read_project_manifest(path: Path) -> object:

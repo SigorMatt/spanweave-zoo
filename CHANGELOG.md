@@ -3,6 +3,54 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A3a — a capture exists only once it is ready
+
+- **Readiness is two things, and the run directory comes after both**
+  (`SPEC.md` §4.6). `zoo capture` now binds both sinks, starts the Collector
+  and waits for it, and only **then** creates `captures/<project>/<run-id>/`,
+  labels the manifest, sets the sinks serving and prints the single readiness
+  line `zoo capture: the raw bytes are the record. Ctrl-C to stop.` A refusal
+  for any reason -- a port held, the Collector exiting, a config it cannot
+  load, a binary that is not the pin -- happens before that line and leaves
+  **no run directory at all**, exiting 2 and naming the port or the cause. A
+  capture directory now means a capture was made.
+- **The Collector's readiness is its own ready line, not a port that accepts**
+  (`SPEC.md` §4.6, §4.2). The wait requires `Everything is ready. Begin
+  running and processing data.` in the Collector's own log **and** a connection
+  its receiver accepts. The old check only connected, so a stranger already
+  holding 4320 passed it: the probe reached the stranger, the Collector that
+  could not have the port exited, and the capture was recorded as if fine with
+  a `json/` that could only ever be empty. The child's output is piped and
+  drained by a thread instead of inherited, so a refusal quotes the
+  Collector's last lines -- `bind: address already in use` among them -- and
+  the operator still sees its log as it happens.
+- **`collector/config.yaml` leaves `service.telemetry.logs.level` at the stock
+  `info`** (`SPEC.md` §4.2), where it asked for `warn` before: the ready line
+  is logged at `info`, and at `warn` a healthy Collector says nothing at all
+  on startup. The metrics level stays `none` -- the Collector's own telemetry
+  is still not part of a capture.
+- **A Collector that exits during a run is recorded, not absorbed**
+  (`SPEC.md` §4.6, §4.5). The caller's wait notices it on its next hop and
+  writes `problems: ["collector exited: <code>"]` into `MANIFEST.json` there
+  and then, prints it, and `zoo capture` exits non-zero. Recorded once however
+  often it is looked at; the key is absent from a capture that had none. The
+  raw sink keeps recording, because the raw bytes are the record.
+- **`zoo sink`'s banner and the capture's readiness line are distinct**, each
+  naming its own command, neither a prefix of the other (`cli.SINK_BANNER`,
+  `capture.READY_LINE`).
+- Internals: `_Listener` binds at construction and serves later, so a port is
+  held before any directory exists and an unserved listener is closed without
+  waiting for a loop that never started. `sink.Recorder` takes
+  `create_directory` -- `zoo sink` still creates `--out` when it starts
+  (`SPEC.md` §3.1), `zoo capture` does not. The `launch` seam's handle can be
+  asked whether the child is still there (`SPEC.md` §4.8).
+- Tested against a **stand-in child process** rather than the 100 MB download
+  (`SPEC.md` §4.9): it binds the receiver endpoint it is handed through
+  `ZOO_COLLECTOR_OTLP_HTTP` and logs the way the Collector does, which is
+  enough to drive a held port, a Collector that holds a port and never reports
+  ready, and a config it cannot load. It claims no re-encoding, which stays
+  `test_collector_real.py`'s one job.
+
 ## A3 — the capture is a manifest, immutable
 
 - **`zoo capture` ends by writing the whole `MANIFEST.json`** (`SPEC.md` §5):

@@ -15,7 +15,9 @@ from __future__ import annotations
 import http.client
 import json
 import signal
+import socket
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -60,11 +62,21 @@ class Clock:
 
 
 class Started:
+    """A Collector that is up, as the `launch` seam hands one back.
+
+    `exited` is how a test says the child died on its own, which is what
+    `SPEC.md` §4.6 has `zoo capture` notice during a run.
+    """
+
     def __init__(self) -> None:
         self.stopped = 0
+        self.exited: int | None = None
 
     def stop(self) -> None:
         self.stopped += 1
+
+    def returncode(self) -> int | None:
+        return self.exited
 
 
 class FakeLauncher:
@@ -201,6 +213,10 @@ def test_the_pinned_config_is_stock_and_re_encodes_to_json():
     assert f"${{env:{collector.ENV_HTTP}:-127.0.0.1:4318}}" in text
     assert f"${{env:{collector.ENV_JSON_SINK}:-http://127.0.0.1:4319}}" in text
     assert "batch: {}" in text, "the batch processor is at its defaults"
+    # Readiness is the Collector's own ready line (`SPEC.md` §4.6), and it logs
+    # that at `info`: at `warn` a healthy Collector says nothing at all and
+    # there would be nothing to read.
+    assert "level: info" in text and "level: warn" not in text
     # Stock means stock: one receiver, one processor, one exporter.
     assert "receivers: [otlp]" in text
     assert "processors: [batch]" in text
@@ -681,3 +697,251 @@ def test_a_directory_holding_only_a_headers_file_is_still_refused(tmp_path):
     with pytest.raises(sink.CaptureExists) as refused:
         running_capture(run)
     assert "0 body file(s) and 1 headers file(s)" in str(refused.value)
+
+
+# --- A3a: a capture exists only once it is ready (`SPEC.md` §4.6) ------------
+#
+# Readiness is three listeners accepting AND the Collector child alive with its
+# own ready line in its log, and the run directory is made only after that.
+# These tests therefore need a child process that behaves like the Collector
+# around its receiver port, so they run `STUB_BODY` below under `collector.
+# Binary` -- the real launcher, the real pipe, the real log reading -- rather
+# than the 100 MB download `test_collector_real.py` skips without.
+
+# The line the stock Collector logs once every component has started
+# (`service@v.../service.go`). Written out here rather than imported, so these
+# tests fail on an implementation that stopped looking for it as well as on one
+# that never looked.
+COLLECTOR_READY = "Everything is ready. Begin running and processing data."
+
+# The one line that means a capture is up (`SPEC.md` §4.6), and `zoo sink`'s
+# own banner, which must not be mistaken for it.
+READINESS_LINE = "zoo capture: the raw bytes are the record. Ctrl-C to stop."
+SINK_BANNER_LINE = "zoo sink: it parses nothing. Ctrl-C to stop."
+
+STUB_BODY = """
+import os
+import socket
+import sys
+import time
+
+if "--version" in sys.argv:
+    print("otelcol-contrib version " + VERSION)
+    raise SystemExit(0)
+
+if BEHAVIOUR == "bad-config":
+    # What the real binary does with a config it cannot load: one line on
+    # stderr, exit 1, no port bound (`SPEC.md` §4.6).
+    sys.stderr.write("Error: cannot start pipelines: this config is not one\\n")
+    raise SystemExit(1)
+
+host, _, port = os.environ["ZOO_COLLECTOR_OTLP_HTTP"].rpartition(":")
+listener = socket.socket()
+try:
+    listener.bind((host, int(port)))
+except OSError as held:
+    # The real Collector's own words for a port it cannot have, and then exit
+    # 1: `error  Failed to start component  {"error": "listen tcp ...: bind:
+    # address already in use"}`.
+    sys.stderr.write(
+        "error\\tFailed to start component\\t{\\"error\\": \\"listen tcp "
+        + host + ":" + port + ": bind: " + str(held.strerror) + "\\"}\\n"
+    )
+    raise SystemExit(1)
+listener.listen(8)
+if BEHAVIOUR == "ready":
+    sys.stderr.write("info\\tservice.go:256\\t" + READY + "\\n")
+sys.stderr.flush()
+time.sleep(600)
+"""
+
+
+def free_port() -> int:
+    """A port a child process can be told to bind before it exists.
+
+    The Collector is given its receiver's port before it starts, so this cannot
+    be `port=0` the way every sink in the suite is. If something does take it in
+    between, that is the refusal these tests are about anyway.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def stub_collector(tmp_path: Path, *, behaviour: str) -> collector.Pin:
+    """A `collector/` directory whose binary is `STUB_BODY`."""
+    directory = tmp_path / f"stub-collector-{behaviour}"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / collector.VERSION_NAME).write_text(
+        pinned_version() + "\n", encoding="utf-8"
+    )
+    (directory / collector.CONFIG_NAME).write_text("receivers:\n", encoding="utf-8")
+    script = directory / collector.BINARY_NAME
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        f"VERSION = {pinned_version()!r}\n"
+        f"BEHAVIOUR = {behaviour!r}\n"
+        f"READY = {COLLECTOR_READY!r}\n" + STUB_BODY,
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return collector.pin(directory)
+
+
+def stub_capture(
+    run: Path,
+    tmp_path: Path,
+    *,
+    behaviour: str,
+    collector_port: int | None = None,
+    attempts: int = 30,
+    log=None,
+):
+    """A `Capture` whose Collector is the stub, on a port chosen here.
+
+    The readiness wait gets the real `sleep`, as `zoo capture` gives it: what
+    is being waited on is another process starting, and the budget is bounded
+    by `attempts` rather than by a clock (`SPEC.md` §4.8).
+    """
+    pinned = stub_collector(tmp_path, behaviour=behaviour)
+    port = collector_port if collector_port is not None else free_port()
+    launcher = collector.Binary(
+        pinned,
+        host="127.0.0.1",
+        http_port=port,
+        grpc_port=0,
+        sleep=time.sleep,
+        attempts=attempts,
+        pause=0.05,
+    )
+    return capture.Capture(
+        run,
+        now=Clock(),
+        launcher=launcher,
+        forward=lambda method, path, headers, body: 200,
+        pin=pinned,
+        kind="recorded",
+        project_manifest=PROJECT_MANIFEST,
+        raw_port=0,
+        json_port=0,
+        log=log if log is not None else (lambda line: None),
+    )
+
+
+def test_a_foreign_listener_on_the_collector_port_is_refused_and_writes_nothing(
+    tmp_path,
+):
+    # The A3a row's first test. Something else is on the Collector's port, so
+    # the Collector cannot have it and exits -- and a capture whose `json/`
+    # could only ever be empty is refused before a byte is written, naming the
+    # port so the operator knows what to kill (`SPEC.md` §4.6).
+    run = tmp_path / "captures" / "z4" / "run-1"
+    held = socket.socket()
+    held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    held.bind(("127.0.0.1", 0))
+    held.listen(8)
+    port = int(held.getsockname()[1])
+    try:
+        started = stub_capture(
+            run, tmp_path, behaviour="ready", collector_port=port, attempts=30
+        )
+        with pytest.raises(collector.CollectorRefused) as refused:
+            started.start()
+    finally:
+        held.close()
+    assert str(port) in str(refused.value), str(refused.value)
+    assert not run.exists(), "a refusal before readiness leaves no directory"
+    assert not (tmp_path / "captures").exists()
+
+
+def test_a_collector_that_holds_the_port_without_reporting_ready_is_refused(tmp_path):
+    # The AND in `SPEC.md` §4.6, and the one a connection cannot check: the
+    # stub binds the receiver port and accepts connections, and never logs the
+    # line the Collector logs when it is actually running. A readiness probe
+    # that only connected would call this capture ready and record a run whose
+    # `json/` stays empty.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    started = stub_capture(run, tmp_path, behaviour="silent", attempts=10)
+    with pytest.raises(collector.CollectorRefused) as refused:
+        started.start()
+    assert COLLECTOR_READY in str(refused.value)
+    assert not run.exists(), "a refusal before readiness leaves no directory"
+
+
+def test_a_collector_that_cannot_start_at_all_is_refused_naming_the_cause(tmp_path):
+    # Degenerate: a bad config. The child exits before it binds anything, and
+    # the refusal carries the Collector's own last words rather than a timeout.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    started = stub_capture(run, tmp_path, behaviour="bad-config", attempts=30)
+    with pytest.raises(collector.CollectorRefused) as refused:
+        started.start()
+    assert "cannot start pipelines" in str(refused.value)
+    assert not run.exists()
+
+
+def test_a_ready_collector_makes_the_directory_and_prints_one_readiness_line(tmp_path):
+    # The other side of the same rule: once three listeners accept and the
+    # Collector has said it is ready, the run directory is made, the manifest
+    # is labelled, and the readiness line is printed -- once, first.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    printed: list[str] = []
+    started = stub_capture(
+        run, tmp_path, behaviour="ready", attempts=100, log=printed.append
+    )
+    started.start()
+    try:
+        assert printed[0] == READINESS_LINE
+        assert printed.count(READINESS_LINE) == 1
+        assert run.is_dir()
+        document = manifest.read(run)
+        assert document[manifest.KIND] == "recorded"
+        assert document[manifest.STARTED_AT] == "2026-10-09T12:00:01+00:00"
+        assert started.raw is not None and started.json is not None
+        status, _ = post(started.raw.port, "/v1/traces", PROTOBUF)
+        assert status == 200, "the raw sink is serving by the time it is announced"
+    finally:
+        started.stop()
+    assert collector.READY_MARKER == COLLECTOR_READY
+    assert cli.verify(tmp_path / "captures") == 0
+
+
+def test_the_collector_exiting_mid_capture_is_recorded_and_reported(tmp_path):
+    # `SPEC.md` §4.6: a Collector that dies during a run is a failure written
+    # into the manifest and reported at exit, never a silently empty `json/`.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    started, launcher = running_capture(run)
+    try:
+        launcher.running.exited = 137
+        started.check_collector()
+        started.check_collector()  # recorded once, not once per look
+        assert started.problems == ["collector exited: 137"]
+        assert manifest.read(run)[manifest.PROBLEMS] == ["collector exited: 137"]
+        assert "collector exited: 137" in started.summary()
+        assert cli._exit_status(started) == 1
+    finally:
+        started.stop()
+
+
+def test_a_capture_with_no_problems_exits_zero(tmp_path):
+    run = tmp_path / "captures" / "z4" / "run-1"
+    started, _ = running_capture(run)
+    try:
+        assert started.problems == []
+        assert cli._exit_status(started) == 0
+    finally:
+        started.stop()
+    assert manifest.PROBLEMS not in manifest.read(run)
+
+
+def test_the_sink_banner_is_distinct_from_the_captures_readiness_line():
+    # Both end "Ctrl-C to stop." and they mean different things: one says
+    # bytes are being recorded with nothing behind the sink, the other that a
+    # whole tee is up. An operator reading a log must not have to guess which
+    # command they are looking at.
+    assert capture.READY_LINE == READINESS_LINE
+    assert cli.SINK_BANNER == SINK_BANNER_LINE
+    assert capture.READY_LINE != cli.SINK_BANNER
+    assert capture.READY_LINE not in cli.SINK_BANNER
+    assert cli.SINK_BANNER not in capture.READY_LINE
+    assert "zoo capture:" in capture.READY_LINE
+    assert "zoo sink:" in cli.SINK_BANNER

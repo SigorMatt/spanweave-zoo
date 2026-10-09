@@ -60,6 +60,13 @@ _RUN_DEPTH = 2
 DEFAULT_PORT = 4318
 DEFAULT_HOST = "127.0.0.1"
 
+# `zoo sink`'s banner. It and `capture.READY_LINE` both end "Ctrl-C to stop."
+# and mean different things -- bytes recorded with nothing behind the sink, as
+# against a whole tee up and re-encoding -- so each names its own command and
+# neither is a prefix of the other. An operator reading a log should not have
+# to work out which command wrote it (`SPEC.md` §3, §4.6).
+SINK_BANNER = "zoo sink: it parses nothing. Ctrl-C to stop."
+
 
 def _system_clock() -> str:
     """The real clock, in UTC, ISO-8601 -- the sink's `now` seam in production.
@@ -150,7 +157,7 @@ def run_sink(host: str, port: int, out: Path) -> int:
     bound_port = server.server_address[1]
     print(f"zoo sink: recording POST {sink.TRACES_PATH} on http://{host}:{bound_port}")
     print(f"zoo sink: bodies to {recorder.raw}/, anything else to {recorder.rejected}/")
-    print("zoo sink: it parses nothing. Ctrl-C to stop.", flush=True)
+    print(SINK_BANNER, flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -247,9 +254,14 @@ def run_capture(args: argparse.Namespace) -> int:
     try:
         running.start()
     except (collector.CollectorRefused, sink.CaptureExists, OSError) as refused:
+        # Every refusal is before readiness and has written nothing: no run
+        # directory, no manifest, no bytes (`SPEC.md` §4.6). `OSError` is the
+        # port one -- "address already in use" names the port it is about.
         print(f"zoo capture: refusing to start: {refused}", file=sys.stderr)
         return 2
-    print("zoo capture: the raw bytes are the record. Ctrl-C to stop.", flush=True)
+    # The readiness line is `capture.READY_LINE`, printed by `start()` itself
+    # once the directory exists, so that there is one place where "a capture is
+    # up" is said and it cannot be said by a run that refused.
     previous = _stop_on_signal(running)
     try:
         running.serve_forever()
@@ -260,9 +272,18 @@ def run_capture(args: argparse.Namespace) -> int:
         running.stop()
         _restore_signals(previous)
     print(running.summary())
-    # A run whose json/ is incomplete must not look like one that is complete
-    # (`SPEC.md` §4.4). The capture itself is intact either way.
-    return 1 if running.failed_forwards else 0
+    return _exit_status(running)
+
+
+def _exit_status(running: capture.Capture) -> int:
+    """What `zoo capture` exits with (`SPEC.md` §4.4, §4.6).
+
+    Non-zero when a forward failed or the Collector exited during the run: a
+    run whose `json/` is incomplete must not look like one that is complete.
+    The capture itself is intact either way, and `MANIFEST.json` says which
+    bodies never reached the Collector and what went wrong.
+    """
+    return 1 if running.failed_forwards or running.problems else 0
 
 
 def _announce(entry: manifest.BodyEntry) -> None:

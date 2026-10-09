@@ -22,9 +22,13 @@ the capture is still a capture, and the manifest says which bodies never
 reached it (§4.4).
 
 Two recorders, one `MANIFEST.json`, one lock per run directory (`SPEC.md`
-§4.5). Start order is json sink, then Collector, then raw sink -- nothing can
-be forwarded before there is something to forward it to. Stop order is the
-reverse, so that the Collector's last batch has somewhere to go.
+§4.5). Everything is brought up before anything is written: both sinks bind
+their ports, the Collector is started and waited for, and **only then** is the
+run directory created, the manifest labelled, the sinks set serving and the one
+readiness line printed (`SPEC.md` §4.6). A refusal for any reason -- a port
+held, the Collector exiting, a bad config -- therefore leaves no directory at
+all, rather than a capture that was never a capture. Stop order is the reverse
+of start order, so that the Collector's last batch has somewhere to go.
 
 Nothing here starts a process, binds a socket, reads a clock or sleeps: it is
 handed a launcher, a listener factory, a forward and a `now` (`SPEC.md` §4.8).
@@ -49,6 +53,13 @@ DEFAULT_JSON_PORT = 4319
 DEFAULT_COLLECTOR_PORT = 4320
 DEFAULT_COLLECTOR_GRPC_PORT = 4317
 
+# The one line that says a capture is up (`SPEC.md` §4.6). It is printed once,
+# first, and only after the run directory exists -- so a line that an operator
+# or a script reads as "recording" is never printed by a run that refused.
+# `zoo sink`'s banner (`cli.SINK_BANNER`) says a different thing and says it
+# differently.
+READY_LINE = "zoo capture: the raw bytes are the record. Ctrl-C to stop."
+
 # How often the waiting caller wakes to notice that it was asked to stop
 # (`SPEC.md` §4.6). It is a poll interval and not a clock read: the main thread
 # has to execute bytecode now and then or a signal handler never runs, because
@@ -61,7 +72,16 @@ MakeServer = Callable[..., ThreadingHTTPServer]
 
 
 class _Listener:
-    """One sink on its own thread, shut down and joined on the way out."""
+    """One sink: bound at construction, served later, closed on the way out.
+
+    Binding and serving are two steps because readiness and recording are two
+    things (`SPEC.md` §4.6). The port is held -- and the kernel is accepting
+    connections onto its backlog -- as soon as the server exists, which is what
+    "the listener accepts" means and what makes a port already in use a
+    refusal before any directory is made. The thread that answers requests
+    starts afterwards, once there is a labelled manifest for a body to be
+    recorded into.
+    """
 
     def __init__(
         self,
@@ -71,19 +91,26 @@ class _Listener:
         self.recorder = recorder
         self.server = server
         self.port: int = server.server_address[1]
+        self._serving = False
         self._thread = threading.Thread(
             target=server.serve_forever,
             kwargs={"poll_interval": 0.05},
             daemon=True,
         )
 
-    def start(self) -> None:
+    def serve(self) -> None:
+        self._serving = True
         self._thread.start()
 
     def stop(self) -> None:
-        self.server.shutdown()
+        # `shutdown()` waits for `serve_forever` to notice and return, so it
+        # must not be called on a listener that never served: it would wait for
+        # a loop that never started. A bound-but-unserved listener is exactly
+        # what a refusal leaves behind, and closing the socket is all it needs.
+        if self._serving:
+            self.server.shutdown()
+            self._thread.join(timeout=30)
         self.server.server_close()
-        self._thread.join(timeout=30)
 
 
 class Capture:
@@ -135,6 +162,13 @@ class Capture:
         self.raw: _Listener | None = None
         self.json: _Listener | None = None
         self.collector: collector.Running | None = None
+        # What went wrong during the run that the capture itself cannot fix:
+        # today, a Collector child that exited (`SPEC.md` §4.6). Each one is
+        # written into `MANIFEST.json` when it is noticed and makes
+        # `zoo capture` exit non-zero, because a run whose `json/` stopped
+        # being written must not look like one that is complete.
+        self.problems: list[str] = []
+        self._collector_exited = False
         self._stopping = threading.Event()
         # Whether there is a manifest to close, and whether it was closed.
         # `stop()` runs on the way out of a failed `start()` as well as at the
@@ -153,6 +187,12 @@ class Capture:
         body_suffix: str,
         forward: sink.Forward | None,
     ) -> _Listener:
+        """One recorder, bound to its port and not yet serving.
+
+        Constructing the recorder is where `SPEC.md` §3.1's refusal happens --
+        a run directory that already holds a body -- and binding is where a
+        port already in use does. Both are before the run directory exists.
+        """
         recorder = sink.Recorder(
             out,
             now=self._now,
@@ -161,20 +201,56 @@ class Capture:
             forward=forward,
             after_record=self._announce_body,
             after_forward=self._announce_forward,
+            create_directory=False,
         )
         server = self._make_server(recorder, host=self.host, port=port)
         return _Listener(recorder, server)
 
     def start(self) -> None:
-        """Bring the run up, or raise and leave nothing half-started.
+        """Bring the run up, or raise and leave nothing on disk at all.
 
-        Order matters and is checked by the order of these lines: the version
-        is confirmed against the pin before a directory is made, the manifest
-        is labelled before a body can arrive, and the raw sink -- the only one
-        the exporter talks to -- is last, so a forward always has somewhere to
-        go.
+        The order is the whole of `SPEC.md` §4.6 and is checked by the order of
+        these lines:
+
+        1. the version is confirmed against the pin;
+        2. both recorders are constructed and both sinks bind their ports, so
+           a run directory that already holds a body and a port something else
+           is holding are both refused here;
+        3. the Collector is started and waited for -- its own ready line, and
+           its receiver accepting a connection;
+        4. **then** the run directory is made and the manifest labelled;
+        5. then the sinks serve, raw last, so a forward always has somewhere to
+           go and no body can be recorded before the manifest says what the
+           capture is;
+        6. then, and only then, the readiness line.
+
+        Nothing before step 4 writes a byte. A refusal anywhere above it leaves
+        no directory, which is what makes "there is a capture" mean "there was
+        a capture to make".
         """
         version = collector.check_version(self._launcher, self._pin)
+        try:
+            self.json = self._listener(
+                self.run / JSON_DIR,
+                port=self._json_port,
+                rejected=self.run / sink.REJECTED_JSON_DIR,
+                body_suffix=sink.JSON_SUFFIX,
+                forward=None,
+            )
+            self.raw = self._listener(
+                self.run / RAW_DIR,
+                port=self._raw_port,
+                rejected=self.run / sink.REJECTED_DIR,
+                body_suffix=sink.BODY_SUFFIX,
+                forward=self._forward,
+            )
+            self.collector = self._launcher.start(
+                f"http://{self.host}:{self.json.port}"
+            )
+        except BaseException:
+            self.stop()
+            raise
+
         self.run.mkdir(parents=True, exist_ok=True)
         manifest.label(
             self.run,
@@ -185,38 +261,16 @@ class Capture:
         )
         self._labelled = True
 
-        self.json = self._listener(
-            self.run / JSON_DIR,
-            port=self._json_port,
-            rejected=self.run / sink.REJECTED_JSON_DIR,
-            body_suffix=sink.JSON_SUFFIX,
-            forward=None,
-        )
-        self.json.start()
-        self._log(
-            f"zoo capture: json sink on http://{self.host}:{self.json.port}"
-            f" -> {self.run / JSON_DIR}/"
-        )
-
-        try:
-            self.collector = self._launcher.start(
-                f"http://{self.host}:{self.json.port}"
-            )
-            self._log(f"zoo capture: collector {version} up, re-encoding to JSON")
-            self.raw = self._listener(
-                self.run / RAW_DIR,
-                port=self._raw_port,
-                rejected=self.run / sink.REJECTED_DIR,
-                body_suffix=sink.BODY_SUFFIX,
-                forward=self._forward,
-            )
-            self.raw.start()
-        except BaseException:
-            self.stop()
-            raise
+        self.json.serve()
+        self.raw.serve()
+        self._log(READY_LINE)
         self._log(
             f"zoo capture: recording POST {sink.TRACES_PATH} on "
             f"http://{self.host}:{self.raw.port} -> {self.run / RAW_DIR}/"
+        )
+        self._log(
+            f"zoo capture: collector {version} re-encoding to JSON into "
+            f"{self.run / JSON_DIR}/, via http://{self.host}:{self.json.port}"
         )
 
     def request_stop(self) -> None:
@@ -240,7 +294,10 @@ class Capture:
         Collector behind holding its port.
         """
         while not self._stopping.wait(poll_interval):
-            pass
+            # The same hop that keeps Ctrl-C answerable is where a Collector
+            # that died is noticed, so it reaches the manifest during the run
+            # rather than at the end of it (`SPEC.md` §4.6).
+            self.check_collector()
 
     def stop(self) -> None:
         """Stop the raw sink, then the Collector, then the json sink.
@@ -258,11 +315,40 @@ class Capture:
         if self.raw is not None:
             self.raw.stop()
         if self.collector is not None:
+            # Asked before it is stopped: afterwards every Collector has an
+            # exit status, and the one worth recording is the one it had
+            # before anybody asked it to go (`SPEC.md` §4.6).
+            self.check_collector()
             self.collector.stop()
             self.collector = None
         if self.json is not None:
             self.json.stop()
         self._finish()
+
+    def check_collector(self) -> None:
+        """Notice a Collector child that exited on its own (`SPEC.md` §4.6).
+
+        Called on every hop of the caller's wait and once more on the way out.
+        A Collector that is gone means `json/` stopped being written, which is
+        a fact about the capture: it goes into `MANIFEST.json` as a `problems`
+        entry the moment it is seen, is printed, and makes `zoo capture` exit
+        non-zero. Recorded once, however often it is looked at -- a problem
+        repeated every 200 milliseconds would be a manifest full of one fact.
+        """
+        if self.collector is None or self._collector_exited:
+            return
+        code = self.collector.returncode()
+        if code is None:
+            return
+        self._collector_exited = True
+        problem = f"collector exited: {code}"
+        self.problems.append(problem)
+        if self._labelled:
+            manifest.append_problem(self.run, problem)
+        self._log(
+            f"  ! {problem} -- the raw bytes are still being recorded, "
+            f"json/ is not (SPEC.md section 4.6)"
+        )
 
     def _finish(self) -> None:
         """Write `ended_at` and the body entries' content headers, once.
@@ -294,10 +380,12 @@ class Capture:
             f"{manifest.MANIFEST_NAME} written: kind={self._kind}"
         )
         if failures:
-            return (
+            line = (
                 f"{line}, {failures} forward(s) FAILED -- json/ is incomplete "
                 f"and MANIFEST.json says which (SPEC.md section 4.4)"
             )
+        for problem in self.problems:
+            line = f"{line}, PROBLEM: {problem}"
         return line
 
     def _announce_body(self, entry: manifest.BodyEntry) -> None:

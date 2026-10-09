@@ -94,6 +94,7 @@ class Recorder:
         before_record: Callable[[bytes], None] | None = None,
         after_record: Callable[[manifest.BodyEntry], None] | None = None,
         after_forward: Callable[[manifest.ForwardEntry], None] | None = None,
+        create_directory: bool = True,
     ) -> None:
         self.raw = raw
         self.run = raw.parent
@@ -136,7 +137,14 @@ class Recorder:
                     f"directory is never reused and a capture is never edited "
                     f"(SPEC.md section 2.1): use a new run id."
                 )
-        self.raw.mkdir(parents=True, exist_ok=True)
+        # `zoo sink` creates `--out` when it starts (`SPEC.md` §3.1) and says
+        # so in its banner. `zoo capture` passes `create_directory=False`,
+        # because a capture directory exists only once the whole tee is ready
+        # (`SPEC.md` §4.6) -- and a refusal before that must leave nothing on
+        # disk. Either way `record` makes the directory it writes into, so the
+        # two differ in when a directory appears and in nothing else.
+        if create_directory:
+            self.raw.mkdir(parents=True, exist_ok=True)
 
     def accepts(self, path: str) -> bool:
         """Whether `path` is the traces endpoint, compared exactly.
