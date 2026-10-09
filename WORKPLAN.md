@@ -7,7 +7,8 @@ that runs spanweave and spanweave-live over every capture and writes the
 next series' probes. One batch = one sub-agent = one commit = one concern.
 This file plus git is the only state; any session can resume cold from it.
 
-Last updated: 2026-10-09 (run 1 in progress: A0, A1, A2 done; A3 next).
+Last updated: 2026-10-10 (run 1 complete: A0, A1, A2, A3 done. Run 2
+awaits a `real` capture; one maintainer decision is open, see §4.)
 
 ---
 
@@ -150,7 +151,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | A0 | **Repository skeleton, on `main`.** `pyproject.toml` (package `spanweave_zoo`, CLI `zoo`, Python 3.11–3.14; `spanweave @ git+https://github.com/SigorMatt/spanweave@fec7da27af517ad8b58ae3ec57827916aae60674` and `spanweave-live @ git+https://github.com/SigorMatt/spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d` as an **`audit` extra only**); `uv.lock`; `Makefile` with `check` (ruff, format, `mypy --strict`, pytest, gates), `verify` (re-hash every capture), `install-check`; `.github/workflows/ci.yml` as spanweave-live's (`check` on 3.11–3.14 ubuntu and 3.12 macos); `CLAUDE.md` with §0.6; `CONTRIBUTING.md` with the batch bar; `SPEC.md` §1 non-goals (the zoo parses nothing, fixes nothing, improves nothing) and §2 the capture layout: `captures/<project>/<run-id>/raw/NNNN.body` + `NNNN.headers.json`, `captures/<project>/<run-id>/json/NNNN.json` (Collector re-encoding), `MANIFEST.json`; `tests/gates.py` with one gate: no module under `spanweave_zoo/` imports `spanweave` or `spanweave_live` except `audit.py`; `README.md`; `CHANGELOG.md`; copies of `EXPORT-CONTRACT.md` and `ZOO-BRIEFS.md` at the root, byte-identical to the ones handed to the projects (sha256 in README). `make check` green, CI green on `main`. Then `git switch -c zoo`; every later batch lands on `zoo`. | done (d33059e) | 10 |
 | A1 | **The sink records bytes, and nothing else.** `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` (SPEC §3): stdlib `http.server`; `POST /v1/traces` with **any** `Content-Type` and `Content-Encoding` is written as `NNNN.body` (the bytes exactly as received, still encoded if gzip) with `NNNN.headers.json` (method, path, every header, length, receipt time from an injected `now`), and answered `200` with an empty body and the request's content type echoed; any other path is `404` and still recorded under `rejected/`. The sink never decodes, decompresses or parses. Tests red on the parent: a protobuf body, a JSON body and a gzip body round-trip byte for byte; two POSTs in flight are numbered in receipt order; `zoo verify` on the result passes and fails after one byte of one body is changed. Mutation: a sink that decompresses before writing fails the gzip case. | done (69fb6bd) | 8 |
 | A2 | **The Collector re-encodes beside the raw.** `collector/config.yaml` (SPEC §4): stock OpenTelemetry Collector (contrib, exact version pinned in `collector/VERSION`, fetched by `make collector` from the release URL with its sha256 checked), `otlp` receiver on 4317/4318 **by default, overridable** (4318 is the raw sink's own port, so `zoo capture` moves the Collector's HTTP receiver to 4320), `otlp_http` exporter (`otlphttp` is a deprecated alias at 0.162.0, same component) with `encoding: json` to the sink on a second port, batch processor at defaults; `zoo capture --project z4 --run-id <id>` starts two sinks (raw on 4318 for the app, json on 4319 for the Collector) **and** the Collector pointed at the raw sink's port — the app's traffic reaches the raw sink first and the Collector second (a tee: the raw sink forwards each body unchanged to the Collector after writing it; SPEC states this and that the forward is byte-identical). Tests: a synthetic protobuf export through the tee yields `raw/0001.body` (protobuf) and `json/0001.json` (valid OTLP JSON with the same span ids); the Collector version in the manifest equals `collector/VERSION`. If the Collector cannot run in CI, the test is marked and `make check` still runs it locally — say so in the body. | done (8c8299f) | 12 |
-| A3 | **The capture is a manifest, immutable.** `zoo capture` ends by writing `MANIFEST.json` (SPEC §5): the project's own `MANIFEST.json` (copied from a path the operator passes), the zoo's `sink_version`, `collector_version`, `kind` (`recorded` \| `real`), `started_at`/`ended_at` from the injected clock, and `bodies: [{"file": ..., "sha256": ..., "content_type": ..., "content_encoding": ..., "bytes": ...}]` for raw and json; `zoo verify [path]` re-hashes everything under `captures/` and exits non-zero on any difference or any body without a manifest entry; `make check` runs `zoo verify` (already wired in A0; A3 extends it from refusal to manifest re-hashing). `README.md` §"Running a pet project's real run": the five commands an operator types. Tests red on the parent: a manifest with a stale hash fails verify; a body not listed fails verify; `kind` is required. **End of run 1: the sink is ready for the pilot project's real run.** | awaiting A2 | 6 |
+| A3 | **The capture is a manifest, immutable.** `zoo capture` ends by writing `MANIFEST.json` (SPEC §5): the project's own `MANIFEST.json` (copied from a path the operator passes), the zoo's `sink_version`, `collector_version`, `kind` (`recorded` \| `real`), `started_at`/`ended_at` from the injected clock, and `bodies: [{"file": ..., "sha256": ..., "content_type": ..., "content_encoding": ..., "bytes": ...}]` for raw and json; `zoo verify [path]` re-hashes everything under `captures/` and exits non-zero on any difference or any body without a manifest entry; `make check` runs `zoo verify` (already wired in A0; A3 extends it from refusal to manifest re-hashing). `README.md` §"Running a pet project's real run": the commands an operator types — **four typed commands and a `Ctrl-C`**, in two terminals (the row said "five", which holds only by counting the keystroke). Tests red on the parent: a manifest with a stale hash fails verify; a body not listed fails verify; `kind` is required. **End of run 1: the sink is ready for the pilot project's real run.** | done (9074ecd) | 6 |
 | A4 | **The replayer re-sends what was captured.** `zoo replay captures/<project>/<run-id> --to http://host:port [--raw\|--json] [--timing]` (SPEC §6): re-sends each body with its captured headers (content type and encoding intact) in receipt order; `--timing` sleeps the captured inter-arrival gaps through an injected `sleep`; prints each response status; exits non-zero if any status is not 2xx but still sends the rest. Tests: replaying a capture into a fresh sink produces byte-identical bodies and headers; `--timing` on a fake clock sleeps the recorded gaps. | awaiting A3 | 6 |
 | A5 | **The audit: every capture through spanweave-live and spanweave, and what broke.** `zoo audit captures/<project>/<run-id>` (SPEC §7; the one module that imports both): (1) `zoo replay --raw` into `spanweave-live serve` and record every response status and every receiver event — a 415 on protobuf is a finding, not an error; (2) `zoo replay --json` into `serve` with a completion policy of `Cap(0)`-at-end (replay then signal end of input), collect each trace's final graph and every event; (3) for each trace, the records the receiver fed, in order, through `spanweave.build` — the live graph must equal the batch graph byte for byte (prefix consistency on a stranger's trace); (4) `spanweave inspect` on each graph: diagnostics by code, unmapped attributes by size, unknown kinds; (5) `agentgolden`'s `Signature` computed on each graph as a smoke, no rules evaluated. Output `audit/<project>-<run-id>.md`: a table per step, every diagnostic code with its count, every event, every divergence — each as a reproduction with the capture path and the command. **Findings are never fixed here**: each names the repo that owns it. | awaiting captures (A4 done and at least one `real` capture present) | 15 |
 | A6 | **The series closes.** `TASKS.md` registry A0–A6 with shas; §3 and §4 folded; `reviews/` with every review byte-for-byte and sha256; `audit/` findings consolidated into `PROBES.md`: the next series' probe list for spanweave and spanweave-live, each with its capture and command; WORKPLAN.md deleted; PR `zoo` → `main`. No `plan:` commit follows. | awaiting A5 | 6 |
@@ -246,6 +247,35 @@ land on `zoo`.
   leaving the Collector holding its port. Handlers are installed and the
   wait polls (SPEC §4.6). This is the kind of thing only the real binary
   surfaces; A3's five-command README section must be exercised the same way.
+- 2026-10-10 A3 (9074ecd): the capture declares what it is and verify
+  checks both directions. CI green on all five legs; `make check` green with
+  the binary (121 passed) and without (118 + 3 skipped). The parent run was
+  **not** vacuous for once: on `4122152` an unlisted body on disk made
+  `verify` exit **0**, and `verify <run dir>` printed "no captures" and
+  exited 0 — both are 1 now. A1's missing `content_type`/`content_encoding`
+  are carried across by `manifest.finish()` from each body's own
+  `headers.json`, so the sink still inspects nothing; **SPEC §1.1 was
+  amended** in the same commit to say so rather than leave the two texts
+  contradicting. The row's "five commands" is corrected above.
+- 2026-10-10 A3: a second real defect found by running it — the sink's
+  "already holds a body" refusal globbed `*` + suffix, and the json sink's
+  suffix is `.json`, so `0001.headers.json` counted as a body and a re-used
+  run id was refused with "2 body file(s)". Bodies and headers are counted
+  apart now; a directory holding only a headers file is still refused
+  (SPEC §3.1 amended, two tests).
+- 2026-10-10 **A3 — open for the maintainer, and it affects the Z4
+  handover.** The brief required the capture to fail loudly at the *start*
+  if the project's `MANIFEST.json` is missing, but `EXPORT-CONTRACT.md` has
+  the project write its manifest *during* its run. So `zoo capture` copies
+  the manifest the project's **previous** run left behind, and SPEC §5.3 and
+  the README say that plainly rather than implying it belongs to the
+  recorded run. Taking the copy at the **end** instead would make the
+  manifest contemporaneous with the bytes; that is a spec decision, not a
+  patch, and it is unresolved. Z4's first real run will carry a manifest
+  from its recorded run unless this is decided first.
+- 2026-10-10 A3: `zoo verify` now accepts a single run directory — A4/A5 may
+  rely on it. `manifest.set_collector_version` was folded into
+  `manifest.label`.
 
 ## 5. Origins
 
