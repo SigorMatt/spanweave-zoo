@@ -9,7 +9,7 @@ This file plus git is the only state; any session can resume cold from it.
 
 Last updated: 2026-10-10 (run 1 complete: A0, A1, A2, A3 done; the run-1
 cold review is read and decided, see §3. Run 2 is under way: A3a, A3b,
-A3c, A3d, A0a done, then A0b → A4, then a cold review.)
+A3c, A3d, A0a, A0b done, A4 last, then a cold review.)
 
 ---
 
@@ -160,8 +160,8 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | A3c | **The header octets are the record.** Review F6. `NNNN.headers.raw`: the request line and header block as received, CRLFs intact, up to the blank line; `NNNN.headers.json` unchanged beside it; SPEC §2.3 says the raw file is the unmodified record and the json is the parse. Test red on the parent: a bare CR inside a header value is present in `.raw` and absent as a header in `.json`; `.raw` is byte-identical to what the client sent. Mutation: writing the stdlib's reconstructed headers to `.raw` fails the bare-CR test. | done (8af242d) | 5 |
 | A3d | **`verify` refuses what it did not check, and CI checks something.** Review F1, F5, T1, T24. `zoo verify <path>` on a path that is not a capture → exit 2 naming the path; `cli.py`'s docstring says what the code does. A test recomputes the two contract sha256s in README and fails on drift. The import gate exempts `spanweave_zoo/audit.py` by path, not basename. `tests/fixtures/capture/` holds one real capture (one protobuf span through the real tee, both sides, headers raw and json, manifest) and CI's `make verify` is shown to read it. Tests red on the parent for each. | done (52c33ba) | 6 |
 | A0a | **The README is true, the licence exists, and the open question has a home.** Review F3, F15, F14, T5, T18, T20, F16. README: the operator section lists the exact commands, each complete and runnable as printed, numbered, with `uv sync --extra dev` as the first; the row and §4 stop counting and cite the README. `LICENSE` MIT and `license` in `pyproject.toml`. `OPEN_QUESTIONS.md` created with §1 = the manifest-timing question and its decision (§3). §4 gains: the A2 CI line; the `c965c9b` → `9074ecd` force-push; the `b913e2b` two-clause subject. Docs only; say so in the body. | done (91e91af) | 5 |
-| A0b | **CI proves the Collector claim.** Review T25. A sixth job `collector (ubuntu-latest)`: `make collector` with the release archive cached by its sha256, then the `@needs_collector` tests run and are shown **not skipped** (the job fails if any is). Pin the Collector download's sha in `collector/SHA256SUMS` as today. Say in the body how long the job takes. | todo | 5 |
-| A4 | **The replayer re-sends what was captured.** `zoo replay captures/<project>/<run-id> --to http://host:port [--raw\|--json] [--timing]` (SPEC §6): re-sends each body with its captured headers (content type and encoding intact) in receipt order; `--timing` sleeps the captured inter-arrival gaps through an injected `sleep`; prints each response status; exits non-zero if any status is not 2xx but still sends the rest. Tests: replaying a capture into a fresh sink produces byte-identical bodies and headers; `--timing` on a fake clock sleeps the recorded gaps. | awaiting A3 | 6 |
+| A0b | **CI proves the Collector claim.** Review T25. A sixth job `collector (ubuntu-latest)`: `make collector` with the release archive cached by its sha256, then the `@needs_collector` tests run and are shown **not skipped** (the job fails if any is). Pin the Collector download's sha in `collector/SHA256SUMS` as today. Say in the body how long the job takes. | done (222825f) | 5 |
+| A4 | **The replayer re-sends what was captured.** `zoo replay captures/<project>/<run-id> --to http://host:port [--raw\|--json] [--timing]` (SPEC §6): re-sends each body with its captured headers (content type and encoding intact) in receipt order; `--timing` sleeps the captured inter-arrival gaps through an injected `sleep`; prints each response status; exits non-zero if any status is not 2xx but still sends the rest. Tests: replaying a capture into a fresh sink produces byte-identical bodies and headers; `--timing` on a fake clock sleeps the recorded gaps. | todo | 6 |
 | A5 | **The audit: every capture through spanweave-live and spanweave, and what broke.** `zoo audit captures/<project>/<run-id>` (SPEC §7; the one module that imports both): (1) `zoo replay --raw` into `spanweave-live serve` and record every response status and every receiver event — a 415 on protobuf is a finding, not an error; (2) `zoo replay --json` into `serve` with a completion policy of `Cap(0)`-at-end (replay then signal end of input), collect each trace's final graph and every event; (3) for each trace, the records the receiver fed, in order, through `spanweave.build` — the live graph must equal the batch graph byte for byte (prefix consistency on a stranger's trace); (4) `spanweave inspect` on each graph: diagnostics by code, unmapped attributes by size, unknown kinds; (5) `agentgolden`'s `Signature` computed on each graph as a smoke, no rules evaluated. Output `audit/<project>-<run-id>.md`: a table per step, every diagnostic code with its count, every event, every divergence — each as a reproduction with the capture path and the command. **Findings are never fixed here**: each names the repo that owns it. The `real` capture is Z4's, taken by the operator after run 2 with the commands README names. | awaiting captures (A4 done and at least one `real` capture present) | 15 |
 | A6 | **The series closes.** `TASKS.md` registry A0–A6 with shas; §3 and §4 folded; `reviews/` with every review byte-for-byte and sha256; `audit/` findings consolidated into `PROBES.md`: the next series' probe list for spanweave and spanweave-live, each with its capture and command; WORKPLAN.md deleted; PR `zoo` → `main`. No `plan:` commit follows. | awaiting A5 | 6 |
 
@@ -412,6 +412,26 @@ because a batch never edits this file:
   allows a second clause when it records something a reader needs, and the
   open question was that; T18 registered it so the allowance is visible
   rather than assumed.
+
+- 2026-10-10 A0b (222825f): CI has a sixth job, `collector
+  (ubuntu-latest)`, and A2's claim is now proven on a machine that is not
+  the maintainer's: **18 s**, cold cache, logging `collector-check: OK -- 3
+  tests ran against the real Collector, none skipped`. The guard reads
+  pytest's junit-xml rather than its exit code, because **pytest exits 0
+  when every selected test skips** — the exact shape of the failure T25
+  was worried about. It also fails when nothing is selected, which is what
+  caught the mutation (dropping the marker but keeping the `skipif`).
+  Actions caches are branch-scoped, so the first run on any branch pays a
+  cold 4 s fetch; the archive is now cached under `refs/heads/zoo`.
+- 2026-10-10 **A0b — process, and a number that disagrees with itself.**
+  The row required the job's duration in the commit body, which cannot be
+  measured before the commit exists, so the batch measured it on a
+  throwaway branch `claude/a0b-trial` with identical content (run
+  38013503089, 15 s) and wrote that. `zoo`'s own run measured **18 s**;
+  both cold-cache, the difference is runner variance. The branch and its
+  caches are deleted (`git ls-remote` shows only `main` and `zoo`) and no
+  force-push was involved. A row that wants a measurement in its own
+  commit body should expect this, or ask for the number in §4 instead.
 
 ## 5. Origins
 
