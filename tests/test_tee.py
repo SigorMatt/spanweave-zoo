@@ -31,6 +31,9 @@ GZIP_BODY = gzip.compress(JSON_BODY, mtime=0)
 
 TIMEOUT = 5.0
 
+# What the test's own clock would have said when the run ended (`SPEC.md` §5.5).
+ENDED = "2026-10-09T12:09:00+00:00"
+
 
 class Clock:
     def __init__(self) -> None:
@@ -88,6 +91,9 @@ def tee(raw: Path, forwarder, **kwargs):
         server.server_close()
         thread.join(timeout=TIMEOUT)
         assert not thread.is_alive(), "the sink's thread outlived the test"
+        # The run is over: the manifest is assembled from the journals, the
+        # way `zoo sink` and `zoo capture` assemble it (`SPEC.md` §5.5).
+        manifest.finish(recorder.run, ended_at=ENDED)
 
 
 def post(port: int, path: str, body: bytes, headers: dict[str, str] | None = None):
@@ -293,9 +299,14 @@ def test_a_sink_with_no_forward_at_all_records_as_before(tmp_path):
         post(port, "/v1/traces", PROTOBUF)
     document = manifest.read(raw.parent)
     assert manifest.FORWARDS not in document
+    assert not (raw.parent / manifest.FORWARD_JOURNAL_NAME).exists()
     assert document["bodies"] == [
         {
             "bytes": len(PROTOBUF),
+            # This POST declared neither, and the zoo has none of its own to
+            # invent (`SPEC.md` §5.4).
+            "content_encoding": None,
+            "content_type": None,
             "file": "raw/0001.body",
             "sha256": manifest.digest(PROTOBUF),
         }

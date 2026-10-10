@@ -3,6 +3,53 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A3b — the manifest is written once, at the end, and covers every file
+
+- **Bodies are journalled, and the manifest is assembled when the run ends**
+  (`SPEC.md` §3.5, §5.5, §2). Each recorded body is written to `bodies.jsonl`
+  as one flushed line and each attempted forward to `forwards.jsonl`;
+  `MANIFEST.json` is labelled at the start (`kind`, the two versions,
+  `started_at`) and assembled once at the end from those journals plus a walk
+  of the run directory. Recording a body no longer costs more the longer the
+  run gets: rewriting a document that grows by an entry per POST is work that
+  climbs with the number of bodies, and appending a line is not. Measured over
+  1,600 bodies in one run: **301 us/body over the first 800, 307 us/body over
+  the last 800, ratio 1.02**.
+- **Every file in a run directory has a sha256 of its own** (`SPEC.md` §5.6).
+  Bodies are in `bodies`; the headers files, the journals and anything else the
+  capture holds are in the new `files` list, each file once, `MANIFEST.json`
+  excepted. `zoo verify` re-hashes both lists and accounts for every file by an
+  entry rather than by sitting beside one — so a rewritten `Content-Type` in a
+  `NNNN.headers.json` now fails verify, where before every body still hashed
+  correctly and the capture passed.
+- **`zoo verify` refuses three more things** (`SPEC.md` §5.6): a capture with
+  no `ended_at` (never completed — the line names the directory and the
+  command that removes it), a `kind` that is neither `recorded` nor `real`, and
+  any capture whose manifest records a `problem`. A3a wrote `problems` and
+  nothing read it; `verify` reads it now.
+- **The project's own `MANIFEST.json` is copied when the run ends**
+  (`SPEC.md` §5.3), per the manifest-timing decision. The contract has the
+  project write that file *while it runs*, so the copy a capture carries is now
+  the recorded run's and not its predecessor's. The path is still checked at
+  the start, so a typo is refused while nothing is on disk. The capture dates
+  the document against its own `started_at` — the one field of it the zoo
+  reads, for that and nothing else: a document written before the capture
+  started is an earlier run's, so the capture carries **none**, records a
+  `problem` naming both times, exits non-zero and does not verify. A document
+  that is gone by the end is the same. A document the zoo cannot date is kept
+  — it does not drop a record it was handed — with a problem recorded all the
+  same.
+- **Progress lines are flushed as they are written, and a closed stdout ends
+  the run rather than killing it** (`SPEC.md` §4.6). `zoo capture | head` used
+  to raise `BrokenPipeError` out of a recording thread and leave a capture
+  whose manifest was never assembled; the first broken pipe now asks the run to
+  stop the way Ctrl-C does, later lines go nowhere, and the exit status is what
+  the capture was.
+- **Degenerate cases covered**: a half-written line in `bodies.jsonl` (the body
+  it recorded is still hashed as a file and the capture records a problem —
+  nothing is dropped and nothing is claimed), a project manifest with no
+  `started_at`, a project manifest that vanished mid-run.
+
 ## A3a — a capture exists only once it is ready
 
 - **Readiness is two things, and the run directory comes after both**

@@ -27,11 +27,23 @@ sink looking at a payload. A3 extended these same entries rather than
 replacing them, so `zoo verify`'s re-hash still reads only `file`, `sha256`
 and `bytes`.
 
+A3b changed *when* it is written and *how much* it covers (`SPEC.md` §3.5,
+§5.5, §5.6). Each recorded body is journalled to `bodies.jsonl` as one flushed
+line and each attempted forward to `forwards.jsonl`, and the manifest is
+assembled **once**, at the end of the run, from those journals plus a walk of
+the run directory that hashes **every** file in it except `MANIFEST.json`.
+Two things follow. The capture is covered: a headers file, a journal and a
+re-encoding are all re-hashed by `zoo verify`, not only the bodies. And the
+cost of recording a body stopped depending on how many bodies came before it:
+appending a line is constant work, where rewriting a manifest that grows by an
+entry per POST is not.
+
 Nothing here parses a body. It hashes bytes and counts them. The one document
 it does parse is the project's own manifest, which is not a payload: the zoo
-copies that document whole, reads no field of it, checks nothing in it against
-anything, and refuses loudly if the path it was given is not a readable JSON
-document at all (`SPEC.md` §5).
+copies that document whole and reads exactly one field of it -- `started_at`,
+and only to say whether the document can be the one the recorded run wrote
+(`SPEC.md` §5.3) -- checks nothing in it against anything else, and refuses
+loudly if the path it was given is not a readable JSON document at all.
 """
 
 from __future__ import annotations
@@ -41,12 +53,21 @@ import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from spanweave_zoo import __version__
 
 MANIFEST_NAME = "MANIFEST.json"
+
+# The journals (`SPEC.md` §3.5): one flushed line per recorded body and one per
+# attempted forward, written as the run goes. They are the run's own notes, and
+# the manifest is assembled from them when it ends -- so a body costs the same
+# to record whether it is the first or the sixteen-hundredth. They stay in the
+# capture afterwards and are hashed like every other file in it.
+JOURNAL_NAME = "bodies.jsonl"
+FORWARD_JOURNAL_NAME = "forwards.jsonl"
 
 # The suffix of the file that holds one request verbatim beside its body
 # (`SPEC.md` §2.3). It lives here rather than in `sink.py` because both the
@@ -56,6 +77,14 @@ HEADERS_SUFFIX = ".headers.json"
 
 # The key under which the per-body entries live. A3's fields sit beside it.
 BODIES = "bodies"
+
+# Every *other* file in the run directory, one entry each, with the same three
+# keys a body entry carries (`SPEC.md` §5.6): the headers files, the journals,
+# and anything else a capture turns out to hold. Together with `bodies` it
+# accounts for every file except `MANIFEST.json`, each exactly once -- so there
+# is still exactly one home for a digest, and `zoo verify` re-hashes the whole
+# capture rather than the part of it that happens to be bodies.
+FILES = "files"
 
 # A2's two keys (`SPEC.md` §4.5). `forwards` is one entry per attempted forward
 # and is about *delivery*, not about bytes -- which is why it is a list of its
@@ -227,23 +256,76 @@ def _append(document: dict[str, Any], key: str, entry: object) -> None:
     document[key] = listed
 
 
-def append_body(run: Path, entry: BodyEntry) -> None:
-    """Add one body to the run's manifest, creating the file if need be.
+def _journal(run: Path, name: str, document: object) -> None:
+    """Append one line to one of the run's journals, and flush it.
 
-    Appends rather than rewrites the list, so entries stay in the order the
-    bodies were recorded -- which is receipt order, the only ordering a capture
-    carries (`SPEC.md` §2.2).
+    Append, flush, close -- per line, under the run's lock, so two recorders
+    writing into one run directory (`SPEC.md` §4.5) cannot interleave halves of
+    a line and the order on disk is the order things happened. The work is the
+    same for the first line and the ten-thousandth, which is the whole reason
+    the journal exists: rewriting a document that grows by an entry per POST
+    makes recording the last body of a long run cost more than recording the
+    first (`SPEC.md` §3.5).
     """
-    update(run, lambda document: _append(document, BODIES, entry.as_document()))
+    line = json.dumps(document, sort_keys=True) + "\n"
+    with _lock_for(run):
+        run.mkdir(parents=True, exist_ok=True)
+        with (run / name).open("a", encoding="utf-8") as journal:
+            journal.write(line)
+            journal.flush()
 
 
-def append_forward(run: Path, entry: ForwardEntry) -> None:
-    """Add one attempted forward to the run's manifest (`SPEC.md` §4.5).
+def journal_body(run: Path, entry: BodyEntry) -> None:
+    """Write one recorded body down, now (`SPEC.md` §3.5).
+
+    One line, flushed, in the order the bodies were recorded -- which is
+    receipt order, the only ordering a capture carries (`SPEC.md` §2.2).
+    `finish` turns the journal into the manifest's `bodies` list at the end of
+    the run; until then the journal is where the digests are, which is why it
+    is flushed rather than buffered.
+    """
+    _journal(run, JOURNAL_NAME, entry.as_document())
+
+
+def journal_forward(run: Path, entry: ForwardEntry) -> None:
+    """Write one attempted forward down, now (`SPEC.md` §4.5).
 
     In the order the forwards *completed*, which is receipt order unless two
     exports were in flight at once.
     """
-    update(run, lambda document: _append(document, FORWARDS, entry.as_document()))
+    _journal(run, FORWARD_JOURNAL_NAME, entry.as_document())
+
+
+def _journalled(run: Path, name: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """What one journal recorded, and what it did not record readably.
+
+    A line that is not a JSON object is **not** dropped quietly: it becomes a
+    problem, so the thing it was the record of is missing from the manifest
+    loudly rather than silently. A half-written last line is what a run killed
+    mid-write leaves, and "we could not read our own note" is a reportable
+    outcome (`CLAUDE.md`, "Honest refusal beats a reassuring pass").
+    """
+    try:
+        text = (run / name).read_text(encoding="utf-8")
+    except OSError:
+        return [], []
+    entries: list[dict[str, Any]] = []
+    found: list[str] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            document = json.loads(line)
+        except ValueError:
+            document = None
+        if not isinstance(document, dict):
+            found.append(
+                f"{name} line {number} is not a JSON object, so what it "
+                f"recorded is not listed in {MANIFEST_NAME}"
+            )
+            continue
+        entries.append(document)
+    return entries, found
 
 
 def append_problem(run: Path, problem: str) -> None:
@@ -296,15 +378,16 @@ def label(
     *,
     kind: str,
     collector_version: str,
-    project_manifest: object,
     started_at: str,
 ) -> None:
     """Say what this capture is, before a body can arrive (`SPEC.md` §5).
 
     Everything a capture knows about itself at the start: the declaration
-    (`kind`), the project's own manifest copied whole, the two versions, and
-    `started_at` from the injected clock. Written first rather than last, so a
-    run stopped the hard way still says what it was; `finish` adds `ended_at`.
+    (`kind`), the two versions, and `started_at` from the injected clock.
+    Written first rather than last, so a run stopped the hard way still says
+    what it was; `finish` writes everything that is only knowable at the end --
+    the bodies, every other file's digest, the project's own manifest and
+    `ended_at` (`SPEC.md` §5.5).
 
     `kind` is required and is one of `KINDS`. There is no default and nothing
     is inferred -- not from the project's manifest, not from the endpoint, not
@@ -321,35 +404,182 @@ def label(
     def change(document: dict[str, Any]) -> None:
         document[KIND] = kind
         document[COLLECTOR_VERSION] = collector_version
-        document[PROJECT_MANIFEST] = project_manifest
         document[SINK_VERSION] = __version__
         document[STARTED_AT] = started_at
 
     update(run, change)
 
 
-def finish(run: Path, *, ended_at: str) -> None:
-    """Close the manifest: `ended_at`, and each body's content headers.
+def finish(
+    run: Path,
+    *,
+    ended_at: str,
+    project_manifest: Path | None = None,
+    started_at: str | None = None,
+) -> list[str]:
+    """Assemble the manifest, once, at the end of the run (`SPEC.md` §5.5).
 
-    The end of `zoo capture` (`SPEC.md` §5). The content headers are copied
-    out of each body's own `NNNN.headers.json`, where the request already put
-    them verbatim -- so the sink inspects nothing to produce them and there is
-    still one record of what the exporter claimed about its own bytes. A body
-    whose headers file declared neither gets `null` for both: the zoo has no
-    content type of its own to invent (`SPEC.md` §3.3).
+    Everything that is only true at the end is written here, in one atomic
+    write, and `ended_at` is in it -- nothing is written to the manifest after
+    `ended_at`, which is what lets `zoo verify` read its absence as a capture
+    that was never completed (`SPEC.md` §5.6):
+
+    - `bodies`, from `bodies.jsonl`, in the order the bodies were recorded,
+      each entry's content headers carried across from its own
+      `NNNN.headers.json` where the request already put them verbatim -- so
+      the sink inspects nothing to produce them (`SPEC.md` §5.4). A body whose
+      headers file declared neither gets `null` for both: the zoo has no
+      content type of its own to invent (`SPEC.md` §3.3);
+    - `forwards`, from `forwards.jsonl`, absent when nothing was forwarded;
+    - `files`: a sha256 and a length for **every other file** in the run
+      directory, `MANIFEST.json` excepted, so the capture is covered rather
+      than sampled;
+    - `project_manifest`: the pet project's own document, copied now rather
+      than at the start, so the copy is the one the recorded run left behind
+      (`SPEC.md` §5.3).
+
+    Returns the problems it found -- a journal line it could not read, a
+    project manifest it could not use -- which it has also written into the
+    manifest's `problems`. The caller reports them and exits non-zero: a
+    capture is never silently fine.
     """
-
-    def change(document: dict[str, Any]) -> None:
-        document[ENDED_AT] = ended_at
-        for listed in document[BODIES]:
-            if not isinstance(listed, dict):
-                continue
-            name = listed.get("file")
-            if not isinstance(name, str):
-                continue
+    bodies, found = _journalled(run, JOURNAL_NAME)
+    forwards, forward_problems = _journalled(run, FORWARD_JOURNAL_NAME)
+    found += forward_problems
+    for listed in bodies:
+        name = listed.get("file")
+        if isinstance(name, str):
             listed.update(_declared_content(run, name))
 
+    copied: object = None
+    if project_manifest is not None:
+        copied, copy_problems = _project_copy(project_manifest, started_at)
+        found += copy_problems
+
+    recorded = {
+        listed["file"] for listed in bodies if isinstance(listed.get("file"), str)
+    }
+    others = _hashed(run, recorded)
+
+    def change(document: dict[str, Any]) -> None:
+        document[BODIES] = bodies
+        if forwards:
+            document[FORWARDS] = forwards
+        document[FILES] = others
+        if project_manifest is not None:
+            document[PROJECT_MANIFEST] = copied
+        for problem in found:
+            _append(document, PROBLEMS, problem)
+        # Last, and after everything above: an `ended_at` means the rest of
+        # this document is there (`SPEC.md` §5.5).
+        document[ENDED_AT] = ended_at
+
     update(run, change)
+    return found
+
+
+def _hashed(run: Path, recorded: set[str]) -> list[dict[str, Any]]:
+    """Every file in the run directory except the bodies and the manifest.
+
+    The walk is the point. A manifest assembled from what the recorders
+    remember can only cover what they wrote; walking the directory covers the
+    headers files, the journals and anything else the capture turns out to
+    hold, so `zoo verify` re-hashes the capture rather than the part of it that
+    happens to be bodies (`SPEC.md` §5.6). Sorted, because a manifest is a
+    record and two runs over one capture produce one document.
+    """
+    entries: list[dict[str, Any]] = []
+    for path in sorted(run.rglob("*")):
+        if not path.is_file():
+            continue
+        name = path.relative_to(run).as_posix()
+        if name == MANIFEST_NAME or name in recorded:
+            continue
+        data = path.read_bytes()
+        entries.append(
+            BodyEntry(file=name, sha256=digest(data), bytes=len(data)).as_document()
+        )
+    return entries
+
+
+def _project_copy(path: Path, started_at: str | None) -> tuple[object, list[str]]:
+    """The project's own manifest as the capture will carry it, and why not.
+
+    Copied at the end of the run (`SPEC.md` §5.3), which is the only time the
+    file the project's own run wrote can be the file that is read. Four
+    outcomes, and each is in the record:
+
+    - the document is there and can be the recorded run's: copied verbatim;
+    - it is gone, or is no longer a JSON document: `null`, and a problem
+      naming the path -- a stale copy would be worse than none, because a
+      reader cannot tell a stale one from a true one;
+    - it is there and its own `started_at` predates the capture's: `null`, and
+      a problem -- that document was written before this capture existed, so
+      it is some earlier run's and carrying it would be the capture claiming
+      something about the run it recorded that is not true;
+    - it is there and carries no `started_at` the zoo can read: copied, and a
+      problem all the same. The document is kept because the zoo does not drop
+      a record it was handed, and the problem is recorded because a capture
+      that cannot date its project manifest is not a capture that is fine.
+    """
+    try:
+        document = read_project_manifest(path)
+    except ProjectManifestUnreadable as unreadable:
+        return None, [
+            f"the project's own {MANIFEST_NAME} could not be copied when the "
+            f"capture ended, so this capture does not carry one: {unreadable}"
+        ]
+    if started_at is None:
+        return document, []
+    written, capture_started = _moment(document), _moment_of(started_at)
+    if written is None or capture_started is None:
+        return document, [
+            f"the project's own {MANIFEST_NAME} at {path} carries no "
+            f"{STARTED_AT} this zoo can read, so nothing here says whether it "
+            f"is the document the recorded run wrote (EXPORT-CONTRACT.md "
+            f"section 1 asks for one, ISO-8601)"
+        ]
+    if written < capture_started:
+        return None, [
+            f"the project's own {MANIFEST_NAME} at {path} says it started at "
+            f"{document.get(STARTED_AT) if isinstance(document, dict) else '?'}"
+            f", before this capture started at {started_at}: it is an earlier "
+            f"run's document, not the recorded run's, so this capture carries "
+            f"none (SPEC.md section 5.3)"
+        ]
+    return document, []
+
+
+def _moment(document: object) -> datetime | None:
+    """A document's own `started_at` as a moment, or `None`.
+
+    The one field of the project's manifest the zoo reads, and it reads it for
+    one purpose: to say whether the document can be the one the recorded run
+    wrote (`SPEC.md` §5.3). Nothing else in it is looked at, nothing is
+    reconciled, and the value is not copied anywhere -- the document is carried
+    whole or not at all.
+    """
+    if not isinstance(document, dict):
+        return None
+    return _moment_of(document.get(STARTED_AT))
+
+
+def _moment_of(value: object) -> datetime | None:
+    """One ISO-8601 string as a moment, or `None` if it is not one.
+
+    `datetime.fromisoformat` and no clock read: the two timestamps compared
+    here are both values that were written down, one by the project and one
+    from the zoo's injected `now`. A value that does not parse, or that carries
+    no offset, is not compared at all -- guessing a timezone is inventing a
+    fact about somebody else's run.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
 
 
 def _declared_content(run: Path, file: str) -> dict[str, str | None]:
@@ -387,13 +617,18 @@ def _declared_content(run: Path, file: str) -> dict[str, str | None]:
 def problems(run: Path) -> list[str]:
     """Re-hash one run against its manifest. Returns one line per problem.
 
-    An empty list means two things, and it takes both directions to mean them
-    (`SPEC.md` §5): every body the manifest lists is on disk with the length
-    and the sha256 it recorded, **and** every file on disk is one the manifest
-    lists. The second half is why this walks the directory as well as the
-    list: a check that only iterated the manifest could never notice a body
-    nobody recorded, and would report a capture with a file in it from
-    somewhere else as verified.
+    An empty list means all of this, and it takes both directions to mean it
+    (`SPEC.md` §5.6): every file the manifest lists -- bodies, headers files,
+    journals, the Collector's re-encodings -- is on disk with the length and
+    the sha256 it recorded; every file on disk is one the manifest lists; the
+    capture was completed (`ended_at`); it declares a `kind` the spec names, or
+    declares none at all; and nothing went wrong during the run that the
+    capture could not fix (`problems`).
+
+    The directions matter both ways round. A check that only iterated the
+    manifest could never notice a file nobody recorded, and would report a
+    capture with something in it from somewhere else as verified; a check that
+    only walked the directory could never notice a body that went missing.
 
     Anything else -- including a manifest that cannot be read -- is a line
     here, and a non-zero exit upstream.
@@ -409,17 +644,39 @@ def problems(run: Path) -> list[str]:
         return [f"{run}: {MANIFEST_NAME} cannot be read: {malformed}"]
 
     found: list[str] = []
-    for position, listed in enumerate(document[BODIES]):
+    for key in (BODIES, FILES):
+        found += _rehashed(run, document, key)
+    found += _unlisted(run, document)
+    return found + _incomplete(run, document)
+
+
+def _rehashed(run: Path, document: dict[str, Any], key: str) -> list[str]:
+    """Every file one of the manifest's lists claims, re-read and re-hashed.
+
+    `bodies` and `files` carry the same three keys and are checked by the same
+    code for the same reason: a digest is a digest, and a capture is covered
+    only if the thing that walks it does not care which list a file is in
+    (`SPEC.md` §5.6).
+    """
+    listed_files = document.get(key)
+    if listed_files is None:
+        return [
+            f"{run}: {MANIFEST_NAME} has no {key!r} list, so it does not say "
+            f"what this capture holds"
+        ]
+    if not isinstance(listed_files, list):
+        return [f"{run}: {MANIFEST_NAME}'s {key!r} is not a list"]
+    found: list[str] = []
+    for position, listed in enumerate(listed_files):
         if not isinstance(listed, dict):
-            found.append(f"{run}: {BODIES}[{position}] is not an object")
+            found.append(f"{run}: {key}[{position}] is not an object")
             continue
         name = listed.get("file")
         if not isinstance(name, str):
-            found.append(f"{run}: {BODIES}[{position}] has no 'file'")
+            found.append(f"{run}: {key}[{position}] has no 'file'")
             continue
-        body = run / name
         try:
-            data = body.read_bytes()
+            data = (run / name).read_bytes()
         except OSError:
             found.append(f"{run}: {name} is listed in {MANIFEST_NAME} but missing")
             continue
@@ -434,46 +691,82 @@ def problems(run: Path) -> list[str]:
                 f"{run}: {name} is {len(data)} bytes, "
                 f"{MANIFEST_NAME} says {listed.get('bytes')}"
             )
-    return found + _unlisted(run, document)
+    return found
+
+
+def _listed(document: dict[str, Any]) -> set[str]:
+    """Every file the manifest accounts for, from both of its lists."""
+    names: set[str] = set()
+    for key in (BODIES, FILES):
+        for entry in document.get(key) or []:
+            if isinstance(entry, dict) and isinstance(entry.get("file"), str):
+                names.add(entry["file"])
+    return names
 
 
 def _unlisted(run: Path, document: dict[str, Any]) -> list[str]:
     """Every file in the run directory the manifest does not account for.
 
-    The capture is walked, not the list. A body is accounted for by its own
-    `bodies` entry; a `NNNN.headers.json` is accounted for by the entry of the
-    body it sits beside (`SPEC.md` §2.3: the headers are part of the capture,
-    and a headers file beside no listed body is a body that went missing from
-    the manifest). `MANIFEST.json` itself accounts for nothing, including
-    itself.
+    The capture is walked, not the list. Every file has an entry of its own --
+    a body in `bodies`, everything else in `files` (`SPEC.md` §5.6) -- and
+    `MANIFEST.json` accounts for nothing, including itself. Nothing is
+    accounted for by sitting *beside* something that is listed: a headers file
+    whose digest nobody wrote down is a file nothing says anything about, which
+    is the gap this check closed.
     """
-    listed = {
-        entry["file"]
-        for entry in document[BODIES]
-        if isinstance(entry, dict) and isinstance(entry.get("file"), str)
-    }
-    beside = {Path(name).with_suffix("").as_posix() for name in listed}
+    listed = _listed(document)
     found: list[str] = []
     for path in sorted(run.rglob("*")):
         if not path.is_file():
             continue
         name = path.relative_to(run).as_posix()
-        if name == MANIFEST_NAME:
+        if name == MANIFEST_NAME or name in listed:
             continue
-        if name.endswith(HEADERS_SUFFIX):
-            stem = name[: -len(HEADERS_SUFFIX)]
-            if stem in beside:
-                continue
-            found.append(
-                f"{run}: {name} is on disk but no body of its own is listed "
-                f"in {MANIFEST_NAME}"
-            )
-            continue
-        if name not in listed:
-            found.append(
-                f"{run}: {name} is on disk but absent from {MANIFEST_NAME} -- "
-                f"nothing recorded it, so nothing says what it should hash to"
-            )
+        found.append(
+            f"{run}: {name} is on disk but absent from {MANIFEST_NAME} -- "
+            f"nothing recorded it, so nothing says what it should hash to"
+        )
+    return found
+
+
+def _incomplete(run: Path, document: dict[str, Any]) -> list[str]:
+    """What the manifest says about itself that makes the capture not verified.
+
+    Three things, and none of them is about bytes (`SPEC.md` §5.6):
+
+    - **no `ended_at`**: the capture was never completed. The run was killed,
+      or died, between its first body and its last line, and nothing says the
+      manifest covers what is on disk. The fix is not a repair -- a capture is
+      never edited (`CLAUDE.md`, "Halt points") -- so the line says how to get
+      rid of it and capture again.
+    - **a `kind` the spec does not name**: `recorded` or `real`, or nothing at
+      all for a `zoo sink` run that never declared one. Anything else is a
+      declaration the audit would read as the truth and could not use.
+    - **`problems`**: the run recorded something going wrong that the capture
+      cannot fix (a Collector that exited, a project manifest that could not
+      be copied). `zoo capture` already exited non-zero saying so; `verify`
+      says it again every time, because a capture nobody can trust should not
+      pass a check whose whole job is trust.
+    """
+    found: list[str] = []
+    if not isinstance(document.get(ENDED_AT), str):
+        found.append(
+            f"{run}: no {ENDED_AT} in {MANIFEST_NAME} -- this capture was "
+            f"never completed, so nothing says the manifest covers what is on "
+            f"disk. A capture is never edited: remove it with "
+            f"`rm -rf {run}` and capture again."
+        )
+    declared = document.get(KIND)
+    if declared is not None and declared not in KINDS:
+        found.append(
+            f"{run}: {KIND} is {declared!r}, which is neither "
+            f"{' nor '.join(KINDS)} (SPEC.md section 5.2) -- the audit reads "
+            f"this field as the truth about the run"
+        )
+    for problem in document.get(PROBLEMS) or []:
+        found.append(
+            f"{run}: {MANIFEST_NAME} records a problem from the run: {problem}"
+        )
     return found
 
 

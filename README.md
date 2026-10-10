@@ -86,8 +86,17 @@ pet project's own `MANIFEST.json` copied **verbatim** (`EXPORT-CONTRACT.md`
 §1), the zoo's `sink_version` and the Collector's pinned `collector_version`,
 `kind` (`recorded` or `real`), `started_at` / `ended_at`, one `bodies` entry
 per recorded body with its `sha256`, `bytes` and the `content_type` /
-`content_encoding` the request declared, and one `forwards` entry per attempt
-to reach the Collector (`SPEC.md` §5).
+`content_encoding` the request declared, one `files` entry with a `sha256` for
+**every other file in the run directory** — the headers files and the run's
+journals included — and one `forwards` entry per attempt to reach the Collector
+(`SPEC.md` §5).
+
+Bodies are written down in `bodies.jsonl` as they land, one flushed line each,
+and the document is assembled once when the run ends: so recording the
+sixteen-hundredth export costs what recording the first did, and `zoo verify`
+re-hashes the whole capture rather than the part of it that is bodies. A
+capture with no `ended_at` was never completed and does not verify; neither
+does one whose manifest records a `problem`.
 
 **`--kind` is required and is never inferred.** A recorded capture and a real
 one differ by that declaration alone -- the bytes look the same -- and the
@@ -166,8 +175,10 @@ That is the whole flow. What each command is for:
 4. **Ctrl-C** ends the capture: it stops the raw sink, lets the Collector flush
    its last batch, stops the json sink, completes `MANIFEST.json` and prints
    what it recorded. `SIGTERM` does the same, so a supervisor can end a run.
-   The exit status is non-zero if any body failed to reach the Collector -- the
-   capture is intact either way and the manifest says which bodies those were.
+   The exit status is non-zero if any body failed to reach the Collector, if the
+   Collector exited during the run, or if the project's own `MANIFEST.json`
+   could not be copied -- the capture is intact either way and the manifest
+   says what happened.
 5. **`make verify`** re-hashes every capture under `captures/` against its
    manifest. `make check` depends on it, so from now on every run of the gates
    re-checks this capture's bytes. `uv run zoo verify
@@ -176,13 +187,14 @@ That is the whole flow. What each command is for:
 Two things to know before you start, both of which are refusals rather than
 surprises:
 
-- **The project's `MANIFEST.json` must already exist** when the capture starts.
-  The contract has the project write it on every run (`EXPORT-CONTRACT.md` §1),
-  so a checkout that has been run once has one; if yours has none, run the
-  project's own `make run` once first -- it is the recorded mode, needs no
-  credentials, and writes the file. The capture copies what is there when it
-  starts and makes no claim that the project wrote it during the run it
-  recorded: what the zoo claims, it writes itself (`SPEC.md` §5.3).
+- **The project's `MANIFEST.json` must exist when the capture starts, and the
+  copy is taken when it ends.** The contract has the project write it *while it
+  runs* (`EXPORT-CONTRACT.md` §1), so the path is checked at the start -- a
+  typo is refused while nothing is on disk -- and the document is copied after
+  Ctrl-C, which is when the file is the recorded run's rather than its
+  predecessor's. If the project's own run did not write one, or wrote one dated
+  before the capture started, the capture carries none, says why in `problems`,
+  exits non-zero and does not verify (`SPEC.md` §5.3).
 - **A run directory is never reused.** A second attempt is a second
   `--run-id`; pointing a capture at a directory that already holds part of one
   is refused by name, because the fix for a half-recorded run is another run,
@@ -249,6 +261,8 @@ captures/<project>/<run-id>/raw/NNNN.body          the bytes as received
 captures/<project>/<run-id>/raw/NNNN.headers.json  the request, verbatim
 captures/<project>/<run-id>/json/NNNN.json         the Collector's re-encoding
 captures/<project>/<run-id>/rejected/NNNN.body     a POST aimed at another path
+captures/<project>/<run-id>/bodies.jsonl           each body as it was recorded
+captures/<project>/<run-id>/forwards.jsonl         each forward as it completed
 captures/<project>/<run-id>/MANIFEST.json          what this capture is, and its hashes
 ```
 

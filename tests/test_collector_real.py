@@ -129,6 +129,19 @@ def test_a_protobuf_export_through_the_tee_comes_back_as_json_with_the_same_ids(
     tmp_path,
 ):
     run = tmp_path / "captures" / "z4" / "real-1"
+    # The project's own `MANIFEST.json`, at a path outside the capture: the zoo
+    # copies it when the run ends (`SPEC.md` §5.3), and its `started_at` is
+    # this test's chosen clock's second tick -- after the capture's own start.
+    project_manifest = tmp_path / "streaming-concierge" / "MANIFEST.json"
+    project_manifest.parent.mkdir(parents=True)
+    manifest.write_json(
+        project_manifest,
+        {
+            "contract_version": "1.1",
+            "mode": "recorded",
+            "started_at": "2026-10-09T12:00:30+00:00",
+        },
+    )
     pinned = collector.pin(COLLECTOR_DIR)
     collector_port = free_port()
     arrived: queue.Queue[str] = queue.Queue()
@@ -146,7 +159,7 @@ def test_a_protobuf_export_through_the_tee_comes_back_as_json_with_the_same_ids(
         forward=forward.HttpForward(HOST, collector_port, timeout=30.0),
         pin=pinned,
         kind="recorded",
-        project_manifest={"contract_version": "1.1", "mode": "recorded"},
+        project_manifest=project_manifest,
         host=HOST,
         raw_port=0,
         json_port=0,

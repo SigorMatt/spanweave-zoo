@@ -20,6 +20,15 @@ socket, and `before_record` / `after_record` so a test can hold two POSTs in
 flight at a chosen point rather than sleeping and hoping. Nothing in this
 module reads a clock, sleeps, or draws a random number.
 
+A3b changed where the digest lands and nothing else about recording: the entry
+goes into the run's journal, `bodies.jsonl`, as one flushed line, and the
+manifest is assembled from it when the run ends (`SPEC.md` §3.5, §5.5). What
+that buys is a per-body cost that does not grow with the run: appending a line
+is the same work for the sixteen-hundredth body as for the first, where
+rewriting a manifest that has an entry per POST in it is not. The digest is
+still written as the body is recorded, and there is still exactly one home
+for it.
+
 A2 added one more seam and no new taste (`SPEC.md` §4.3): `forward`, which the
 recorder calls with the body **once the body is on disk**, so the Collector can
 re-encode the same bytes to JSON beside the record. The order is the point --
@@ -194,7 +203,7 @@ class Recorder:
                 sha256=manifest.digest(body),
                 bytes=len(body),
             )
-            manifest.append_body(self.run, entry)
+            manifest.journal_body(self.run, entry)
 
         if self._after_record is not None:
             self._after_record(entry)
@@ -235,7 +244,7 @@ class Recorder:
             outcome = manifest.ForwardEntry(file=entry.file, status=status)
         with self._lock:
             self.forwards.append(outcome)
-        manifest.append_forward(self.run, outcome)
+        manifest.journal_forward(self.run, outcome)
         if self._after_forward is not None:
             self._after_forward(outcome)
 

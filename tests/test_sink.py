@@ -41,6 +41,11 @@ GZIP_BODY = gzip.compress(JSON_BODY, mtime=0)
 
 TIMEOUT = 5.0
 
+# What the test's own clock would have said when the run ended. The manifest is
+# assembled at the end of a run (`SPEC.md` §5.5), and in a test that moment is
+# a value the test chose, like every other timestamp here.
+ENDED = "2026-10-09T12:09:00+00:00"
+
 
 class Clock:
     """The injected `now`: a counter, so a recorded time is a chosen value."""
@@ -71,6 +76,10 @@ def running(raw: Path, **kwargs):
         server.server_close()
         thread.join(timeout=TIMEOUT)
         assert not thread.is_alive(), "the sink's thread outlived the test"
+        # The run is over, so the manifest is assembled from the journal --
+        # exactly as `zoo sink` does it in its own `finally` (`SPEC.md` §5.5).
+        # A capture is complete or it is not verified, and these tests verify.
+        manifest.finish(recorder.run, ended_at=ENDED)
 
 
 def post(port: int, path: str, body: bytes, headers: dict[str, str] | None = None):

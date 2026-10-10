@@ -49,6 +49,11 @@ PROJECT_MANIFEST = {
     "framework_version": "2.6.1",
     "mode": "real",
     "model": "gpt-4.1-mini",
+    # The project's own run starts after the capture is up -- the operator
+    # brings the capture up first -- and `zoo capture` copies this document
+    # when the run ends, dated against the capture's own start
+    # (`SPEC.md` §5.3). The fake `Clock` below starts at `12:00:01`.
+    "started_at": "2026-10-09T12:00:30+00:00",
 }
 
 
@@ -129,11 +134,11 @@ class Straight:
         )
 
 
-def project_manifest_file(tmp_path: Path) -> Path:
+def project_manifest_file(tmp_path: Path, document: object = None) -> Path:
     """The path an operator passes with `--project-manifest` (`SPEC.md` §5)."""
     path = tmp_path / "streaming-concierge" / "MANIFEST.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_json(path, PROJECT_MANIFEST)
+    manifest.write_json(path, PROJECT_MANIFEST if document is None else document)
     return path
 
 
@@ -143,8 +148,17 @@ def running_capture(
     forwarder=None,
     version: str | None = None,
     kind: str = "recorded",
+    project_manifest: Path | None = None,
+    log=None,
+    wire=None,
 ):
-    """A started `Capture` on ports the OS picked, with a fake Collector."""
+    """A started `Capture` on ports the OS picked, with a fake Collector.
+
+    `wire` is called with the capture **before** it starts, which is where
+    `cli.run_capture` hands `Progress` the run it must ask to stop: the first
+    line a capture prints is the readiness line, so anything that reacts to a
+    printed line has to be connected before that (`SPEC.md` §4.6).
+    """
     straight = forwarder if forwarder is not None else Straight()
     launcher = FakeLauncher(version or pinned_version())
     started = capture.Capture(
@@ -154,13 +168,17 @@ def running_capture(
         forward=straight,
         pin=collector.pin(COLLECTOR_DIR),
         kind=kind,
-        project_manifest=PROJECT_MANIFEST,
+        project_manifest=project_manifest
+        if project_manifest is not None
+        else project_manifest_file(run.parent.parent.parent),
         raw_port=0,
         json_port=0,
-        log=lambda line: None,
+        log=log if log is not None else (lambda line: None),
     )
     if isinstance(straight, Straight):
         straight.capture = started
+    if wire is not None:
+        wire(started)
     started.start()
     return started, launcher
 
@@ -263,6 +281,8 @@ def test_both_sinks_write_one_manifest_for_the_run(tmp_path):
 
     assert sorted(path.name for path in run.iterdir()) == [
         "MANIFEST.json",
+        manifest.JOURNAL_NAME,
+        manifest.FORWARD_JOURNAL_NAME,
         "json",
         "raw",
     ]
@@ -821,7 +841,7 @@ def stub_capture(
         forward=lambda method, path, headers, body: 200,
         pin=pinned,
         kind="recorded",
-        project_manifest=PROJECT_MANIFEST,
+        project_manifest=project_manifest_file(tmp_path),
         raw_port=0,
         json_port=0,
         log=log if log is not None else (lambda line: None),
@@ -945,3 +965,160 @@ def test_the_sink_banner_is_distinct_from_the_captures_readiness_line():
     assert cli.SINK_BANNER not in capture.READY_LINE
     assert "zoo capture:" in capture.READY_LINE
     assert "zoo sink:" in cli.SINK_BANNER
+
+
+# --- A3b: the manifest is assembled at the end, and covers the capture ------
+
+
+def test_the_end_of_run_manifest_covers_every_file_in_the_run_directory(tmp_path):
+    # The A3b row, through the tee and over a socket: the journals, both
+    # headers files and both bodies, each with a digest of its own.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    started, _ = running_capture(run, kind="real")
+    try:
+        post(
+            started.raw.port,
+            "/v1/traces",
+            PROTOBUF,
+            {"Content-Type": "application/x-protobuf"},
+        )
+    finally:
+        started.stop()
+
+    document = manifest.read(run)
+    accounted = {entry["file"] for entry in document[manifest.BODIES]} | {
+        entry["file"] for entry in document[manifest.FILES]
+    }
+    assert accounted == {
+        path.relative_to(run).as_posix()
+        for path in run.rglob("*")
+        if path.is_file() and path.name != manifest.MANIFEST_NAME
+    }
+    assert manifest.JOURNAL_NAME in accounted
+    assert manifest.FORWARD_JOURNAL_NAME in accounted
+    assert "raw/0001" + manifest.HEADERS_SUFFIX in accounted
+    assert "json/0001" + manifest.HEADERS_SUFFIX in accounted
+    assert cli.verify(tmp_path / "captures") == 0
+
+
+def test_a_project_manifest_rewritten_mid_run_lands_as_the_end_of_run_copy(tmp_path):
+    # The A3b row's first acceptance test, and the manifest-timing decision:
+    # the project writes its own `MANIFEST.json` while it runs, so the copy a
+    # capture carries is the one that is there when the capture ends -- not the
+    # one its previous run left behind (`SPEC.md` §5.3).
+    run = tmp_path / "captures" / "z4" / "run-1"
+    before = dict(PROJECT_MANIFEST, model="the-previous-runs-model")
+    path = project_manifest_file(tmp_path, before)
+    started, _ = running_capture(run, project_manifest=path)
+    try:
+        # What `make run-real` does while the capture is up.
+        during = dict(PROJECT_MANIFEST, model="the-recorded-runs-model")
+        manifest.write_json(path, during)
+    finally:
+        started.stop()
+    assert manifest.read(run)[manifest.PROJECT_MANIFEST] == during
+    assert started.problems == []
+    assert cli._exit_status(started) == 0
+    assert cli.verify(tmp_path / "captures") == 0
+
+
+def test_a_project_manifest_older_than_the_capture_is_a_problem_and_exits_non_zero(
+    tmp_path, capsys
+):
+    # The A3b row's second acceptance test. A document written before this
+    # capture existed is an earlier run's: the capture carries none, says why,
+    # exits non-zero, and does not verify.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    stale = dict(PROJECT_MANIFEST, started_at="2026-10-09T09:00:00+00:00")
+    started, _ = running_capture(
+        run, project_manifest=project_manifest_file(tmp_path, stale)
+    )
+    started.stop()
+
+    document = manifest.read(run)
+    assert document[manifest.PROJECT_MANIFEST] is None
+    assert document[manifest.PROBLEMS] == started.problems
+    assert "09:00:00" in document[manifest.PROBLEMS][0]
+    assert cli._exit_status(started) == 1
+    assert "PROBLEM" in started.summary()
+    assert cli.verify(tmp_path / "captures") == 1
+    assert "09:00:00" in capsys.readouterr().out
+
+
+class Pipe:
+    """A stdout that was closed by whatever was reading it.
+
+    `zoo capture | head -5`: the reader is gone, and the next write raises.
+    """
+
+    def __init__(self) -> None:
+        self.writes = 0
+
+    def write(self, text: str) -> int:
+        self.writes += 1
+        raise BrokenPipeError(32, "Broken pipe")
+
+    def flush(self) -> None:
+        pass
+
+
+class Recording:
+    """A stdout that writes down what was written and when it was flushed."""
+
+    def __init__(self) -> None:
+        self.text = ""
+        self.flushed = ""
+
+    def write(self, text: str) -> int:
+        self.text += text
+        return len(text)
+
+    def flush(self) -> None:
+        self.flushed = self.text
+
+
+def test_every_progress_line_is_flushed_as_it_is_written(tmp_path):
+    # `SPEC.md` §4.6: an operator watching a pet project export into a log file
+    # sees each body as it lands, not when the capture is stopped -- so the
+    # line is flushed while the run is still going, and this test looks at the
+    # stream before the capture stops.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    stream = Recording()
+    progress = cli.Progress(stream)
+    started, _ = running_capture(run, log=progress)
+    try:
+        assert capture.READY_LINE in stream.flushed
+        post(started.raw.port, "/v1/traces", PROTOBUF)
+        assert "raw/0001.body" in stream.flushed
+    finally:
+        started.stop()
+
+
+def test_a_closed_stdout_ends_the_run_and_leaves_the_manifest_complete(tmp_path):
+    # `SPEC.md` §4.6: `zoo capture | head` closes the pipe under three
+    # recording threads. The run ends the way Ctrl-C ends it -- the manifest is
+    # completed -- rather than a traceback out of a handler thread, and the
+    # exit status is what the capture was, not what the pipe did.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    pipe = Pipe()
+    progress = cli.Progress(pipe)
+    started, _ = running_capture(
+        run,
+        log=progress,
+        wire=lambda running: setattr(progress, "on_broken", running.request_stop),
+    )
+    try:
+        # The readiness line already broke it, and nothing raised.
+        assert progress.broken
+        assert pipe.writes == 1, "it kept writing to a stream that is gone"
+        # The run was asked to stop, so the caller's wait returns on its own.
+        started.serve_forever(poll_interval=0.01)
+    finally:
+        started.stop()
+
+    document = manifest.read(run)
+    assert document[manifest.ENDED_AT] > document[manifest.STARTED_AT]
+    assert manifest.FILES in document
+    assert started.problems == []
+    assert cli._exit_status(started) == 0
+    assert cli.verify(tmp_path / "captures") == 0

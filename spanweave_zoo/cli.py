@@ -22,11 +22,12 @@ module under `spanweave_zoo/` reads either: the sink takes `now` as an argument
 and `_system_clock` below is the single place the real time enters the package.
 
 `verify` refuses rather than reassures. A run with no readable `MANIFEST.json`
-has nothing to re-hash against, a body on disk that the manifest never
-recorded is not part of the capture, and a path that looks like nothing is not
-a tree that verified -- saying so with a non-zero exit is the one failure mode
-this command exists to prevent (`CLAUDE.md`, "Honest refusal beats a
-reassuring pass").
+has nothing to re-hash against, a file on disk that the manifest never
+recorded is not part of the capture, a capture with no `ended_at` was never
+completed, a capture that recorded a `problem` is not one to trust, and a path
+that looks like nothing is not a tree that verified -- saying so with a
+non-zero exit is the one failure mode this command exists to prevent
+(`CLAUDE.md`, "Honest refusal beats a reassuring pass").
 
 `--kind` is required on `capture` and has no default. A `recorded` capture and
 a `real` one differ by that declaration alone, the audit reads it as the
@@ -37,14 +38,15 @@ truth, and argparse refusing the command is better than the zoo guessing
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import IO, Any
 
 from spanweave_zoo import __version__, capture, collector, forward, manifest, sink
 
@@ -85,6 +87,64 @@ def _system_sleep(seconds: float) -> None:
     wait for.
     """
     time.sleep(seconds)
+
+
+class Progress:
+    """`zoo capture`'s stdout: flushed every line, and never fatal.
+
+    Two jobs, both of them `SPEC.md` §4.6's. Every line is **flushed as it is
+    written**, because an operator watching a pet project export sees each body
+    as it lands rather than when the capture is stopped.
+
+    And a stdout nobody is reading any more ends the run instead of killing it.
+    `zoo capture | head -5` closes the pipe while three threads are recording;
+    the next `print` raises `BrokenPipeError`, and a traceback out of a sink's
+    handler thread would leave the capture half-finished with a manifest that
+    was never completed. So the first broken pipe asks the run to stop, further
+    lines go nowhere, and the file descriptor is pointed at `os.devnull` so the
+    interpreter's own flush at exit cannot raise either. The capture then ends
+    the way Ctrl-C ends it: the manifest is completed, and the exit status is
+    what the capture was, not what the pipe did.
+    """
+
+    def __init__(self, stream: IO[str] | None = None) -> None:
+        self._stream = stream if stream is not None else sys.stdout
+        self.broken = False
+        # Set once the run exists: the first broken pipe asks it to stop.
+        self.on_broken: Callable[[], None] | None = None
+
+    def __call__(self, line: str) -> None:
+        if self.broken:
+            return
+        try:
+            print(line, file=self._stream, flush=True)
+        except (BrokenPipeError, ValueError):
+            # `ValueError` is the same event seen a moment later: a stream that
+            # has already been closed under us.
+            self.broken = True
+            _silence(self._stream)
+            if self.on_broken is not None:
+                self.on_broken()
+
+
+def _silence(stream: IO[str]) -> None:
+    """Point the stream's own file descriptor at `os.devnull`.
+
+    Python flushes `sys.stdout` as the interpreter exits, and a flush onto a
+    pipe nobody is reading prints `Exception ignored` and changes the exit
+    status -- after the manifest is already complete and the capture already
+    fine. This is the stdlib's own answer to `BrokenPipeError`, and it lives
+    here because `cli.py` is the one module allowed to touch the world. A
+    stream with no file descriptor at all -- a test's, or an interpreter's
+    `sys.stdout` that was replaced -- has nothing to silence, which is what the
+    last two exceptions below are.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, stream.fileno())
+        os.close(devnull)
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 def _is_run(path: Path) -> bool:
@@ -161,9 +221,16 @@ def run_sink(host: str, port: int, out: Path) -> int:
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print(f"\nzoo sink: stopped. {manifest.body_count(recorder.run)} body/bodies.")
+        pass
     finally:
         server.server_close()
+        # The run is over, so the manifest is assembled from the journal
+        # (`SPEC.md` §5.5). `zoo sink` declares no `kind` and carries no
+        # project manifest -- it is the sink alone, with nothing behind it --
+        # but what it did record is covered and `ended_at` says the capture is
+        # complete, which is what `zoo verify` asks of it.
+        manifest.finish(recorder.run, ended_at=_system_clock())
+    print(f"\nzoo sink: stopped. {manifest.body_count(recorder.run)} body/bodies.")
     return 0
 
 
@@ -217,11 +284,13 @@ def run_capture(args: argparse.Namespace) -> int:
     try:
         run = _run_directory(Path(args.captures), args.project, args.run_id)
         pinned = collector.pin(Path(args.collector_dir))
-        # Read before anything is started and before any directory is made
-        # (`SPEC.md` §5): a capture that cannot carry the document saying what
-        # produced it is a capture to refuse now, not one to discover at the
-        # end with bytes already on disk and no way to complete it.
-        project_manifest = manifest.read_project_manifest(Path(args.project_manifest))
+        # Read now, and **copied** when the run ends (`SPEC.md` §5.3). Both:
+        # a path that is not a readable JSON document is a refusal while
+        # nothing is on disk and the operator can still fix the typo, and the
+        # copy the capture carries is the one the project's own run left
+        # behind, which is only knowable at the end.
+        project_manifest = Path(args.project_manifest)
+        manifest.read_project_manifest(project_manifest)
     except (
         ValueError,
         collector.CollectorRefused,
@@ -237,6 +306,9 @@ def run_capture(args: argparse.Namespace) -> int:
         grpc_port=args.collector_grpc_port,
         sleep=_system_sleep,
     )
+    # Every line of the run goes through this: flushed as it is written, and a
+    # closed stdout ends the run rather than killing it (`SPEC.md` §4.6).
+    progress = Progress()
     running = capture.Capture(
         run,
         now=_system_clock,
@@ -250,7 +322,9 @@ def run_capture(args: argparse.Namespace) -> int:
         host=args.host,
         raw_port=args.port,
         json_port=args.json_port,
+        log=progress,
     )
+    progress.on_broken = running.request_stop
     try:
         running.start()
     except (collector.CollectorRefused, sink.CaptureExists, OSError) as refused:
@@ -268,10 +342,10 @@ def run_capture(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        print("\nzoo capture: stopping", flush=True)
+        progress("\nzoo capture: stopping")
         running.stop()
         _restore_signals(previous)
-    print(running.summary())
+    progress(running.summary())
     return _exit_status(running)
 
 

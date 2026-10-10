@@ -22,7 +22,15 @@ the capture is still a capture, and the manifest says which bodies never
 reached it (§4.4).
 
 Two recorders, one `MANIFEST.json`, one lock per run directory (`SPEC.md`
-§4.5). Everything is brought up before anything is written: both sinks bind
+§4.5). The bodies are journalled as they are recorded and the manifest is
+assembled **once**, when the run ends (`SPEC.md` §5.5) -- which is also when
+the project's own `MANIFEST.json` is copied, because the project writes that
+file while it runs and the copy worth carrying is the one its run left behind
+(`SPEC.md` §5.3). A project manifest that is gone by then, or that predates
+this capture, is a `problems` entry and a non-zero exit, never a quiet
+substitution.
+
+Everything is brought up before anything is written: both sinks bind
 their ports, the Collector is started and waited for, and **only then** is the
 run directory created, the manifest labelled, the sinks set serving and the one
 readiness line printed (`SPEC.md` §4.6). A refusal for any reason -- a port
@@ -69,6 +77,18 @@ READY_LINE = "zoo capture: the raw bytes are the record. Ctrl-C to stop."
 STOP_POLL = 0.2
 
 MakeServer = Callable[..., ThreadingHTTPServer]
+
+
+def _say(line: str) -> None:
+    """One progress line, flushed (`SPEC.md` §4.6).
+
+    Flushed on every write, because an operator watching a pet project export
+    into a log file should see each body as it lands rather than when the
+    capture is stopped -- and because a capture that looks silent is a capture
+    an operator is about to kill. `cli.py` passes a printer that also survives
+    a stdout nobody is reading any more.
+    """
+    print(line, flush=True)
 
 
 class _Listener:
@@ -130,12 +150,12 @@ class Capture:
         forward: sink.Forward,
         pin: collector.Pin,
         kind: str,
-        project_manifest: object,
+        project_manifest: Path,
         host: str = "127.0.0.1",
         raw_port: int = DEFAULT_RAW_PORT,
         json_port: int = DEFAULT_JSON_PORT,
         make_server: MakeServer = sink.make_server,
-        log: Callable[[str], None] = print,
+        log: Callable[[str], None] = _say,
         on_record: Callable[[manifest.BodyEntry], None] | None = None,
     ) -> None:
         self.run = run
@@ -146,7 +166,10 @@ class Capture:
         self._pin = pin
         # `kind` and the project's manifest have no defaults on purpose
         # (`SPEC.md` §5): a capture that could be written without declaring
-        # what it is would be a capture the audit has to guess about.
+        # what it is would be a capture the audit has to guess about. The
+        # project's manifest is held as a **path** and read when the run ends
+        # (`SPEC.md` §5.3): the project writes that file while it runs, so the
+        # copy a capture should carry is the one that is there at the end.
         self._kind = kind
         self._project_manifest = project_manifest
         self._raw_port = raw_port
@@ -175,6 +198,11 @@ class Capture:
         # end of a run, and `ended_at` is written exactly once.
         self._labelled = False
         self._finished = False
+        # What the manifest says the capture started at, kept so that the
+        # project's own manifest can be dated against it when the run ends
+        # (`SPEC.md` §5.3). The value is the injected clock's, never read again
+        # from the file.
+        self._started_at: str | None = None
 
     # -- the parts of the run ------------------------------------------------
 
@@ -252,12 +280,12 @@ class Capture:
             raise
 
         self.run.mkdir(parents=True, exist_ok=True)
+        self._started_at = self._now()
         manifest.label(
             self.run,
             kind=self._kind,
             collector_version=version,
-            project_manifest=self._project_manifest,
-            started_at=self._now(),
+            started_at=self._started_at,
         )
         self._labelled = True
 
@@ -351,18 +379,32 @@ class Capture:
         )
 
     def _finish(self) -> None:
-        """Write `ended_at` and the body entries' content headers, once.
+        """Assemble the manifest, once (`SPEC.md` §5.5).
+
+        The journals become `bodies` and `forwards`, every other file in the
+        run directory gets a digest, the project's own manifest is copied as it
+        stands *now*, and `ended_at` goes in last.
 
         Guarded both ways: nothing is written for a run that never got as far
         as a labelled manifest (there is no capture to close, and no directory
         to put one in), and nothing is written twice when `stop()` is called
         again -- `zoo capture` calls it from a `finally` and `start()` calls it
         on the way out of a failure.
+
+        Whatever the completion could not do -- a project manifest that is gone
+        or that belongs to an earlier run, a journal line it could not read --
+        joins `self.problems`, so it is in the manifest, in the summary and in
+        the exit status (`SPEC.md` §5.3).
         """
         if not self._labelled or self._finished:
             return
         self._finished = True
-        manifest.finish(self.run, ended_at=self._now())
+        self.problems += manifest.finish(
+            self.run,
+            ended_at=self._now(),
+            project_manifest=self._project_manifest,
+            started_at=self._started_at,
+        )
 
     # -- what it recorded ----------------------------------------------------
 
