@@ -12,7 +12,8 @@ needs -- see §4.5); §5 is specified and implemented (A3: the whole of
 `MANIFEST.json` and a `zoo verify` that checks the capture in both
 directions; A3a: a capture exists only once it is ready; A3b: the manifest is
 assembled once, at the end, from the run's journals, and covers every file in
-the capture). §§6-7 are headings naming what the batches after A3 will fill;
+the capture; A3c: the octets of each request's head are the record, with the
+stdlib's parse beside them -- see §2.3). §§6-7 are headings naming what the batches after A3 will fill;
 nothing in them is implemented today.
 
 ---
@@ -94,8 +95,10 @@ One capture is one **run** of one **project**:
 captures/<project>/<run-id>/
     raw/
         0001.body               the bytes of the first POST, exactly as received
-        0001.headers.json       that request's method, path and every header
+        0001.headers.raw        that request's head, octet for octet
+        0001.headers.json       the stdlib's parse of that same head
         0002.body
+        0002.headers.raw
         0002.headers.json
         ...
     json/
@@ -109,7 +112,7 @@ captures/<project>/<run-id>/
 `bodies.jsonl` and `forwards.jsonl` are the run's own notes, written as the run
 goes and flushed line by line (§3.5). `MANIFEST.json` is assembled from them
 when the run ends (§5.5), and lists a sha256 for **every** file above except
-itself — the journals and the headers files included (§5.6).
+itself — the journals and both headers files included (§5.6).
 
 ### 2.1 `<project>` and `<run-id>`
 
@@ -130,18 +133,43 @@ There is no file extension naming a format, because the format is whatever the
 request said it was — and that claim lives in the headers file next to it,
 where it can be read rather than inferred from a name the zoo chose.
 
-### 2.3 `raw/NNNN.headers.json`
+### 2.3 `raw/NNNN.headers.raw` and `raw/NNNN.headers.json`
 
-The request that carried `NNNN.body`, as JSON with `sort_keys=True`: its
-method, its path, every header as received (names and values unmodified), the
-body length in bytes, and the receipt time. Headers are the record of what the
-exporter claimed about its own bytes — `Content-Type`, `Content-Encoding`,
-`User-Agent` — and are therefore part of the capture, not metadata about it.
+Headers are the record of what the exporter claimed about its own bytes —
+`Content-Type`, `Content-Encoding`, `User-Agent` — and are therefore part of
+the capture, not metadata about it. Two files hold them, and which is which
+matters:
 
-A1 (§3.2) wrote these key names and A3 kept them. The manifest carries two
-of these values across — `Content-Type` and `Content-Encoding` — so that a
-reader of one `bodies` entry knows what the request claimed, and this file
-stays the record of everything the request said, repeats included (§5.4).
+- **`NNNN.headers.raw` is the unmodified record.** The request line and the
+  header block as the octets arrived — CRLFs intact, in the order sent, up to
+  and including the blank line that ends them. Nothing is decoded, reordered,
+  folded, case-normalized or dropped. This is the file a reader believes.
+- **`NNNN.headers.json` is a parse of those same octets**, written for
+  convenience: Python's `http.server` already parsed the head to route the
+  request, and this is what it got. It is kept *beside* the octets, never
+  instead of them, on the same rule as §2.4's `json/`: if the two disagree,
+  the octets are what arrived.
+
+The parse loses things, which is why the octets are kept. A **bare CR inside a
+header value** is the case this file was added for: HTTP forbids it, real
+clients emit it, and `email`'s header parser splits the line on it — so the
+value arrives truncated and every header after the split is absent from the
+parse altogether. A recorder whose record was the parse would hold what Python
+can represent rather than what the exporter sent, which is the one thing this
+repository exists not to do (§1). The parse is not wrong to be a parse; it is
+only not the record.
+
+`NNNN.headers.json` is JSON with `sort_keys=True`: the method, the path, every
+header the parse produced (names and values unmodified), the body length in
+bytes, and the receipt time. A1 (§3.2) wrote these key names and A3 kept them.
+The manifest carries two of these values across — `Content-Type` and
+`Content-Encoding` — so that a reader of one `bodies` entry knows what the
+request claimed (§5.4); it reads them from the parse because they are the
+values the sink echoed, and the octets remain the record of everything the
+request said, repeats included.
+
+Both files have a digest of their own in the manifest (§5.6), so `zoo verify`
+would refuse a capture whose head octets had been tidied.
 
 ### 2.4 `json/NNNN.json`
 
@@ -206,19 +234,21 @@ stranger's telemetry listens on the loopback unless an operator says
 otherwise.
 
 The sink **refuses to start** — exits non-zero, writing nothing — if `--out`
-already contains a body **or** a `NNNN.headers.json` from an earlier capture. A
-run directory is never reused (§2.1) and a capture is never edited
+already contains a body **or** a headers file of either kind — `.headers.raw`
+or `.headers.json` (§2.3) — from an earlier capture. A run directory is never
+reused (§2.1) and a capture is never edited
 (`CLAUDE.md`, "Halt points"), so a sink pointed at an existing capture must
 stop rather than renumber into it or overwrite it — and half a capture is still
 a capture to refuse, because renumbering into it would overwrite the half that
 is there.
 
 The refusal counts bodies and headers files **separately**, and says which it
-found. The json sink's bodies are `json/NNNN.json` (§4.5), so a glob for its
-suffix also matches `NNNN.headers.json`: counting the two together reported
-"2 body file(s), starting 0001.headers.json" for one recorded export, which is
-a true refusal told wrong. A refusal an operator cannot read is most of the way
-to no refusal.
+found; a request leaves two headers files, so the headers count is per file and
+not per request. The json sink's bodies are `json/NNNN.json` (§4.5), so a glob
+for its suffix also matches `NNNN.headers.json`: counting the two together
+reported "2 body file(s), starting 0001.headers.json" for one recorded export,
+which is a true refusal told wrong. A refusal an operator cannot read is most
+of the way to no refusal.
 
 ### 3.2 What one POST becomes
 
@@ -230,7 +260,14 @@ A `POST` to `/v1/traces` — that exact path, no other — is recorded as the ne
   written as protobuf. The sink does not decompress, decode, parse, validate,
   re-encode or truncate it, and does not care whether it is well-formed
   anything.
-- **`NNNN.headers.json`**: that request, as JSON with `sort_keys=True`:
+- **`NNNN.headers.raw`**: the octets of that request's head, as they arrived
+  — the request line, then every header line, CRLFs intact, up to and
+  including the blank line that ends the block (§2.3). It is written from the
+  bytes as they are read off the socket, before anything parses them, and the
+  body is not in it. This is the unmodified record of the request; the file
+  below is a parse of it.
+- **`NNNN.headers.json`**: that same request as the stdlib parsed it, as JSON
+  with `sort_keys=True`:
 
   ```json
   {
@@ -251,6 +288,9 @@ A `POST` to `/v1/traces` — that exact path, no other — is recorded as the ne
   disk. `received_at` comes from the injected `now` (§3.6) and is the only
   clock the record has. (§2.3: A1 wrote these key names and A3 kept them;
   §5.4 carries two of these values into the manifest and changes nothing here.)
+  A head the parse cannot represent — a bare CR in a value — is in
+  `NNNN.headers.raw` and not here, and §2.3 says which of the two a reader
+  believes.
 
 `NNNN` is a zero-padded four-digit counter in **receipt order**, starting at
 `0001`, assigned when the body has been read and under a lock, so two POSTs in
@@ -271,7 +311,8 @@ accept. The sink is not a receiver and its `200` means "recorded", never
 
 A POST to any other path is answered **`404`** — empty body, same echoed
 content type — and is **still recorded**, as `NNNN.body` +
-`NNNN.headers.json` under `rejected/`, with its own counter starting at `0001`.
+`NNNN.headers.raw` + `NNNN.headers.json` under `rejected/`, with its own
+counter starting at `0001`.
 The counters are separate so that `raw/NNNN` stays the contiguous sequence
 `json/NNNN` is paired with (§2.4).
 
@@ -523,9 +564,9 @@ Three things follow, and each is a decision rather than an accident:
    zoo's own exporter endpoint is wrong, which is worth finding out.
 
 The json sink writes `json/NNNN.json` rather than `NNNN.body`, because §2.4
-names that file. Its `NNNN.headers.json` is written beside it like any other
-request's: the Collector is an HTTP client like any other and the sink does not
-keep less of what one caller sent than of another's. A **rejected** body keeps
+names that file. Its two headers files are written beside it like any other
+request's (§2.3): the Collector is an HTTP client like any other and the sink
+does not keep less of what one caller sent than of another's. A **rejected** body keeps
 `.body` in either sink (§3.4): it is not a re-encoding of anything, it is bytes
 aimed at the wrong path, and naming it `.json` would be a claim about its
 contents — which is the one kind of claim the sink does not make.
@@ -780,7 +821,9 @@ re-hashes the tree against it on every `make check`.
     {"bytes": 211, "file": "bodies.jsonl", "sha256": "4f7c91..."},
     {"bytes": 104, "file": "forwards.jsonl", "sha256": "b1d4a0..."},
     {"bytes": 389, "file": "json/0001.headers.json", "sha256": "7a0c3e..."},
-    {"bytes": 412, "file": "raw/0001.headers.json", "sha256": "e3b0c4..."}
+    {"bytes": 214, "file": "json/0001.headers.raw", "sha256": "5d2f88..."},
+    {"bytes": 412, "file": "raw/0001.headers.json", "sha256": "e3b0c4..."},
+    {"bytes": 231, "file": "raw/0001.headers.raw", "sha256": "c0ffee..."}
   ],
   "forwards": [{"file": "raw/0001.body", "status": 200}],
   "kind": "real",
@@ -979,12 +1022,17 @@ For every run it finds, `zoo verify` reads `MANIFEST.json` and then checks
    entry of its own. Only `MANIFEST.json` accounts for nothing, including
    itself.
 
-Nothing is accounted for by sitting *beside* something that is listed. A
-`NNNN.headers.json` has an entry and a digest of its own, because the headers
-are the record of what the exporter claimed about its own bytes (§2.3): a
-rewritten `Content-Type` in a headers file changes what the capture says the
-request was, while every body in it still hashes to what it hashed to. A check
-that covered only bodies would call that capture verified.
+Nothing is accounted for by sitting *beside* something that is listed. Each of
+a request's two headers files has an entry and a digest of its own, because the
+headers are the record of what the exporter claimed about its own bytes (§2.3):
+a rewritten `Content-Type` in `NNNN.headers.json`, or a bare CR tidied out of
+`NNNN.headers.raw`, changes what the capture says the request was, while every
+body in it still hashes to what it hashed to. A check that covered only bodies
+would call that capture verified.
+
+The walk is also why `NNNN.headers.raw` needed nothing added to `verify` when
+A3c introduced it: `files` is a walk of the run directory, so a capture is
+covered whether or not a recorder announced a file.
 
 It then checks three things the manifest says about itself:
 

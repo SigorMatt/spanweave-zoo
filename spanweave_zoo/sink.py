@@ -29,6 +29,16 @@ rewriting a manifest that has an entry per POST in it is not. The digest is
 still written as the body is recorded, and there is still exactly one home
 for it.
 
+A3c made the octets of the head part of the record (`SPEC.md` §2.3): every
+request leaves a `NNNN.headers.raw` -- the request line and the header block as
+they arrived, CRLFs intact -- beside the `NNNN.headers.json` that is the
+stdlib's parse of those same octets. The parse is a convenience and it loses
+things: `email`'s header parser splits a header line on a bare CR and then
+stops, so the value is truncated and every header after the split is absent
+from it. A recorder whose record was the parse would hold what Python can
+represent rather than what arrived, so the octets are kept as they go past
+(`_Head`) and the parse is kept beside them.
+
 A2 added one more seam and no new taste (`SPEC.md` §4.3): `forward`, which the
 recorder calls with the body **once the body is on disk**, so the Collector can
 re-encode the same bytes to JSON beside the record. The order is the point --
@@ -39,6 +49,7 @@ not a decode: it hands on the bytes and the headers it was given.
 
 from __future__ import annotations
 
+import io
 import threading
 from collections.abc import Callable, Sequence
 from http import HTTPStatus
@@ -67,6 +78,14 @@ JSON_SUFFIX = ".json"
 # body's content headers across (`SPEC.md` §5), so both ends name the same
 # constant rather than the same string twice.
 HEADERS_SUFFIX = manifest.HEADERS_SUFFIX
+# The octets of the head, beside the parse of it (`SPEC.md` §2.3). This name
+# lives here and not in `manifest.py` because nothing reads this file: the
+# manifest covers it by walking the run directory (`SPEC.md` §5.6), which is
+# the point -- a capture is covered whether or not a recorder announced a file.
+HEADERS_RAW_SUFFIX = ".headers.raw"
+# Both of them, for the startup refusal: either file is a capture's, and a
+# `*.json` glob over a json sink's directory also matches `*.headers.json`.
+HEADERS_GLOB = "*.headers.*"
 
 # (method, path, headers as received, body) -> the forwarded request's status.
 # Raises on a forward that did not happen. `SPEC.md` §4.8.
@@ -126,17 +145,17 @@ class Recorder:
             (self.raw, body_suffix),
             (self.rejected, BODY_SUFFIX),
         ):
-            # A headers file is not a body, and the json sink's bodies are
-            # `*.json` (`SPEC.md` §4.5) -- so `*` + suffix would also match
+            # Either headers file is a capture's (`SPEC.md` §2.3, §3.1), and
+            # neither is a body -- while the json sink's bodies are `*.json`
+            # (`SPEC.md` §4.5), so `*` + suffix would also match
             # `NNNN.headers.json` and count it as one. Observed in the real
             # flow: a re-used run id refused with "2 body file(s), starting
             # 0001.headers.json", which is a true refusal told wrong, and a
             # refusal nobody can read is most of the way to no refusal.
-            headers = sorted(directory.glob("*" + HEADERS_SUFFIX))
+            headers = sorted(directory.glob(HEADERS_GLOB))
+            not_bodies = set(headers)
             bodies = sorted(
-                path
-                for path in directory.glob("*" + suffix)
-                if not path.name.endswith(HEADERS_SUFFIX)
+                path for path in directory.glob("*" + suffix) if path not in not_bodies
             )
             if bodies or headers:
                 raise CaptureExists(
@@ -169,10 +188,21 @@ class Recorder:
         method: str,
         path: str,
         headers: Sequence[tuple[str, str]],
+        head: bytes,
         body: bytes,
         accepted: bool,
     ) -> manifest.BodyEntry:
-        """Write one request to disk and return its manifest entry."""
+        """Write one request to disk and return its manifest entry.
+
+        `head` is the request line and the header block as the octets arrived
+        (`SPEC.md` §2.3) and `headers` is the stdlib's parse of those same
+        octets. Both are written, the octets first: the record is not the
+        parse, and a head the parse cannot represent -- a bare CR in a value --
+        is still in the capture. `head` is a required argument because every
+        recorded request has one, and a recorder that could be handed the parse
+        without the octets is a recorder that can write a capture missing its
+        own record.
+        """
         if self._before_record is not None:
             self._before_record(body)
 
@@ -188,6 +218,8 @@ class Recorder:
             directory.mkdir(parents=True, exist_ok=True)
             body_file = directory / (stem + suffix)
             body_file.write_bytes(body)
+            # The unmodified record, then the parse of it (`SPEC.md` §2.3).
+            (directory / (stem + HEADERS_RAW_SUFFIX)).write_bytes(head)
             manifest.write_json(
                 directory / (stem + HEADERS_SUFFIX),
                 {
@@ -254,6 +286,58 @@ class Recorder:
         return [outcome for outcome in self.forwards if outcome.failed]
 
 
+class _Head(io.BufferedIOBase):
+    """The request stream, with the octets of one head kept as they are read.
+
+    The only way to hold what a client actually sent is to keep the bytes on
+    their way past: `http.server` reads the request line and then
+    `http.client.parse_headers` reads the header block, both by `readline` off
+    this stream, and what that parse hands back is already a lossy view of
+    them: `email`'s header parser splits a header line on a bare CR and then
+    stops, so a head reconstructed from `self.headers` is a record of what
+    Python could represent and not of what arrived.
+
+    Recording is per *request*, not per connection: a keep-alive connection
+    carries several, and `begin` is called for each. It stops the moment the
+    header block has been parsed, so the body -- read by `read`, not
+    `readline` -- is never in the head. Nothing here interprets an octet; it
+    delegates every call and appends to a buffer.
+    """
+
+    def __init__(self, stream: io.BufferedIOBase) -> None:
+        super().__init__()
+        self._stream = stream
+        self._head = bytearray()
+        self._recording = False
+
+    def begin(self) -> None:
+        """Start one head: the next readlines are this request's octets."""
+        self._head = bytearray()
+        self._recording = True
+
+    def end(self) -> bytes:
+        """The head as received, and stop recording. Idempotent."""
+        self._recording = False
+        return bytes(self._head)
+
+    def readline(self, size: int | None = -1, /) -> bytes:
+        """The one call the head arrives by, so the one call that records."""
+        line = self._stream.readline(size)
+        if self._recording:
+            self._head += line
+        return line
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        """The body's call: never recorded, because a body is not a head."""
+        return self._stream.read(size)
+
+    def readable(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        self._stream.close()
+
+
 class _Handler(BaseHTTPRequestHandler):
     """One POST: read the declared bytes, record them, answer.
 
@@ -265,6 +349,32 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "zoo-sink"
     sys_version = ""
+
+    _stream: _Head
+    _head: bytes = b""
+
+    def setup(self) -> None:
+        """Wrap the request stream before anything reads a byte off it."""
+        super().setup()
+        self._stream = _Head(self.rfile)
+        self.rfile = self._stream
+
+    def handle_one_request(self) -> None:
+        """One request on this connection, so one head (`SPEC.md` §2.3)."""
+        self._head = b""
+        self._stream.begin()
+        super().handle_one_request()
+
+    def parse_request(self) -> bool:
+        """The stdlib's parse, and the octets it was made from, kept both.
+
+        `super()` has read the request line and the header block by the time
+        it returns, and nothing after it is part of the head -- so this is
+        where recording stops, whether the parse succeeded or not.
+        """
+        parsed = super().parse_request()
+        self._head = self._stream.end()
+        return parsed
 
     @property
     def _recorder(self) -> Recorder:
@@ -280,6 +390,7 @@ class _Handler(BaseHTTPRequestHandler):
             method=self.command,
             path=self.path,
             headers=list(self.headers.items()),
+            head=self._head,
             body=body,
             accepted=accepted,
         )

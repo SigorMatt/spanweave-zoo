@@ -93,12 +93,34 @@ def post(port: int, path: str, body: bytes, headers: dict[str, str] | None = Non
         connection.close()
 
 
+def send_octets(port: int, head: bytes, body: bytes = b"") -> bytes:
+    """One request written to the socket as octets, and the answer read back.
+
+    `post` goes through `http.client`, which composes the head itself and
+    refuses a header value it considers illegal -- so it cannot send the heads
+    these tests are about. Here the test chooses every octet, which is the
+    only way to assert what the recorder wrote is what the client sent. Each
+    head below says `Connection: close`, so the read ends at EOF rather than
+    on a timeout.
+    """
+    with socket.create_connection(("127.0.0.1", port), timeout=TIMEOUT) as client:
+        client.sendall(head + body)
+        answer = b""
+        while chunk := client.recv(4096):
+            answer += chunk
+    return answer
+
+
 def body_of(raw: Path, number: int = 1) -> bytes:
     return (raw / f"{number:04d}.body").read_bytes()
 
 
 def headers_of(raw: Path, number: int = 1):
     return json.loads((raw / f"{number:04d}.headers.json").read_text())
+
+
+def head_of(raw: Path, number: int = 1) -> bytes:
+    return (raw / f"{number:04d}.headers.raw").read_bytes()
 
 
 # --- the bytes come back byte for byte -------------------------------------
@@ -153,6 +175,123 @@ def test_a_gzip_body_is_written_still_compressed(tmp_path):
     # It is still readable as gzip -- by whoever decides to decode it, which
     # is never the sink.
     assert gzip.decompress(written) == JSON_BODY
+
+
+# --- the header octets are the record (`SPEC.md` §2.3) ----------------------
+
+# A well-formed head, written by the test octet by octet. `Content-Length`
+# and `Connection` come before anything else a test adds, so a head the stdlib
+# stops parsing part-way through still frames its body and still closes.
+HEAD = (
+    b"POST /v1/traces HTTP/1.1\r\n"
+    b"Host: 127.0.0.1\r\n"
+    b"Content-Type: application/x-protobuf\r\n"
+    b"Content-Length: 5\r\n"
+    b"Connection: close\r\n"
+    b"\r\n"
+)
+
+# The same head with a **bare CR** inside a header value -- one legal-looking
+# `X-Weird: a\rb` line that HTTP forbids and real clients still emit. The
+# stdlib's parse cannot represent it: `email`'s header parser splits on a bare
+# CR, so it sees `X-Weird: a` and then a line that is not a header at all.
+BARE_CR_HEAD = HEAD[: -len(b"\r\n")] + b"X-Weird: a\rb\r\n" + b"\r\n"
+
+
+def test_the_headers_raw_file_is_the_octets_the_client_sent(tmp_path):
+    # `SPEC.md` §2.3: `NNNN.headers.raw` is the unmodified record -- the
+    # request line and the header block as received, CRLFs intact, up to and
+    # including the blank line that ends them.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    with running(raw) as (_, port):
+        answer = send_octets(port, HEAD, b"hello")
+    assert answer.startswith(b"HTTP/1.1 200"), answer
+    assert head_of(raw) == HEAD
+    assert body_of(raw) == b"hello"
+
+
+def test_a_bare_cr_in_a_header_value_is_in_raw_and_not_in_json(tmp_path):
+    # The degenerate head, and the reason the raw file exists. The octets are
+    # kept; the stdlib's parse beside them cannot carry them, and says so by
+    # not carrying them -- rather than the capture quietly becoming a record of
+    # what Python could represent.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    with running(raw) as (_, port):
+        answer = send_octets(port, BARE_CR_HEAD, b"hello")
+    assert answer.startswith(b"HTTP/1.1 200"), answer
+
+    recorded = head_of(raw)
+    assert recorded == BARE_CR_HEAD, "the head was reconstructed, not recorded"
+    assert b"X-Weird: a\rb\r\n" in recorded
+
+    parsed = headers_of(raw)["headers"]
+    assert ["X-Weird", "a"] in parsed, "the stdlib's parse is not what it was"
+    assert ["X-Weird", "a\rb"] not in parsed
+    assert all("\r" not in value for _, value in parsed)
+    # And the bytes after the head are still the body: recording the octets
+    # reads nothing the request parser did not already read.
+    assert body_of(raw) == b"hello"
+
+
+def test_each_request_on_one_connection_gets_its_own_head(tmp_path):
+    # A keep-alive connection carries several requests, so the recording is
+    # per request and not per connection: head 2 is head 2, not heads 1 and 2
+    # concatenated, and no body is in either.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    bodies = (b"one", b"a longer second body")
+    with running(raw) as (_, port):
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=TIMEOUT)
+        try:
+            for body in bodies:
+                connection.request(
+                    "POST",
+                    "/v1/traces",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                assert response.status == 200
+                assert response.read() == b""
+        finally:
+            connection.close()
+
+    first, second = head_of(raw, 1), head_of(raw, 2)
+    assert first != second, "both requests recorded the same head"
+    paired = zip((first, second), bodies, strict=True)
+    for number, (head, body) in enumerate(paired, start=1):
+        assert head.startswith(b"POST /v1/traces HTTP/1.1\r\n")
+        assert head.endswith(b"\r\n\r\n")
+        assert head.count(b"POST /v1/traces") == 1
+        assert head.count(b"\r\n\r\n") == 1
+        assert body not in head, "the body landed in the head"
+        assert body_of(raw, number) == body
+        assert f"Content-Length: {len(body)}\r\n".encode() in head
+
+
+def test_a_rejected_post_keeps_its_head_too(tmp_path):
+    # `SPEC.md` §3.4: a POST aimed at another path is recorded anyway, and the
+    # octets of its head are as much of that record as its bytes are.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    with running(raw) as (_, port):
+        answer = send_octets(
+            port, HEAD.replace(b"/v1/traces", b"/v1/metrics"), b"hello"
+        )
+    assert answer.startswith(b"HTTP/1.1 404"), answer
+    rejected = raw.parent / sink.REJECTED_DIR
+    assert head_of(rejected) == HEAD.replace(b"/v1/traces", b"/v1/metrics")
+    assert body_of(rejected) == b"hello"
+
+
+def test_the_manifest_covers_the_head_it_was_never_told_about(tmp_path):
+    # The carry-over from A3b: `files` is a walk of the run directory, so a
+    # file no recorder announced is covered all the same -- and a capture whose
+    # head octets nobody hashed would be a capture `zoo verify` could not check
+    # (`SPEC.md` §5.6).
+    raw = _capture(tmp_path)
+    listed = {entry["file"] for entry in manifest.read(raw.parent)[manifest.FILES]}
+    assert "raw/0001.headers.raw" in listed
+    assert "rejected/0001.headers.raw" in listed
+    assert manifest.problems(raw.parent) == []
 
 
 # --- receipt order, with two POSTs genuinely in flight ----------------------

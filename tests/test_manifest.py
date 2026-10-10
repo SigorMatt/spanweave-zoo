@@ -55,6 +55,17 @@ PROJECT_MANIFEST = {
 }
 
 BODY = b"bytes the zoo does not look at"
+
+# The head that carried `BODY`, as the sink records it (`SPEC.md` §2.3): the
+# request line and the header block, CRLFs intact, up to the blank line.
+HEAD = (
+    b"POST /v1/traces HTTP/1.1\r\n"
+    b"Content-Type: application/x-protobuf\r\n"
+    b"Content-Encoding: gzip\r\n"
+    b"Content-Length: %d\r\n"
+    b"\r\n"
+) % len(BODY)
+
 STARTED = "2026-10-09T12:00:00+00:00"
 ENDED = "2026-10-09T12:00:09+00:00"
 
@@ -79,6 +90,7 @@ def hand_written_capture(
     raw = run / "raw"
     raw.mkdir(parents=True)
     (raw / "0001.body").write_bytes(BODY)
+    (raw / ("0001" + sink.HEADERS_RAW_SUFFIX)).write_bytes(HEAD)
     manifest.write_json(
         raw / ("0001" + manifest.HEADERS_SUFFIX),
         {
@@ -348,6 +360,21 @@ def test_a_rewritten_content_type_in_headers_json_fails_verify(tmp_path, capsys)
     assert (run / "raw" / "0001.body").read_bytes() == BODY
 
 
+def test_a_rewritten_head_in_headers_raw_fails_verify(tmp_path, capsys):
+    # A3c's file is covered by the same walk, and for the same reason: the
+    # octets of the head are the unmodified record of the request (`SPEC.md`
+    # §2.3), so tidying a bare CR out of them -- the one thing that file exists
+    # to hold -- is a capture that no longer says what arrived.
+    run = hand_written_capture(tmp_path)
+    head_file = run / "raw" / ("0001" + sink.HEADERS_RAW_SUFFIX)
+    head_file.write_bytes(HEAD.replace(b"gzip", b"identity"))
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert "raw/0001" + sink.HEADERS_RAW_SUFFIX in out
+    assert "sha256" in out
+
+
 def test_a_kind_the_spec_does_not_name_fails_verify(tmp_path, capsys):
     # The A3b row's fourth acceptance test. `kind` is the one field the audit
     # reads as the truth about a run (`SPEC.md` §5.2), so a manifest declaring
@@ -508,6 +535,7 @@ def _record(recorder: sink.Recorder, first: int, last: int) -> float:
             method="POST",
             path="/v1/traces",
             headers=HEADERS,
+            head=HEAD,
             body=b"body %04d" % number,
             accepted=True,
         )

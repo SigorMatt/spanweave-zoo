@@ -44,8 +44,10 @@ zoo sink --port 4318 --out captures/z4/2026-10-09T12-00-00Z/raw
 
 Every `POST /v1/traces` becomes `raw/NNNN.body` -- the bytes exactly as
 received, **still gzipped if they arrived gzipped** -- beside
-`raw/NNNN.headers.json`, and is answered `200` with an empty body. A POST to
-any other path is answered `404` and recorded anyway, under `rejected/`: an
+`raw/NNNN.headers.raw`, the octets of the request's head as they arrived, and
+`raw/NNNN.headers.json`, the stdlib's parse of that same head; it is answered
+`200` with an empty body. A POST to any other path is answered `404` and
+recorded anyway, under `rejected/`: an
 exporter aimed at the wrong endpoint is exactly the kind of fact this
 repository exists to hold. The sink never decodes, decompresses or parses, and
 its `200` means "recorded", never "understood" (`SPEC.md` §3).
@@ -258,7 +260,8 @@ checked.
 
 ```
 captures/<project>/<run-id>/raw/NNNN.body          the bytes as received
-captures/<project>/<run-id>/raw/NNNN.headers.json  the request, verbatim
+captures/<project>/<run-id>/raw/NNNN.headers.raw   the head, octet for octet
+captures/<project>/<run-id>/raw/NNNN.headers.json  the parse of that head
 captures/<project>/<run-id>/json/NNNN.json         the Collector's re-encoding
 captures/<project>/<run-id>/rejected/NNNN.body     a POST aimed at another path
 captures/<project>/<run-id>/bodies.jsonl           each body as it was recorded

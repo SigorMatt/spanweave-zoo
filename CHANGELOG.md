@@ -3,6 +3,30 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A3c — the header octets are the record
+
+- **Every request leaves `NNNN.headers.raw`** beside its body and its
+  `NNNN.headers.json` (`SPEC.md` §2.3, §3.2, §3.4): the request line and the
+  header block as the octets arrived, CRLFs intact, up to and including the
+  blank line that ends them. The octets are kept as they are read off the
+  socket, before anything parses them; the body is not in the file. `SPEC.md`
+  §2.3 now says which of the two files is the unmodified record (`.raw`) and
+  which is the parse beside it (`.json`), on the same rule as the Collector's
+  `json/`: if they disagree, the octets are what arrived.
+- **A head the stdlib cannot represent is now in the capture.** `email`'s
+  header parser splits a header line on a **bare CR** — HTTP forbids one and
+  real clients emit one — so the value arrives truncated and every header
+  after the split is absent from the parse altogether. That head is now
+  recorded in full in `.raw`, while `.json` stays exactly what Python got: a
+  recorder whose record was the parse would hold what Python can represent
+  rather than what the exporter sent.
+- **Nothing was added to `zoo verify`**, which is the point of A3b's walk: the
+  manifest's `files` list is built by walking the run directory, so each
+  `NNNN.headers.raw` gets a digest of its own without a recorder announcing it,
+  and a bare CR tidied out of one fails verify (`SPEC.md` §5.6). The sink's
+  startup refusal counts headers files of either kind, so a run directory
+  holding only heads from an earlier capture is still refused (`SPEC.md` §3.1).
+
 ## A3b — the manifest is written once, at the end, and covers every file
 
 - **Bodies are journalled, and the manifest is assembled when the run ends**
