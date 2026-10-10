@@ -8,8 +8,8 @@ next series' probes. One batch = one sub-agent = one commit = one concern.
 This file plus git is the only state; any session can resume cold from it.
 
 Last updated: 2026-10-10 (run 1 complete: A0, A1, A2, A3 done; the run-1
-cold review is read and decided, see §3. Run 2 is under way: A3a, A3b
-done, then A3c → A3d → A0a → A0b → A4, then a cold review.)
+cold review is read and decided, see §3. Run 2 is under way: A3a, A3b,
+A3c done, then A3d → A0a → A0b → A4, then a cold review.)
 
 ---
 
@@ -157,8 +157,8 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | A3 | **The capture is a manifest, immutable.** `zoo capture` ends by writing `MANIFEST.json` (SPEC §5): the project's own `MANIFEST.json` (copied from a path the operator passes), the zoo's `sink_version`, `collector_version`, `kind` (`recorded` \| `real`), `started_at`/`ended_at` from the injected clock, and `bodies: [{"file": ..., "sha256": ..., "content_type": ..., "content_encoding": ..., "bytes": ...}]` for raw and json; `zoo verify [path]` re-hashes everything under `captures/` and exits non-zero on any difference or any body without a manifest entry; `make check` runs `zoo verify` (already wired in A0; A3 extends it from refusal to manifest re-hashing). `README.md` §"Running a pet project's real run": the commands an operator types — **the commands the README lists**, in two terminals. Tests red on the parent: a manifest with a stale hash fails verify; a body not listed fails verify; `kind` is required. **End of run 1: the sink is ready for the pilot project's real run.** | done (9074ecd) | 6 |
 | A3a | **A capture exists only once it is ready, and a refusal writes nothing.** Review F2, F8. Readiness is: three listeners accepting **and** the Collector child alive with its ready line read from its log; only then is `captures/<project>/<run-id>/` created and the single readiness line `zoo capture: the raw bytes are the record. Ctrl-C to stop.` printed. A refusal before readiness (any port held, the Collector exiting, a bad config) names the port or the cause, exits 2, and leaves no directory. During a capture, the Collector child exiting is recorded (`problems: ["collector exited: <code>"]`) and reported at exit non-zero. Tests red on the parent: a foreign listener on 4320 → refusal naming 4320, no directory; the Collector killed mid-capture → non-zero exit and the problem in the manifest; `zoo sink`'s banner is distinct from the readiness line. Mutation: a probe that only connects to the port passes the foreign-listener test's inverse. | done (2b3c499) | 8 |
 | A3b | **The manifest is written once, at the end, and covers every file.** Review F4, F7, F9, F10, F12. Bodies journalled to `bodies.jsonl` (one line per POST, flushed); the manifest assembled at `Ctrl-C` from the journal; the project manifest copied then, with the `started_at` check of §3 and `project_manifest: null` + `problems` on failure; a sha256 entry for every file in the run directory except `MANIFEST.json`; `kind` ∈ {recorded, real}; `ended_at` set last. `zoo verify` re-hashes every listed file and fails on an unlisted one, a missing one, a missing `ended_at`, or any `problems`. Progress lines flushed on every write; `BrokenPipeError` on stdout finalizes and exits 0 with the manifest complete. Tests red on the parent: a project manifest rewritten mid-run lands as the end-of-run copy; a project manifest older than the capture → `problems`, exit non-zero, verify fails; a rewritten `Content-Type` in `headers.json` fails verify; `kind` flipped fails verify; 1,600 bodies at constant per-body cost (measure and put the three numbers in the body). Mutation: a verify that skips `headers.json` passes the rewritten-content-type test's inverse. | done (810f2db) | 10 |
-| A3c | **The header octets are the record.** Review F6. `NNNN.headers.raw`: the request line and header block as received, CRLFs intact, up to the blank line; `NNNN.headers.json` unchanged beside it; SPEC §2.3 says the raw file is the unmodified record and the json is the parse. Test red on the parent: a bare CR inside a header value is present in `.raw` and absent as a header in `.json`; `.raw` is byte-identical to what the client sent. Mutation: writing the stdlib's reconstructed headers to `.raw` fails the bare-CR test. | todo | 5 |
-| A3d | **`verify` refuses what it did not check, and CI checks something.** Review F1, F5, T1, T24. `zoo verify <path>` on a path that is not a capture → exit 2 naming the path; `cli.py`'s docstring says what the code does. A test recomputes the two contract sha256s in README and fails on drift. The import gate exempts `spanweave_zoo/audit.py` by path, not basename. `tests/fixtures/capture/` holds one real capture (one protobuf span through the real tee, both sides, headers raw and json, manifest) and CI's `make verify` is shown to read it. Tests red on the parent for each. | awaiting A3c | 6 |
+| A3c | **The header octets are the record.** Review F6. `NNNN.headers.raw`: the request line and header block as received, CRLFs intact, up to the blank line; `NNNN.headers.json` unchanged beside it; SPEC §2.3 says the raw file is the unmodified record and the json is the parse. Test red on the parent: a bare CR inside a header value is present in `.raw` and absent as a header in `.json`; `.raw` is byte-identical to what the client sent. Mutation: writing the stdlib's reconstructed headers to `.raw` fails the bare-CR test. | done (8af242d) | 5 |
+| A3d | **`verify` refuses what it did not check, and CI checks something.** Review F1, F5, T1, T24. `zoo verify <path>` on a path that is not a capture → exit 2 naming the path; `cli.py`'s docstring says what the code does. A test recomputes the two contract sha256s in README and fails on drift. The import gate exempts `spanweave_zoo/audit.py` by path, not basename. `tests/fixtures/capture/` holds one real capture (one protobuf span through the real tee, both sides, headers raw and json, manifest) and CI's `make verify` is shown to read it. Tests red on the parent for each. | todo | 6 |
 | A0a | **The README is true, the licence exists, and the open question has a home.** Review F3, F15, F14, T5, T18, T20, F16. README: the operator section lists the exact commands, each complete and runnable as printed, numbered, with `uv sync --extra dev` as the first; the row and §4 stop counting and cite the README. `LICENSE` MIT and `license` in `pyproject.toml`. `OPEN_QUESTIONS.md` created with §1 = the manifest-timing question and its decision (§3). §4 gains: the A2 CI line; the `c965c9b` → `9074ecd` force-push; the `b913e2b` two-clause subject. Docs only; say so in the body. | awaiting A3d | 5 |
 | A0b | **CI proves the Collector claim.** Review T25. A sixth job `collector (ubuntu-latest)`: `make collector` with the release archive cached by its sha256, then the `@needs_collector` tests run and are shown **not skipped** (the job fails if any is). Pin the Collector download's sha in `collector/SHA256SUMS` as today. Say in the body how long the job takes. | awaiting A0a | 5 |
 | A4 | **The replayer re-sends what was captured.** `zoo replay captures/<project>/<run-id> --to http://host:port [--raw\|--json] [--timing]` (SPEC §6): re-sends each body with its captured headers (content type and encoding intact) in receipt order; `--timing` sleeps the captured inter-arrival gaps through an injected `sleep`; prints each response status; exits non-zero if any status is not 2xx but still sends the rest. Tests: replaying a capture into a fresh sink produces byte-identical bodies and headers; `--timing` on a fake clock sleeps the recorded gaps. | awaiting A3 | 6 |
@@ -342,6 +342,23 @@ Every batch: CI green on the pushed tip before `done`.
   "a capture is never silently fine" plus losslessness, but the maintainer
   may prefer `project_manifest: null` or silence there; it is open as a
   preference, not as a defect.
+
+- 2026-10-10 A3c (8af242d): `NNNN.headers.raw` is the head octets as the
+  client sent them, kept by a wrapper on the request stream as `readline`
+  reads them, written **before** the parse; `.headers.json` stays beside it
+  as the stdlib's parse, and SPEC §2.3 now says which is which. The row's
+  mutation is more load-bearing than it looked: writing the stdlib's
+  *reconstructed* head to `.raw` is caught **only** by the bare-CR test —
+  on a well-formed head the reconstruction is byte-identical, so the
+  octet-identity test passes under the mutation. A degenerate case worth
+  knowing before Z4's run: a bare CR early in a head makes the stdlib drop
+  every later header, `Content-Length` included, so such a request records
+  a zero-byte body — honest, and `.raw` is the file that explains it.
+- 2026-10-10 A3c: two things A3d inherits. `Recorder.record` now requires a
+  `head=` argument, and the startup refusal counts header files per file,
+  so a one-request directory reports 2 — A3d's `tests/fixtures/capture/`
+  must carry `NNNN.headers.raw` on both the raw and the json side or
+  `verify` will flag a missing or unlisted file.
 
 ## 5. Origins
 
