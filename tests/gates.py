@@ -1,11 +1,13 @@
 """The invariant gate, as a reusable check over source text.
 
 One gate (`CLAUDE.md` §0.6): **no module under `spanweave_zoo/` imports
-`spanweave` or `spanweave_live` except `audit.py`.** The sink records bytes and
+`spanweave` or `spanweave_live` except `spanweave_zoo/audit.py`.** The sink
+records bytes and
 the replayer re-sends them; neither may learn what a span means, and the
 separation is what keeps a capture a record rather than an interpretation. The
 audit is the one module whose whole job is to run the two libraries over a
-capture, so it is the one exemption.
+capture, so it is the one exemption -- and the exemption is that **path**, not
+the file name `audit.py` (`EXEMPT_PATHS`).
 
 It is an AST check, not a grep: a grep is fooled by a comment, a docstring and
 a line it never thought of, while the AST sees `import spanweave` wherever it
@@ -33,10 +35,16 @@ PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "spanweave_zoo"
 # consumer of. Submodules count: `spanweave.adapters` is `spanweave`.
 ANALYSER_MODULES = ("spanweave", "spanweave_live")
 
-# The one exemption, by file name at the package root (`SPEC.md` §7). Written
-# by A5; absent until then, which the gate does not mind -- an exemption for a
-# file that does not exist yet exempts nothing.
-EXEMPT_FILES = ("audit.py",)
+# The one exemption, as a **path** relative to the repository root
+# (`SPEC.md` §7). Written by A5; absent until then, which the gate does not
+# mind -- an exemption for a file that does not exist yet exempts nothing.
+#
+# A path and not a file name, because a name is not an identity: matched on the
+# basename, `spanweave_zoo/replay/audit.py` -- or any future module that
+# happens to be called `audit.py` -- would inherit an exemption nobody granted
+# it, and the gate would be switched off by a `mkdir`. There is one audit
+# module and this is where it lives.
+EXEMPT_PATHS = ("spanweave_zoo/audit.py",)
 
 
 @dataclass(frozen=True)
@@ -76,8 +84,14 @@ def _matches_module(imported: str, banned: str) -> bool:
 
 
 def no_analyser_imports(path: str, source: str, tree: ast.AST) -> list[Violation]:
-    """The gate. `path` decides the exemption, so it must be the real path."""
-    if pathlib.PurePath(path).name in EXEMPT_FILES:
+    """The gate. `path` decides the exemption, so it must be the real path.
+
+    The real path **relative to the repository root**, which is what
+    `check_package` passes: the exemption is a path, not a file name, and a
+    comparison that fell back to the basename would exempt every `audit.py`
+    anywhere (`EXEMPT_PATHS`).
+    """
+    if pathlib.PurePath(path).as_posix() in EXEMPT_PATHS:
         return []
     found = []
     for imported, line in _imported_modules(tree):
@@ -89,7 +103,7 @@ def no_analyser_imports(path: str, source: str, tree: ast.AST) -> list[Violation
                         path,
                         line,
                         f"imports {imported!r}; only "
-                        f"{'/'.join(EXEMPT_FILES)} may consume the libraries "
+                        f"{', '.join(EXEMPT_PATHS)} may consume the libraries "
                         f"the zoo captures for (CLAUDE.md section 0.6)",
                     )
                 )

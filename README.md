@@ -113,7 +113,11 @@ zoo verify                                      # every capture under captures/
 zoo verify captures/z4/2026-10-09T12-00-00Z     # one run
 ```
 
-`zoo verify` exits 0 on a tree with no captures and otherwise checks **both
+`zoo verify` exits 0 on a tree with no captures -- the default `captures/`,
+which this repository's own is -- and **2, naming the path**, on a path you
+typed that is not a capture: an absent directory, a file, or a directory with
+no run in it. Nothing was checked, and a typo must not read as a clean bill of
+health. Otherwise it checks **both
 directions**: every body the manifest lists is on disk with the sha256 and the
 length it recorded, **and** every file on disk is one the manifest accounts
 for. It fails on a changed byte, a stale digest, a missing body, a **body the
@@ -121,6 +125,12 @@ manifest never listed**, and a manifest it cannot read -- rather than reporting
 an unchecked capture as verified. The second direction is why it walks the
 directory and not only the list: a check that iterated the manifest could never
 notice a body nobody recorded.
+
+`make verify` runs it over `captures/` and then over
+`tests/fixtures/capture/`, which holds one real capture -- a single OTLP
+protobuf body through the real tee, both sides, headers and manifest -- so the
+gate re-hashes bytes on every run and in CI rather than reporting an empty
+tree. It is a capture: it is never edited and never regenerated.
 
 ## Running a pet project's real run
 
@@ -181,10 +191,11 @@ That is the whole flow. What each command is for:
    Collector exited during the run, or if the project's own `MANIFEST.json`
    could not be copied -- the capture is intact either way and the manifest
    says what happened.
-5. **`make verify`** re-hashes every capture under `captures/` against its
-   manifest. `make check` depends on it, so from now on every run of the gates
-   re-checks this capture's bytes. `uv run zoo verify
-   captures/z4/<run-id>` re-hashes just this one.
+5. **`make verify`** re-hashes every capture under `captures/`, and the
+   committed one under `tests/fixtures/capture/`, against its manifest. `make
+   check` depends on it, so from now on every run of the gates re-checks this
+   capture's bytes. `uv run zoo verify captures/z4/<run-id>` re-hashes just
+   this one, and exits 2 if that path is not a capture.
 
 Two things to know before you start, both of which are refusals rather than
 surprises:
@@ -254,7 +265,9 @@ readable against what was actually asked for.
 
 For **every project started from now on**, these two files are byte-identical
 to the ones handed to the project, and the sha256s above are how that is
-checked.
+checked -- recomputed from the files on disk by `tests/test_readme.py` on every
+`make check`, so a digest printed here and a document edited cannot drift apart
+quietly.
 
 ## Layout
 

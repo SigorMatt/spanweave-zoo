@@ -1,0 +1,24 @@
+{
+  "bytes": 128,
+  "headers": [
+    [
+      "Host",
+      "127.0.0.1:33131"
+    ],
+    [
+      "Accept-Encoding",
+      "identity"
+    ],
+    [
+      "Content-Length",
+      "128"
+    ],
+    [
+      "Content-Type",
+      "application/x-protobuf"
+    ]
+  ],
+  "method": "POST",
+  "path": "/v1/traces",
+  "received_at": "2026-10-10T09:00:02+00:00"
+}

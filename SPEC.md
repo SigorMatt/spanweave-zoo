@@ -1013,6 +1013,21 @@ globbing two levels down from a run directory would find nothing, say so, and
 exit **zero** — a reassuring pass over a capture nobody checked, which is the
 one failure mode this command exists to prevent (`CLAUDE.md`).
 
+A path that is **not a capture** is that same failure mode by another route,
+so it is a refusal: `zoo verify <path>` on a directory that does not exist, on
+a file, or on a directory that holds no `MANIFEST.json`, no `raw/` and no
+`<project>/<run-id>` under it prints one line **naming the path** and exits
+**2**. Two is the status, and not 1, because nothing was checked — the same
+distinction `zoo capture` and `zoo sink` already make between a run that
+refused to start and a run that went wrong (§4.6). A typed path is a claim
+that a capture is there, and a typo must not read as a clean bill of health.
+
+The **default** root is the one exception and the only place emptiness passes:
+with no `[path]` at all, a `captures/` that is absent or holds no run is
+nothing to re-hash and exits **0**. That is a repository that has recorded no
+captures yet, which is this one, and is why `make verify` also names a capture
+it can actually read (below).
+
 For every run it finds, `zoo verify` reads `MANIFEST.json` and then checks
 **both directions**:
 
@@ -1070,9 +1085,21 @@ the one field the audit reads. `zoo sink` does assemble its manifest when it
 stops, journal and `ended_at` and all, because a capture that was never
 completed is not one `verify` can pass.
 
-`make verify` is `zoo verify` over `captures/`, and `make check` depends on it:
-the immutability claim is worth making only because something checks it on every
-run. A tree with no captures at all is nothing to re-hash and exits zero.
+`make verify` is `zoo verify` over `captures/` **and then over
+`tests/fixtures/capture/`**, and `make check` depends on it: the immutability
+claim is worth making only because something checks it on every run. A tree
+with no captures at all is nothing to re-hash and exits zero — which is what
+`captures/` is in this repository, and a gate that re-hashes nothing on every
+CI leg is a line in a log rather than a check. So one real capture is committed
+under `tests/fixtures/capture/`: a single OTLP protobuf body through the real
+tee — the hand-built export of `tests/otlp.py` into the raw sink, the stock
+Collector behind it, its JSON re-encoding into the json sink — with both
+headers files on each side, both journals and the manifest the run assembled,
+on a clock the run chose. It is a capture, so it is never edited and never
+regenerated (`CLAUDE.md`, "Halt points"); and it is deliberately not under
+`captures/`, which is where the zoo's own recorded runs go. A fixture that went
+missing makes `make verify` exit 2 by the rule above, rather than quietly
+checking nothing again.
 
 ### 5.7 What the manifest is not
 
@@ -1096,5 +1123,12 @@ adding nothing. Not specified yet.
 
 `zoo audit`: every capture through `spanweave_live serve` and `spanweave.build`,
 with every divergence written up as a reproduction naming the repository that
-owns it. The one module that may import either library (`tests/gates.py`). Not
-specified yet.
+owns it. Not specified yet.
+
+What is already fixed is **where it lives**: `spanweave_zoo/audit.py`, and the
+gate's exemption is that **path** and nothing else (`tests/gates.py`,
+`CLAUDE.md` §0.6 rule 6). A gate that matched the file *name* would hand the
+exemption to any `audit.py` anywhere under the package — a module moved one
+directory down would keep an exemption nobody granted it, and the rule could be
+switched off by a `mkdir`. There is one audit module, it is at that path, and
+every other file under `spanweave_zoo/` imports neither library.

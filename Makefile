@@ -28,13 +28,19 @@ gates:
 # Re-hash every capture against its manifest. A capture is immutable (CLAUDE.md
 # section 0.6), and that claim is worth making only if something checks it on
 # every run -- so this is a prerequisite of `check` and not an errand someone
-# remembers. With no captures in the tree it says so and exits 0: nothing to
-# re-hash is not a failure. SPEC.md section 5 is the manifest, and A3
-# implements the re-hash; until then a capture found on disk makes this target
-# FAIL rather than pass silently, because reporting an unchecked capture as
-# verified is the one thing this target exists to prevent.
+# remembers.
+#
+# Two commands, because the first one has nothing to check here: `captures/` is
+# where the zoo's own runs go and this repository holds none, so `zoo verify`
+# alone says "nothing to re-hash" and exits 0 on every CI leg. The second reads
+# the one real capture committed under tests/fixtures/capture/ -- one protobuf
+# body through the real tee, both sides, headers and manifest -- so CI
+# re-hashes bytes rather than reporting an empty tree. A named path that is not
+# a capture exits 2 (SPEC.md section 5.6), so a fixture that went missing fails
+# this target instead of passing quietly.
 verify:
 	uv run zoo verify
+	uv run zoo verify tests/fixtures/capture
 
 # Fetch the pinned stock OpenTelemetry Collector and check its sha256 against
 # the release's own digest (SPEC.md section 4.1). The version lives in

@@ -1,0 +1,8 @@
+# A capture is bytes as received (CLAUDE.md section 0.6 rule 2), and the
+# committed one under tests/fixtures/capture/ is re-hashed by `make verify` on
+# every run. `-text` turns off every line-ending conversion git would otherwise
+# be free to apply on checkout: `NNNN.headers.raw` is CRLF on purpose, down to
+# the blank line that ends the head (SPEC.md section 2.3), and a clone that
+# rewrote those bytes would fail verify for a reason that has nothing to do
+# with the capture.
+tests/fixtures/capture/** -text

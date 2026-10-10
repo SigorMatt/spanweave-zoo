@@ -50,6 +50,21 @@ def test_gate_exempts_the_audit_module(source, expected):
     assert gates.check_source("spanweave_zoo/audit.py", source) == []
 
 
+def test_the_exemption_is_one_path_and_not_a_file_name():
+    # The exemption is `spanweave_zoo/audit.py` -- that path (SPEC.md section
+    # 7). A gate that matched the *name* would exempt any file called
+    # `audit.py` anywhere, so a module could be moved one directory down and
+    # keep an exemption nobody granted it.
+    for path in (
+        "spanweave_zoo/sink/audit.py",
+        "spanweave_zoo/replay/audit.py",
+        "tests/audit.py",
+        "audit.py",
+    ):
+        found = gates.check_source(path, "import spanweave")
+        assert [v.rule for v in found] == ["no-analyser-imports"], path
+
+
 def test_the_exemption_is_by_file_not_by_directory():
     # `spanweave_zoo/sink/audit_helpers.py` is not the audit module, and a
     # path that merely contains the word must not inherit the exemption.

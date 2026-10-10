@@ -32,6 +32,47 @@ def test_verify_of_an_empty_capture_root_is_clean(tmp_path, capsys):
     assert "nothing to re-hash" in capsys.readouterr().out
 
 
+def test_verify_of_a_named_path_that_is_not_a_capture_refuses(tmp_path, capsys):
+    # SPEC.md section 5.6: a path the operator typed is a claim that a capture
+    # is there. Nothing there means the command checked nothing, so it exits 2
+    # naming the path -- a zero would be the reassuring pass over a capture
+    # nobody checked that this command exists to prevent (CLAUDE.md).
+    absent = tmp_path / "captures" / "z4" / "typo"
+    assert cli.main(["verify", str(absent)]) == 2
+    assert str(absent) in capsys.readouterr().err
+
+
+def test_verify_of_a_named_file_refuses(tmp_path, capsys):
+    # A path that is not a directory at all: the same refusal, not a crash and
+    # not "nothing to re-hash".
+    not_a_directory = tmp_path / "MANIFEST.json"
+    not_a_directory.write_text("{}", encoding="utf-8")
+    assert cli.main(["verify", str(not_a_directory)]) == 2
+    assert str(not_a_directory) in capsys.readouterr().err
+
+
+def test_verify_of_a_named_directory_holding_no_run_refuses(tmp_path, capsys):
+    # The directory exists and holds files, but no `MANIFEST.json`, no `raw/`
+    # and no `<project>/<run-id>` under it. Being a directory is not being a
+    # capture.
+    named = tmp_path / "somewhere"
+    named.mkdir()
+    (named / "notes.txt").write_text("not a capture\n", encoding="utf-8")
+    assert cli.main(["verify", str(named)]) == 2
+    assert str(named) in capsys.readouterr().err
+
+
+def test_verify_with_no_path_tolerates_a_repository_with_no_captures(
+    tmp_path, monkeypatch, capsys
+):
+    # The default root is the one path that may legitimately hold nothing: a
+    # repository that has recorded no captures yet is nothing to re-hash, and
+    # `make verify` runs there (SPEC.md section 5.6).
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["verify"]) == 0
+    assert "nothing to re-hash" in capsys.readouterr().out
+
+
 def test_verify_refuses_a_capture_with_no_manifest(tmp_path, capsys):
     # A1 replaced A0's blanket refusal with the real re-hash (SPEC.md section
     # 3.5), but a run with no readable MANIFEST.json has nothing to re-hash

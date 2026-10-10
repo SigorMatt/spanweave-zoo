@@ -21,13 +21,25 @@ module under `spanweave_zoo/` reads either: the sink takes `now` as an argument
 (`SPEC.md` §4.8), so a recorded timestamp in a test is a value the test chose,
 and `_system_clock` below is the single place the real time enters the package.
 
-`verify` refuses rather than reassures. A run with no readable `MANIFEST.json`
-has nothing to re-hash against, a file on disk that the manifest never
-recorded is not part of the capture, a capture with no `ended_at` was never
-completed, a capture that recorded a `problem` is not one to trust, and a path
-that looks like nothing is not a tree that verified -- saying so with a
-non-zero exit is the one failure mode this command exists to prevent
-(`CLAUDE.md`, "Honest refusal beats a reassuring pass").
+`verify` refuses rather than reassures, and exits one of three statuses
+(`SPEC.md` §5.6):
+
+- **1** -- it checked a capture and the capture failed: a digest or a length
+  that differs, a listed file missing, a file on disk the manifest never
+  listed, no readable `MANIFEST.json`, no `ended_at` (the run was never
+  completed), a `kind` the spec does not name, or a recorded `problem`;
+- **2** -- it checked nothing, because the path it was given is not a capture.
+  A path the operator **typed** is a claim that a capture is there, so an
+  absent directory, a file, or a directory holding no run is a refusal naming
+  the path. Reporting "nothing to re-hash" and exiting zero over a typo is the
+  one failure mode this command exists to prevent (`CLAUDE.md`, "Honest
+  refusal beats a reassuring pass");
+- **0** -- every recorded body still hashes to what was recorded, or the
+  **default** root holds no captures at all. That last one is deliberate and
+  is the only place emptiness passes: `make verify` runs on a repository whose
+  `captures/` is empty, and it also re-hashes the one real capture committed
+  under `tests/fixtures/capture/`, so the gate checks bytes on every run
+  rather than reporting a clean tree.
 
 `--kind` is required on `capture` and has no default. A `recorded` capture and
 a `real` one differ by that declaration alone, the audit reads it as the
@@ -173,10 +185,27 @@ def _run_directories(root: Path) -> list[Path]:
     return sorted(runs)
 
 
-def verify(root: Path) -> int:
-    """Re-hash every capture under `root`. Returns a process exit status."""
+def verify(root: Path, *, named: bool = False) -> int:
+    """Re-hash every capture under `root`. Returns a process exit status.
+
+    `named` is whether the operator typed the path (`SPEC.md` §5.6). A typed
+    path is a claim that a capture is there, so finding none is a refusal --
+    exit **2**, naming the path, because the command checked nothing. The
+    default root is the one path that may legitimately hold nothing: a
+    repository that has recorded no captures yet is nothing to re-hash, which
+    is `make verify` on a clean tree and exits 0.
+    """
     runs = _run_directories(root)
     if not runs:
+        if named:
+            print(
+                f"zoo verify: {root} is not a capture: no "
+                f"{manifest.MANIFEST_NAME}, no {capture.RAW_DIR}/, and no "
+                f"<project>/<run-id> under it. Nothing was checked "
+                f"(SPEC.md section 5.6).",
+                file=sys.stderr,
+            )
+            return 2
         print(f"zoo verify: no captures under {root}/ -- nothing to re-hash")
         return 0
     print(f"zoo verify: {len(runs)} capture(s) under {root}/:")
@@ -487,12 +516,17 @@ def _parser() -> argparse.ArgumentParser:
         "verify",
         help="re-hash every capture against its manifest",
     )
+    # `default=None` rather than `captures`: `main` has to tell a path the
+    # operator typed from the default, because the two mean different things
+    # when nothing is there (`verify`, `SPEC.md` §5.6).
     verify_parser.add_argument(
         "path",
         nargs="?",
-        default=str(CAPTURES),
+        default=None,
         help=(
-            f"a capture root, or one run directory, to re-hash (default: {CAPTURES}/)"
+            f"a capture root, or one run directory, to re-hash "
+            f"(default: {CAPTURES}/). A path that is not a capture is a "
+            f"refusal, not a pass"
         ),
     )
     return parser
@@ -502,7 +536,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if args.command == "verify":
-        return verify(Path(args.path))
+        if args.path is None:
+            return verify(CAPTURES)
+        return verify(Path(args.path), named=True)
     if args.command == "sink":
         return run_sink(args.host, args.port, Path(args.out))
     if args.command == "capture":

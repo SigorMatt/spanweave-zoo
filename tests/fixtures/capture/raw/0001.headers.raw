@@ -1,0 +1,6 @@
+POST /v1/traces HTTP/1.1
+Host: 127.0.0.1:33131
+Accept-Encoding: identity
+Content-Length: 128
+Content-Type: application/x-protobuf
+

@@ -3,6 +3,42 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A3d — `verify` refuses what it did not check, and CI checks something
+
+- **`zoo verify <path>` on a path that is not a capture exits 2, naming the
+  path** (`SPEC.md` §5.6). An absent directory, a file, or a directory with no
+  `MANIFEST.json`, no `raw/` and no `<project>/<run-id>` under it used to print
+  "nothing to re-hash" and exit **0** — a typed path is a claim that a capture
+  is there, so that was the reassuring pass this command exists to refuse. Two
+  rather than one because nothing was checked, which is the distinction `zoo
+  capture` and `zoo sink` already draw between refusing to start and going
+  wrong. The **default** root keeps exiting 0 when it is empty: a repository
+  that has recorded no captures yet is nothing to re-hash. `cli.py`'s docstring
+  now lists the three exit statuses it actually produces.
+- **One real capture is committed, and `make verify` reads it**
+  (`SPEC.md` §5.6). `tests/fixtures/capture/` holds a single OTLP protobuf body
+  through the real tee — `tests/otlp.py`'s hand-built export into the raw sink,
+  the stock Collector behind it, its JSON re-encoding into the json sink — with
+  `NNNN.headers.raw` and `NNNN.headers.json` on both sides, both journals and
+  the manifest the run assembled, on a clock the run chose. `make verify` now
+  runs `zoo verify` over `captures/` *and* over that fixture, so every
+  `make check` and every CI leg re-hashes real bytes instead of reporting an
+  empty tree. The capture is never edited and never regenerated, and it is not
+  under `captures/`, which is for the zoo's own runs. A `.gitattributes` marks
+  it `-text`, because `NNNN.headers.raw` is CRLF on purpose and a clone that
+  converted line endings would fail verify for a reason that has nothing to do
+  with the capture.
+- **The README's two contract digests are recomputed on every `make check`**
+  (`tests/test_readme.py`). The Provenance section says the sha256s of
+  `EXPORT-CONTRACT.md` and `ZOO-BRIEFS.md` are how "byte-identical to the ones
+  handed to the project" is checked; nothing checked them. Now one appended
+  byte to either document fails the suite and names which file.
+- **The import gate's one exemption is a path, not a file name**
+  (`tests/gates.py`, `SPEC.md` §7). It was matched on the basename, so any
+  `audit.py` anywhere — `spanweave_zoo/replay/audit.py`, say — would have
+  inherited the exemption and the rule could have been switched off by a
+  `mkdir`. It is now `spanweave_zoo/audit.py` and nothing else.
+
 ## A3c — the header octets are the record
 
 - **Every request leaves `NNNN.headers.raw`** beside its body and its
