@@ -1,6 +1,6 @@
 """The `zoo` command line.
 
-Three subcommands today:
+Four subcommands today:
 
 - `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` records what an
   exporter POSTs, byte for byte (`SPEC.md` §3, A1);
@@ -9,16 +9,20 @@ Three subcommands today:
   behind it, the json sink the Collector's JSON re-encoding lands in
   (`SPEC.md` §4, A2), and the `MANIFEST.json` it ends by completing
   (`SPEC.md` §5, A3);
+- `zoo replay <run> --to http://host:port [--raw|--json] [--timing]` sends a
+  capture's bodies to another receiver with their captured heads, adding
+  nothing (`SPEC.md` §6, A4);
 - `zoo verify [path]` re-hashes every capture against its manifest -- a whole
   capture root, or one run directory (`SPEC.md` §3.5, §5).
 
-`replay` (A4) and `audit` (A5) are not here and are not stubbed; `SPEC.md` §§6
-and 7 are the headings they will fill.
+`audit` (A5) is not here and is not stubbed; `SPEC.md` §7 is the heading it
+will fill.
 
 This module is also where the **clock** lives, and the **sleep**. No other
 module under `spanweave_zoo/` reads either: the sink takes `now` as an argument
-(`SPEC.md` §3.6) and the Collector's readiness wait takes `sleep`
-(`SPEC.md` §4.8), so a recorded timestamp in a test is a value the test chose,
+(`SPEC.md` §3.6) and the Collector's readiness wait and the replayer's
+`--timing` both take `sleep` (`SPEC.md` §4.8, §6.3), so a recorded timestamp in
+a test is a value the test chose,
 and `_system_clock` below is the single place the real time enters the package.
 
 `verify` refuses rather than reassures, and exits one of three statuses
@@ -60,7 +64,15 @@ from pathlib import Path
 from types import FrameType
 from typing import IO, Any
 
-from spanweave_zoo import __version__, capture, collector, forward, manifest, sink
+from spanweave_zoo import (
+    __version__,
+    capture,
+    collector,
+    forward,
+    manifest,
+    replay,
+    sink,
+)
 
 # What `zoo capture` stops on. `SIGINT` is the operator's Ctrl-C; `SIGTERM` is
 # whatever supervises the process when a pet project's run ends.
@@ -92,11 +104,13 @@ def _system_clock() -> str:
 
 
 def _system_sleep(seconds: float) -> None:
-    """The real `sleep`, the Collector's readiness seam (`SPEC.md` §4.8).
+    """The real `sleep`: the Collector's readiness seam (`SPEC.md` §4.8), and
+    `zoo replay --timing`'s recorded gaps (`SPEC.md` §6.3).
 
     Here for the same reason as the clock: nothing under `spanweave_zoo/`
     sleeps on its own, so a test never waits for anything it did not choose to
-    wait for.
+    wait for -- and a replay of a capture whose gaps are hours long is a test
+    nobody could write otherwise.
     """
     time.sleep(seconds)
 
@@ -389,6 +403,47 @@ def _exit_status(running: capture.Capture) -> int:
     return 1 if running.failed_forwards or running.problems else 0
 
 
+def run_replay(args: argparse.Namespace) -> int:
+    """Send a capture's bytes to another receiver. `SPEC.md` §6.
+
+    Three statuses, on `verify`'s rule (`SPEC.md` §6.4): **2** when nothing was
+    sent -- not a capture, an unreadable manifest, no body on the chosen side,
+    a `--to` that is not an `http://host[:port]`; **1** when a send did not
+    answer 2xx or could not be made at all; **0** when every body went out and
+    every answer was a 2xx.
+    """
+    run = Path(args.run)
+    progress = Progress()
+    try:
+        host, port = replay.destination(args.to)
+        planned = replay.planned(run, args.source)
+    except replay.ReplayRefused as refused:
+        print(f"zoo replay: refusing to send: {refused}", file=sys.stderr)
+        return 2
+    progress(
+        f"zoo replay: {len(planned)} body/bodies from {run}/{args.source}/ "
+        f"to http://{host}:{port}, as captured"
+    )
+    outcomes = replay.replay(
+        run,
+        source=args.source,
+        send=replay.sender(host, port, timeout=args.timeout),
+        timing=args.timing,
+        # The seam, and the only sleep in the package (`SPEC.md` §6.3). It is
+        # passed only when it is going to be used, so a replay without
+        # `--timing` cannot sleep even by accident.
+        sleep=_system_sleep if args.timing else None,
+        log=progress,
+    )
+    undelivered = [outcome for outcome in outcomes if not outcome.delivered]
+    progress(
+        f"zoo replay: {len(outcomes)} sent, {len(undelivered)} that did not answer 2xx"
+    )
+    for outcome in undelivered:
+        progress(f"  ! {outcome.file}: {outcome.error or f'status {outcome.status}'}")
+    return 1 if undelivered else 0
+
+
 def _announce(entry: manifest.BodyEntry) -> None:
     """The `after_record` seam, in production: one line per recorded body.
 
@@ -512,6 +567,51 @@ def _parser() -> argparse.ArgumentParser:
         help=f"seconds (default: {forward.DEFAULT_TIMEOUT})",
     )
 
+    replay_parser = subcommands.add_parser(
+        "replay",
+        help="send a capture's bodies to another receiver, exactly as captured",
+    )
+    replay_parser.add_argument(
+        "run", help="one run directory: captures/<project>/<run-id>"
+    )
+    replay_parser.add_argument(
+        "--to",
+        required=True,
+        help="where to send them: http://host[:port] (SPEC.md section 6)",
+    )
+    # One flag, two values, and a default: `--raw` is the exporter's own bytes
+    # and `--json` the Collector's re-encoding of them (`SPEC.md` §2.4, §6.1).
+    side = replay_parser.add_mutually_exclusive_group()
+    side.add_argument(
+        "--raw",
+        dest="source",
+        action="store_const",
+        const=replay.RAW,
+        default=replay.RAW,
+        help=f"send {replay.RAW}/: the bytes the exporter sent (default)",
+    )
+    side.add_argument(
+        "--json",
+        dest="source",
+        action="store_const",
+        const=replay.JSON,
+        help=f"send {replay.JSON}/: the Collector's JSON re-encoding",
+    )
+    replay_parser.add_argument(
+        "--timing",
+        action="store_true",
+        help=(
+            "sleep the recorded inter-arrival gaps, so the receiver sees the "
+            "export pattern the exporter had (SPEC.md section 6.3)"
+        ),
+    )
+    replay_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=forward.DEFAULT_TIMEOUT,
+        help=f"seconds per send (default: {forward.DEFAULT_TIMEOUT})",
+    )
+
     verify_parser = subcommands.add_parser(
         "verify",
         help="re-hash every capture against its manifest",
@@ -543,6 +643,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_sink(args.host, args.port, Path(args.out))
     if args.command == "capture":
         return run_capture(args)
+    if args.command == "replay":
+        return run_replay(args)
     parser.print_help()
     return 0
 

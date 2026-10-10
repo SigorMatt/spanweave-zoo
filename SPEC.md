@@ -13,8 +13,10 @@ needs -- see §4.5); §5 is specified and implemented (A3: the whole of
 directions; A3a: a capture exists only once it is ready; A3b: the manifest is
 assembled once, at the end, from the run's journals, and covers every file in
 the capture; A3c: the octets of each request's head are the record, with the
-stdlib's parse beside them -- see §2.3). §§6-7 are headings naming what the batches after A3 will fill;
-nothing in them is implemented today.
+stdlib's parse beside them -- see §2.3); §6 is specified and implemented (A4:
+`zoo replay`, which re-sends a capture's bytes and its captured head octets to
+another receiver and adds nothing). §7 is a heading naming what A5 will fill;
+nothing in it is implemented today.
 
 ---
 
@@ -1153,10 +1155,154 @@ writes what a capture *means* to a receiver, in its own file, naming the
 repository that owns each finding. The manifest says what arrived, when, how
 big it was and what it hashed to.
 
-## 6. The replayer — A4
+## 6. The replayer
 
-`zoo replay`: re-send each body with its captured headers in receipt order,
-adding nothing. Not specified yet.
+```bash
+zoo replay captures/z4/2026-10-10T09-00-00Z --to http://127.0.0.1:4318
+zoo replay captures/z4/2026-10-10T09-00-00Z --to http://127.0.0.1:8080 --json --timing
+```
+
+Re-send each recorded body to another receiver with its captured headers, in
+receipt order, **adding nothing** (`CLAUDE.md` §0.6 rule 5). It is the tee's
+forward (§4.3) pointed somewhere else and read off disk instead of out of a
+handler, and it is deliberately the same code: re-sending captured bytes is one
+act, and two implementations of it would be two chances to improve them.
+
+The replayer is what makes a capture usable by a receiver that was not there
+when it was recorded — the audit (§7) is its first caller, and it sends the
+same capture to `spanweave-live serve` twice, once as the exporter's own bytes
+and once as the Collector's JSON. So a replay says nothing about what the
+receiver did with the bytes beyond the status it answered with: a `415` is an
+answer, not an error, and what it *means* is the audit's to write down.
+
+| Option | Default | |
+|---|---|---|
+| `--to` | **required** | `http://host[:port]`, the receiver. `http` only; no path, because the request target comes from the capture |
+| `--raw` / `--json` | `--raw` | which side of the capture to send: the exporter's own bytes under `raw/`, or the Collector's re-encoding under `json/` (§2.4) |
+| `--timing` | off | sleep the recorded inter-arrival gaps (§6.3) |
+
+### 6.1 What is sent, in what order
+
+The bodies are the `bodies` entries of the run's `MANIFEST.json` whose `file`
+is in the chosen directory, in the order the manifest lists them — which is the
+order the journal was written, which is receipt order (§2.2, §3.5). The order
+is read from the record rather than recovered from the file names: `NNNN` is
+receipt order because a recorder assigned it in receipt order, and a replayer
+that sorted the directory would be re-deriving a fact the capture already
+states.
+
+Nothing else is sent. A `rejected/` body (§3.4) was aimed at another path and
+is not in either directory; re-sending it would be the zoo inventing traffic,
+which is what §4.3 already refuses for the same bytes.
+
+The body is **the bytes on disk**, as they are: still gzipped if it was
+recorded gzipped, still protobuf if it was recorded as protobuf. Nothing here
+decompresses, decodes, re-encodes or re-frames, and nothing here reads a byte
+of a body for any purpose other than sending it.
+
+A capture with no body in the chosen directory sends nothing, and that is a
+refusal rather than a success: one line naming the path and the directory, exit
+**2**. `--json` on a capture whose Collector never ran (§2.4) is exactly this,
+and a replay that sent nothing must not read as a replay that worked
+(`CLAUDE.md`, "Honest refusal beats a reassuring pass"). The same **2** is a
+path that is not a capture, or one whose `MANIFEST.json` is absent or
+unreadable, on §5.6's rule: nothing was sent.
+
+### 6.2 The headers are the captured octets
+
+Each request's method, target and headers come from its **`NNNN.headers.raw`**
+— the head as the octets arrived (§2.3) — and **not** from `NNNN.headers.json`.
+That is the whole of why A3c kept the octets: the parse is what Python could
+represent, and a bare CR in a header value arrives there truncated with every
+header after it absent altogether. A replayer built on the parse would send a
+tidied request that no exporter ever sent, and the capture it claimed to be
+replaying would be sitting on disk next to it saying otherwise.
+
+The octets are read as lines, each ending `CRLF` or `LF` as it was sent: the
+first is the request line, the rest are the header block up to the blank line
+that ends it. A line beginning with a space or a tab is a continuation of the
+one before it (RFC 9110's deprecated `obs-fold`) and is joined to it with the
+line ending kept, because a value that arrived folded arrived folded.
+
+What goes out is then §4.3's rule exactly, through the same function: every
+header in the order sent, repeats included, minus `Host` — the destination has
+changed — and the hop-by-hop headers of RFC 9110 §7.6.1. `Content-Type`,
+`Content-Encoding`, `Content-Length` and `User-Agent` go through untouched.
+
+A head the replayer cannot put on the wire is **not tidied into one it can**.
+`NNNN.headers.raw` missing, holding no request line, or holding a value the
+sender refuses — the bare CR is one, because RFC 9110 forbids it and
+`http.client` will not send it — is one line naming the file and the reason,
+the rest of the capture still sent, and a non-zero exit (§6.4). The alternative
+is a replay that quietly sent something else, which is the one failure the
+record exists to make impossible.
+
+### 6.3 `--timing`
+
+Without `--timing` the bodies go out back to back, as fast as the receiver
+accepts them. With it, before each body after the first, the replayer sleeps
+the gap between that body's receipt time and the previous one's — so a receiver
+sees the export pattern the exporter actually had, batches and bursts included.
+
+The receipt times come from `NNNN.headers.json`'s `received_at`, which is the
+one thing in that file the request did not say: it is the sink's own note of
+when the body landed, written from the injected `now` (§3.2, §3.6), and the
+octets are the record of the request alone. Reading it is not reading a body.
+
+The sleep is an **injected seam**, like the clock and the Collector's readiness
+wait (§3.6, §4.8): `cli.py` passes the one real `time.sleep` and a test passes
+its own, so the suite never waits for anything and a slept gap is a value a
+test can assert. Nothing under `spanweave_zoo/` sleeps outside it.
+
+A gap the replayer cannot compute is **not slept, and not guessed**: a
+`received_at` that is missing, that is not an ISO-8601 moment with an offset
+(§5.3's bound, for §5.3's reason — guessing a timezone invents a fact about
+somebody else's run), or that is earlier than the one before it. Each is one
+printed line, and the send still happens.
+
+It does not change the exit status. The replayer's claim is about the bytes and
+the headers, and those went out as captured; `--timing` shapes a replay and
+never shapes a request, so a gap nobody could compute is a note on the replay
+and not a failure of it. The lines are there so that a replay of an unknown
+shape cannot be mistaken for a faithful one.
+
+### 6.4 What it prints, and what it exits
+
+One line per body as it is sent — the file, the status, the length — flushed as
+it is written, for §4.6's reason: an operator replaying a long capture watches
+it go rather than waiting for the end.
+
+**A send that does not succeed never stops the rest.** Every remaining body is
+still sent, and the exit status says afterwards. A receiver that refuses the
+third export of a capture is a fact about that receiver, and a replay that
+stopped there would hide what it would have done with the fourth — which is
+exactly what the audit (§7) is for, and why a `415` on a protobuf body is a
+finding and not an error (`CLAUDE.md` §0.6 rule 7).
+
+| Exit | When |
+|---|---|
+| **0** | every body was sent and every answer was a 2xx |
+| **1** | any answer was not a 2xx, or any body could not be sent at all — an unreadable head, a value the wire refuses, a body file the manifest lists that is not on disk, a connection that failed |
+| **2** | nothing was sent: the path is not a capture, its manifest is unreadable, or it holds no body in the chosen directory |
+
+The summary line says how many were sent and how many did not answer 2xx, and
+the problems are printed again under it, because a replay of a long capture
+scrolls and the last line is the one that is read.
+
+### 6.5 What the replayer is not
+
+It does not verify the capture it sends: `zoo verify` re-hashes bytes (§5.6)
+and `make verify` runs it on every gate, and a second re-hash here would be a
+second place for the rule to live. It does not parse, decode or validate a
+body, does not look at a response beyond its status, does not retry, and does
+not record anything: a replay produces no capture, and a receiver that wants
+one points a `zoo capture` at itself.
+
+It also adds nothing to the request. No header of its own, no `Accept-Encoding`
+the exporter did not send, no re-framing, no re-ordering. The only two
+differences between the request the exporter made and the request the replayer
+makes are the ones §4.3 already names: the `Host` names the new destination,
+and the headers that described a connection that no longer exists are gone.
 
 ## 7. The audit — A5
 

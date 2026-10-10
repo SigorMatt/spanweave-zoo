@@ -30,13 +30,14 @@ are all unfrozen and will change. The one thing meant to be durable is the
 |---|---|
 | `zoo sink` | records every POST's bytes and headers, and parses nothing |
 | `zoo capture` | the tee: the raw sink, the stock Collector behind it, the json sink |
+| `zoo replay` | sends a capture's bodies to another receiver, exactly as captured |
 | `zoo verify` | re-hashes a capture against its `MANIFEST.json`, both directions |
 | `collector/` | the pinned Collector's version, digests and config -- `make collector` fetches the binary |
-| `SPEC.md` §1-§5 | the non-goals, the layout, the sink, the Collector and the tee, the manifest |
-| `SPEC.md` §§6-7 | headings only: the replayer, the audit |
+| `SPEC.md` §1-§6 | the non-goals, the layout, the sink, the Collector and the tee, the manifest, the replayer |
+| `SPEC.md` §7 | a heading only: the audit |
 
-The subcommands those later sections name (`replay`, `audit`) are not
-implemented and are not stubbed.
+The subcommand that later section names (`audit`) is not implemented and is
+not stubbed.
 
 Every command printed in this README is **complete as printed**: no block here
 needs a flag the prose introduces later, and the `uv run` prefix is what makes
@@ -91,6 +92,29 @@ bytes are a download. The archive is kept in `collector/.cache/` so a second
 run does not fetch it again -- and re-hashed on every run, so a cached archive
 whose digest is not the pin is refused exactly as a bad download is. `zoo capture` refuses to start if the binary reports a
 version that is not the pin.
+
+### The replayer
+
+```bash
+uv run zoo replay captures/z4/2026-10-09T12-00-00Z --to http://127.0.0.1:8080
+uv run zoo replay captures/z4/2026-10-09T12-00-00Z --to http://127.0.0.1:8080 --json --timing
+```
+
+Sends every body of a capture to another receiver **with its captured head**,
+in receipt order, adding nothing (`SPEC.md` §6). `--raw` (the default) sends the
+bytes the exporter sent; `--json` sends the Collector's re-encoding of them.
+The method, the target and every header come from `NNNN.headers.raw` -- the
+octets, not the parse beside them -- so a request the stdlib could not
+represent is either sent as it arrived or refused by name, never tidied into
+one it can. `--timing` sleeps the recorded inter-arrival gaps, so the receiver
+sees the pattern the exporter had.
+
+**A send that does not succeed never stops the rest.** Every remaining body
+still goes out and the exit status says afterwards: **1** if any answer was not
+a 2xx or any body could not be sent, **2** if nothing was sent at all -- a path
+that is not a capture, or no body on the side you asked for. A `415` on a
+protobuf body is an answer and a finding, not an error, and what it *means* is
+the audit's to write down.
 
 ### The manifest, and `zoo verify`
 

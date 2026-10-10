@@ -75,6 +75,14 @@ FORWARD_JOURNAL_NAME = "forwards.jsonl"
 # imports this module rather than the other way round.
 HEADERS_SUFFIX = ".headers.json"
 
+# And the octets that parse was made from (`SPEC.md` §2.3). It is here beside
+# the parse's name because both are read from here now: `finish` reads the
+# parse to carry each body's content headers across (§5.4), and the replayer
+# reads the octets, because the octets are the record of the request and the
+# parse is not (`SPEC.md` §6.2). `sink.py`, which writes both files, names
+# these two constants rather than the two strings.
+HEADERS_RAW_SUFFIX = ".headers.raw"
+
 # The key under which the per-body entries live. A3's fields sit beside it.
 BODIES = "bodies"
 
@@ -531,7 +539,7 @@ def _project_copy(path: Path, started_at: str | None) -> tuple[object, list[str]
         ]
     if started_at is None:
         return document, []
-    written, capture_started = _moment(document), _moment_of(started_at)
+    written, capture_started = _moment(document), moment_of(started_at)
     if written is None or capture_started is None:
         return document, [
             f"the project's own {MANIFEST_NAME} at {path} carries no "
@@ -561,11 +569,15 @@ def _moment(document: object) -> datetime | None:
     """
     if not isinstance(document, dict):
         return None
-    return _moment_of(document.get(STARTED_AT))
+    return moment_of(document.get(STARTED_AT))
 
 
-def _moment_of(value: object) -> datetime | None:
+def moment_of(value: object) -> datetime | None:
     """One ISO-8601 string as a moment, or `None` if it is not one.
+
+    Public because `replay.py` compares two recorded `received_at` values the
+    same way and under the same bound (`SPEC.md` §6.3): the rule about what is
+    and is not a comparable moment has one home.
 
     `datetime.fromisoformat` and no clock read: the two timestamps compared
     here are both values that were written down, one by the project and one
@@ -590,14 +602,9 @@ def _declared_content(run: Path, file: str) -> dict[str, str | None]:
     headers file stays the record of the repeat, because it is the record of
     the request.
     """
-    body = Path(file)
-    headers_file = run / body.with_name(body.stem + HEADERS_SUFFIX)
     declared: dict[str, str | None] = {CONTENT_TYPE: None, CONTENT_ENCODING: None}
-    try:
-        document = json.loads(headers_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return declared
-    if not isinstance(document, dict):
+    document = _parsed_head(run, file)
+    if document is None:
         return declared
     received = document.get("headers")
     if not isinstance(received, list):
@@ -612,6 +619,55 @@ def _declared_content(run: Path, file: str) -> dict[str, str | None]:
             if name.lower() == header and declared[key] is None:
                 declared[key] = value
     return declared
+
+
+def _parsed_head(run: Path, file: str) -> dict[str, Any] | None:
+    """`file`'s own `NNNN.headers.json` as a document, or `None`.
+
+    The parse, which is not the record (`SPEC.md` §2.3): what is read from it
+    here is the two content headers the manifest carries across (§5.4) and the
+    `received_at` the sink wrote (§6.3), and nothing else ever.
+    """
+    body = Path(file)
+    headers_file = run / body.with_name(body.stem + HEADERS_SUFFIX)
+    try:
+        document = json.loads(headers_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def received_at(run: Path, file: str) -> str | None:
+    """When the sink recorded `file`, as it wrote it down, or `None`.
+
+    The one thing in a headers file the **request** did not say: it is the
+    sink's own note, from the injected `now` (`SPEC.md` §3.2, §3.6), which is
+    why it is in the parse beside the body and not in the octets of the head.
+    `zoo replay --timing` sleeps the gaps between these values (`SPEC.md`
+    §6.3), and reading one is not reading a body.
+    """
+    document = _parsed_head(run, file)
+    if document is None:
+        return None
+    moment = document.get("received_at")
+    return moment if isinstance(moment, str) else None
+
+
+def recorded_bodies(run: Path) -> list[str]:
+    """Every body the manifest lists, in the order it lists them.
+
+    Which is the order the journal was written, which is receipt order
+    (`SPEC.md` §2.2, §3.5) -- so a caller that must re-send a capture in the
+    order it arrived reads that order out of the record rather than deciding it
+    again by sorting a directory (`SPEC.md` §6.1). Raises whatever `read` does
+    on a manifest that cannot be read: there is no default here either.
+    """
+    document = read(run)
+    return [
+        entry["file"]
+        for entry in document[BODIES]
+        if isinstance(entry, dict) and isinstance(entry.get("file"), str)
+    ]
 
 
 def problems(run: Path) -> list[str]:

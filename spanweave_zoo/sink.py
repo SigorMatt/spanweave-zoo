@@ -78,11 +78,13 @@ JSON_SUFFIX = ".json"
 # body's content headers across (`SPEC.md` §5), so both ends name the same
 # constant rather than the same string twice.
 HEADERS_SUFFIX = manifest.HEADERS_SUFFIX
-# The octets of the head, beside the parse of it (`SPEC.md` §2.3). This name
-# lives here and not in `manifest.py` because nothing reads this file: the
-# manifest covers it by walking the run directory (`SPEC.md` §5.6), which is
-# the point -- a capture is covered whether or not a recorder announced a file.
-HEADERS_RAW_SUFFIX = ".headers.raw"
+# The octets of the head, beside the parse of it (`SPEC.md` §2.3). The manifest
+# covers this file by walking the run directory (`SPEC.md` §5.6) rather than by
+# being told about it, which is the point -- a capture is covered whether or not
+# a recorder announced a file. The name itself now has a reader as well as this
+# writer, so it lives beside the parse's in `manifest.py`: A4's replayer sends
+# the octets and never the parse (`SPEC.md` §6.2).
+HEADERS_RAW_SUFFIX = manifest.HEADERS_RAW_SUFFIX
 # Both of them, for the startup refusal: either file is a capture's, and a
 # `*.json` glob over a json sink's directory also matches `*.headers.json`.
 HEADERS_GLOB = "*.headers.*"

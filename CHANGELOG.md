@@ -3,6 +3,55 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A4 — `zoo replay`: the capture's bytes, and its head, sent again
+
+`SPEC.md` §6, which was a heading. A capture is only worth recording if a
+receiver that was not there can be handed it, and the audit (§7) is the first
+caller: it sends the same capture to `spanweave-live serve` twice, once as the
+exporter's own bytes and once as the Collector's JSON.
+
+- **`zoo replay <run> --to http://host[:port] [--raw|--json] [--timing]`**
+  (`SPEC.md` §6): every body of the chosen side, in the order the manifest
+  recorded it — which is the journal's order, which is receipt order, read out
+  of the record rather than re-derived by sorting a directory.
+- **The head comes from `NNNN.headers.raw`, never from `NNNN.headers.json`**
+  (`SPEC.md` §6.2). That is what A3c kept the octets *for*: a bare CR in a
+  header value reaches the parse truncated, so a replayer built on the parse
+  sends a tidied request no exporter made — with the capture that says
+  otherwise sitting on disk beside it. A head the wire refuses is **not**
+  tidied into one it accepts: it is one line, a non-zero exit, and the rest of
+  the capture still sent.
+- **The send is the tee's own forward** (`forward.HttpForward`, `SPEC.md`
+  §4.3), pointed somewhere else. Re-sending captured bytes is one act, and a
+  second implementation of it would be a second chance to improve them. So the
+  two differences between the exporter's request and the replayer's are the two
+  §4.3 already names: `Host`, and the headers that described a connection that
+  no longer exists.
+- **A send that does not succeed never stops the rest** (`SPEC.md` §6.4). A
+  `415` on a protobuf body is an answer and a finding, not an error; a replay
+  that stopped at it would hide what the next body would have done. Exit **1**
+  if any answer was not a 2xx or any body could not be sent; **2** when nothing
+  was sent at all — not a capture, an unreadable manifest, no body on the
+  chosen side (`--json` on a capture whose Collector never ran), a `--to` that
+  is not an `http://host[:port]`.
+- **`--timing` sleeps the recorded gaps through the injected `sleep`**
+  (`SPEC.md` §6.3), from the `received_at` the sink wrote down — the one thing
+  in a headers file the request did not say. A gap it cannot compute is not
+  slept and not guessed: a missing or unparseable receipt time, or one that
+  went backwards, is a printed line and the send still happens. Nothing under
+  `spanweave_zoo/` sleeps outside the seam, so the suite waits for none of it.
+- **The replayer verifies nothing and records nothing** (`SPEC.md` §6.5):
+  `zoo verify` re-hashes bytes and `make verify` runs it on every gate.
+- `tests/test_replay.py` replays the **committed capture** under
+  `tests/fixtures/capture/` wherever it fits — the byte-identity claim is made
+  against bytes a real exporter sent — and crafts the rest by putting head
+  octets on a socket, which is the only way to get a head into a capture that
+  the stdlib cannot represent. A test may do that; `spanweave_zoo/` may not.
+- `manifest.received_at`, `manifest.recorded_bodies` and
+  `manifest.HEADERS_RAW_SUFFIX` are public now, because the octets have a
+  reader as well as a writer; `manifest.moment_of` is public for the same
+  reason — what is and is not a comparable moment has one home (§5.3, §6.3).
+
 ## A0b — CI proves the Collector claim
 
 The claim is A2's: a real protobuf export through the tee comes back from the
