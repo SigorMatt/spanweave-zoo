@@ -2,7 +2,7 @@
 # counts as done (CONTRIBUTING.md, "The bar"): it wraps the exact toolchain
 # commands plus the invariant gate and the capture re-hash as runnable checks.
 
-.PHONY: check lint types test gates verify collector install-check clean
+.PHONY: check lint types test gates verify collector collector-check install-check clean
 
 check: lint types test gates verify
 	uv run zoo --version
@@ -54,6 +54,21 @@ verify:
 # that fails when GitHub does.
 collector:
 	uv run python collector/fetch.py
+
+# The other half of that honesty: the @needs_collector tests RAN, and not one
+# of them skipped. `make check` is green with the binary and without it, which
+# means `make check` alone has never once proved A2's claim anywhere but on a
+# machine that happens to have run `make collector` -- a leg where all three
+# tests skipped looks exactly like a leg where all three passed.
+#
+# So this target runs exactly those tests and FAILS if any is skipped or in
+# error, and if the marker selected none of them at all (pytest exits 0 when
+# everything skips, which is why it reads the junit report rather than the exit
+# code). CI's sixth leg, `collector`,
+# runs it right after `make collector`; locally it is how you check that the
+# binary you just fetched actually re-encodes.
+collector-check:
+	uv run python -m tests.collector_check
 
 # Prove that what SHIPS works: builds the sdist and the wheel, installs the
 # wheel into a throwaway venv, and runs `zoo --help` from a working directory

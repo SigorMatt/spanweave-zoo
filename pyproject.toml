@@ -131,3 +131,11 @@ strict = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    # The tests that need the pinned stock Collector binary on disk. They skip
+    # when it is absent, so `make check` is green without a 100MB download --
+    # and CI's `collector` leg selects them by this name and fails if any of
+    # them skipped (`make collector-check`, `SPEC.md` §4.9). The name is part
+    # of a gate, so it is registered here rather than left to a warning.
+    "needs_collector: needs collector/otelcol-contrib (run `make collector`)",
+]

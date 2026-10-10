@@ -47,3 +47,46 @@ jobs:
       # the only gate that builds the distribution, installs the wheel into a
       # throwaway venv and runs it from outside the repo. It never publishes.
       - run: make install-check
+
+  # The sixth leg, and the only one that downloads the ~100MB stock Collector.
+  #
+  # A2 claims that a protobuf export through the tee comes back as OTLP JSON
+  # carrying the same trace and span ids. The tests that check it skip when the
+  # binary is absent (SPEC.md section 4.9), and no `check` leg fetches it -- so
+  # until this job existed, that claim had only ever been checked on the
+  # maintainer's machine, and five green ticks said nothing about it either
+  # way. Here the binary is present and `make collector-check` FAILS if any of
+  # those tests skips: a leg that checked nothing cannot report success.
+  #
+  # One job, one interpreter: what is being proved is the Collector, not the
+  # Python matrix, and the matrix legs already run everything else.
+  collector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.11.25"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: uv sync --extra dev --python 3.12
+      # The archive is cached under the sha256 that PINS it, read from
+      # collector/SHA256SUMS by the fetcher itself -- so the key cannot name
+      # bytes other than the pinned ones, and bumping collector/VERSION is a
+      # miss and a fresh download rather than a stale hit. `--print-pin`
+      # touches no network.
+      - name: The pinned archive and its digest
+        id: pin
+        run: uv run python collector/fetch.py --print-pin >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: collector/.cache
+          key: otelcol-${{ steps.pin.outputs.asset }}-${{ steps.pin.outputs.sha256 }}
+      # Re-hashes the archive whether it came from the cache or the network: a
+      # cache hit that trusted its own file name would be a way of running an
+      # unpinned Collector (collector/fetch.py, `cached`).
+      - run: make collector
+      # THE point of this job. Runs the @needs_collector tests and fails if any
+      # of them skipped -- pytest exits 0 when every selected test skips, so
+      # this reads pytest's junit report instead of its exit code.
+      - run: make collector-check

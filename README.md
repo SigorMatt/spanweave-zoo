@@ -87,7 +87,9 @@ The Collector is **stock**, pinned in `collector/VERSION`, with its sha256 in
 `collector/SHA256SUMS` and its config checked in at `collector/config.yaml`.
 `make collector` downloads exactly that release and refuses to unpack anything
 else; the ~100 MB binary is gitignored, because the pin is the record and the
-bytes are a download. `zoo capture` refuses to start if the binary reports a
+bytes are a download. The archive is kept in `collector/.cache/` so a second
+run does not fetch it again -- and re-hashed on every run, so a cached archive
+whose digest is not the pin is refused exactly as a bad download is. `zoo capture` refuses to start if the binary reports a
 version that is not the pin.
 
 ### The manifest, and `zoo verify`
@@ -276,13 +278,22 @@ make check                 # THE gate: lint, mypy --strict, pytest, the gate, zo
 make verify                # re-hash every capture on its own
 make install-check         # build the wheel, install it, run `zoo --help` from outside the repo
 make collector             # fetch the pinned Collector (not a prerequisite of anything)
+make collector-check       # the Collector tests ran, and not one of them skipped
 ```
 
 `make check` is green **with and without** `collector/otelcol-contrib` on
-disk. The one test that runs the real Collector -- a protobuf export through
-the tee, asserted to come back as JSON with the same span ids -- is skipped
-when the binary is absent, which is how it behaves in CI: nothing in CI
-downloads 100 MB. It skips loudly rather than passing quietly (`SPEC.md` §4.9).
+disk. The tests that run the real Collector -- a protobuf export through the
+tee, asserted to come back as JSON with the same span ids -- are skipped when
+the binary is absent, which is how they behave on CI's five `check` legs: none
+of them downloads 100 MB. They skip loudly rather than passing quietly
+(`SPEC.md` §4.9).
+
+A skip is honest and it is not enough: pytest exits `0` when every selected
+test skips, so a green tick on those five legs says nothing either way. A
+**sixth CI leg, `collector`**, runs `make collector` (the archive cached by the
+sha256 that pins it) and then `make collector-check`, which runs exactly those
+tests and **fails if any of them skipped** -- so the claim is proved on a
+machine that is not the maintainer's.
 
 `make check` never installs the `audit` extra, and neither does CI. That extra
 pins `spanweave` and `spanweave-live` by git sha and is needed by the audit

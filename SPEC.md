@@ -437,6 +437,20 @@ are the record; the bytes are a download. Nothing in `make check` fetches it,
 and `make collector` is never a prerequisite of a gate: a build that reaches
 the network to decide whether it passes is a build that fails when GitHub does.
 
+The downloaded archive is kept in `collector/.cache/<asset>` — gitignored too —
+so a second `make collector` re-uses it instead of fetching 100 MB again, and
+CI restores it between runs. The cache changes nothing about the check: the
+archive is **re-hashed on every run**, whether it came from the network or from
+the cache, and **a cached archive whose digest is not the pin is refused
+exactly as a downloaded one is**, naming the file to delete. A cache hit that
+trusted its own file name would be a way of running an unpinned Collector while
+`make collector` printed the pin. The download writes `<asset>.part` and
+renames it only once the digest matches, so an interrupted fetch never becomes
+the cache. `collector/fetch.py --print-pin` prints the two lines CI keys the
+cache on — `asset=` and `sha256=`, read from the pin itself and touching no
+network — which makes a `VERSION` or `SHA256SUMS` change a miss and a fresh
+download rather than a stale hit.
+
 The Collector is **stock**. No custom build, no components beyond those named
 in §4.2, and no patch. A zoo that shipped its own Collector would be back to
 re-encoding bytes with code nobody else has reviewed.
@@ -774,10 +788,10 @@ columns line up — that would be improving the capture.
 The integration test — a hand-built OTLP protobuf export through the tee into
 the real binary, asserting `json/0001.json` is OTLP JSON carrying **the same
 trace and span ids** — runs when `collector/otelcol-contrib` is present and is
-**skipped when it is absent**, which is how it behaves in CI: nothing in CI
-downloads a 100 MB binary. `make check` is therefore green both with the binary
-and without it, and on a developer machine that has run `make collector` it is
-green having actually run the Collector.
+**skipped when it is absent**, which is how it behaves on CI's five `check`
+legs: none of them downloads a 100 MB binary. `make check` is therefore green
+both with the binary and without it, and on a developer machine that has run
+`make collector` it is green having actually run the Collector.
 
 What holds in CI without the binary: the config and the pin are asserted as
 text, the tee's mechanics are asserted against the `forward` seam,
@@ -792,6 +806,31 @@ thing it is not allowed to claim. What only a machine with the binary proves is 
 real protobuf export comes back as JSON with the same ids — and a test that
 quietly passed without proving it would be the kind of reassuring pass this
 repository exists to refuse (`CLAUDE.md`). It skips loudly instead.
+
+**A skip is honest, and it is not enough.** `pytest` exits `0` when every
+selected test skips, so a leg on which all of them skipped is, in a green tick,
+indistinguishable from a leg on which all of them passed — and for five legs
+the claim was therefore only ever *checked* on a machine that happened to have
+run `make collector`, the maintainer's. So:
+
+- the tests that need the binary carry the **`needs_collector` marker** as well
+  as the skip. The marker is registered in `pyproject.toml` and is the name
+  `-m` selects by; a bare `skipif` has no name to select by;
+- **`make collector-check`** runs exactly `-m needs_collector`, reads pytest's
+  own junit-xml report rather than its summary prose, and **exits non-zero if
+  any selected test skipped**, failed or errored — *and* if the marker selected
+  **no test at all**, which is how a renamed marker or a dropped decorator
+  would otherwise turn the check into a no-op that passes. It is not a
+  prerequisite of `check`, which must stay green with no binary;
+- CI has a **sixth leg, `collector (ubuntu-latest)`**: one interpreter, `make
+  collector` with the archive cached by the sha256 that pins it (§4.1), then
+  `make collector-check`. It is the only job that downloads the binary, and the
+  only job that can say the stock Collector re-encoded anything.
+
+The guard's verdict is a pure function of the report text, so it is run against
+planted reports — a skip, an empty run, a failure, an error — in
+`tests/test_collector_ci.py`: a guard nobody has watched fail is a guard nobody
+knows works.
 
 ## 5. The manifest, and verification
 

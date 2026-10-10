@@ -15,6 +15,15 @@ too: an unpinned binary is not a pinned Collector, and a capture labelled with a
 version that was not the one that ran would be worse than one labelled with
 nothing.
 
+The archive it downloads is kept in `collector/.cache/` -- gitignored, like the
+binary -- and a second run re-uses it instead of fetching 100 MB again, after
+re-hashing it: **a cached archive whose digest is not the pin is refused
+exactly as a downloaded one is.** The download writes `<asset>.part` and renames
+it only once the digest matches, so an interrupted fetch never becomes the
+cache. CI keys its cache on that same digest (`--print-pin`), which is why a
+`VERSION` or `SHA256SUMS` change is a cache miss and a fresh download rather
+than a stale hit.
+
 Nothing in `make check` runs this. A gate that reaches the network to decide
 whether it passes is a gate that fails when GitHub does.
 """
@@ -26,7 +35,6 @@ import platform
 import shutil
 import sys
 import tarfile
-import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -35,6 +43,10 @@ HERE = Path(__file__).resolve().parent
 
 RELEASES = "https://github.com/open-telemetry/opentelemetry-collector-releases"
 BINARY = "otelcol-contrib"
+
+# Where the downloaded archive is kept between runs. Gitignored, like the
+# binary: the pin is the record and the bytes are a download.
+CACHE = HERE / ".cache"
 
 # `uname -s` / `uname -m` as the release names them. Anything not in here has no
 # line in SHA256SUMS either, and is refused rather than guessed at.
@@ -107,31 +119,95 @@ def extract(tarball: Path, into: Path) -> Path:
     return target
 
 
-def main() -> int:
-    version = pinned_version()
-    asset = f"{BINARY}_{version}_{this_platform()}.tar.gz"
+def pinned_asset() -> tuple[str, str]:
+    """`(asset, sha256)` for this platform. No line in `SHA256SUMS` is a refusal."""
+    asset = f"{BINARY}_{pinned_version()}_{this_platform()}.tar.gz"
     expected = pinned_digests().get(asset)
     if expected is None:
         raise SystemExit(
             f"collector: {asset} has no line in collector/SHA256SUMS. "
             f"An unpinned binary is not a pinned Collector (SPEC.md §4.1)."
         )
+    return asset, expected
 
-    print(f"collector: {BINARY} {version} for {this_platform()}")
-    with tempfile.TemporaryDirectory(prefix="zoo-collector-") as scratch:
-        tarball = Path(scratch) / asset
-        download(f"{RELEASES}/releases/download/v{version}/{asset}", tarball)
-        actual = digest_of(tarball)
-        if actual != expected:
-            raise SystemExit(
-                f"collector: REFUSING to unpack {asset}.\n"
-                f"  expected sha256 {expected}  (collector/SHA256SUMS)\n"
-                f"  downloaded       {actual}\n"
-                f"The pinned digest is the release's own. These are not the "
-                f"bytes that were pinned."
-            )
-        print(f"  sha256 {actual} matches collector/SHA256SUMS")
-        binary = extract(tarball, HERE)
+
+def refuse(archive: Path, expected: str, actual: str, how: str) -> SystemExit:
+    return SystemExit(
+        f"collector: REFUSING to unpack {archive.name}.\n"
+        f"  expected sha256 {expected}  (collector/SHA256SUMS)\n"
+        f"  {how:<16}{actual}\n"
+        f"The pinned digest is the release's own. These are not the bytes that "
+        f"were pinned.\n"
+        f"Delete {archive} and run `make collector` again to fetch them."
+    )
+
+
+def cached(archive: Path, expected: str) -> bool:
+    """Is the pinned archive already on disk? A wrong digest is a refusal.
+
+    Not "is there a file with the right name": the cache is re-hashed on every
+    run, because a cache hit that trusted its own file name would be a way of
+    running an unpinned Collector while `make collector` printed the pin
+    (`SPEC.md` §4.1).
+    """
+    if not archive.is_file():
+        return False
+    actual = digest_of(archive)
+    if actual != expected:
+        raise refuse(archive, expected, actual, "cached")
+    return True
+
+
+def print_pin() -> int:
+    """`asset=` and `sha256=` -- what CI keys its archive cache on.
+
+    `KEY=value` lines, which is the `$GITHUB_OUTPUT` form, so the cache key
+    names the digest that pins the bytes rather than a branch or a date
+    (`.github/workflows/ci.yml`, the `collector` job). A `VERSION` or
+    `SHA256SUMS` change is then a different key: a miss and a fresh download,
+    never a stale hit.
+    """
+    asset, expected = pinned_asset()
+    print(f"asset={asset}")
+    print(f"sha256={expected}")
+    return 0
+
+
+def fetch_into_cache(asset: str, expected: str) -> Path:
+    """Download the archive and put it in the cache once its digest matches.
+
+    Written as `<asset>.part` and renamed only after the check, so an
+    interrupted or truncated download is never mistaken for a cache hit by the
+    next run.
+    """
+    CACHE.mkdir(parents=True, exist_ok=True)
+    archive = CACHE / asset
+    partial = CACHE / f"{asset}.part"
+    download(f"{RELEASES}/releases/download/v{pinned_version()}/{asset}", partial)
+    actual = digest_of(partial)
+    if actual != expected:
+        partial.unlink(missing_ok=True)
+        raise refuse(archive, expected, actual, "downloaded")
+    partial.replace(archive)
+    return archive
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments == ["--print-pin"]:
+        return print_pin()
+    if arguments:
+        raise SystemExit(f"collector: usage: fetch.py [--print-pin] (got {arguments})")
+
+    asset, expected = pinned_asset()
+    print(f"collector: {BINARY} {pinned_version()} for {this_platform()}")
+    archive = CACHE / asset
+    if cached(archive, expected):
+        print(f"  cached {archive}")
+    else:
+        archive = fetch_into_cache(asset, expected)
+    print(f"  sha256 {expected} matches collector/SHA256SUMS")
+    binary = extract(archive, HERE)
 
     print(f"collector: {binary} ready (gitignored -- the pin is the record)")
     return 0

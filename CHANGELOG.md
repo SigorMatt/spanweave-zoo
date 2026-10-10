@@ -3,6 +3,48 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A0b — CI proves the Collector claim
+
+The claim is A2's: a real protobuf export through the tee comes back from the
+stock Collector as OTLP JSON carrying the same trace and span ids. Three tests
+check it, they need a gitignored ~100 MB binary, and they skip when it is
+absent — so for five CI legs the claim was green everywhere and *checked*
+nowhere but on the maintainer's machine (review thread T25).
+
+- **A sixth CI job, `collector (ubuntu-latest)`** (`SPEC.md` §4.9): one
+  interpreter, `make collector`, then `make collector-check`. It is the only
+  job that downloads the binary and the only one that can say the stock
+  Collector re-encoded anything. **Wall clock: 15 s** on a cold cache — 4 s of
+  it the 112 MB fetch, 1.6 s the three tests — measured on this tree
+  (run 38013503089); the five `check` legs it joins take 17 s and 58 s.
+- **`make collector-check` fails when a Collector test skips.** It runs exactly
+  `-m needs_collector`, reads pytest's own junit-xml report, and exits non-zero
+  on any skip, failure or error — *and* when the marker selects **no test at
+  all**, which is how a renamed marker or a dropped decorator would otherwise
+  turn the job into a no-op that passes. What it cannot use is the exit code:
+  **pytest exits `0` when every selected test skips**, which is the whole
+  reason a green tick said nothing. It is deliberately not a prerequisite of
+  `check`, which stays green on a machine with no binary.
+- **The tests carry a named `needs_collector` marker**, registered in
+  `pyproject.toml`, as well as the skip. A bare `skipif` has no name to select
+  by. `tests/test_collector_ci.py` asserts every test in
+  `tests/test_collector_real.py` carries the decorator *and* that `-m` selects
+  exactly those tests, because the marker is now part of a gate.
+- **The guard's verdict is a pure function of the report text**, run against
+  planted reports — a skip, all skipped, an empty run, a failure, an error — the
+  way the import gate is run against planted violations. A guard nobody has
+  watched fail is a guard nobody knows works.
+- **The downloaded archive is cached at `collector/.cache/<asset>`**
+  (`SPEC.md` §4.1), so a second `make collector` does not fetch 100 MB again
+  and CI restores it between runs, keyed on the **sha256 that pins it** —
+  printed by `collector/fetch.py --print-pin`, read from `collector/SHA256SUMS`
+  itself, so a `VERSION` or digest change is a miss and a fresh download rather
+  than a stale hit. The cache changes nothing about the check: the archive is
+  re-hashed every run, and **a cached archive whose digest is not the pin is
+  refused exactly as a bad download is**, naming the file to delete. The
+  download writes `<asset>.part` and renames it only once the digest matches,
+  so an interrupted fetch never becomes the cache.
+
 ## A0a — the README is true, the licence exists, and the open question has a home
 
 Documentation only: no module under `spanweave_zoo/` changed, and `SPEC.md` is

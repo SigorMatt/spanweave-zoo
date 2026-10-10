@@ -7,11 +7,16 @@ OTLP **JSON carrying the same trace and span ids**.
 
 It needs the pinned binary, which is a ~100 MB gitignored download
 (`make collector`). So it is **skipped when the binary is absent**, which is
-how it behaves in CI -- nothing in CI fetches it -- and it **runs when it is
-present**, which is how `make check` behaves on a machine that has. It skips
-loudly rather than passing quietly: a test that reported success without
-re-encoding anything would be exactly the reassuring pass this repository
-refuses (`CLAUDE.md`).
+how it behaves on the five `check` legs of CI -- none of them fetches it -- and
+it **runs when it is present**, which is how `make check` behaves on a machine
+that has. It skips loudly rather than passing quietly: a test that reported
+success without re-encoding anything would be exactly the reassuring pass this
+repository refuses (`CLAUDE.md`).
+
+A skip is still only honest, not sufficient. The sixth CI leg, `collector`,
+fetches the binary and runs these tests through `make collector-check`, which
+**fails if any of them skipped** (`tests/collector_check.py`) -- so the claim is
+proved on a machine that is not the maintainer's.
 
 The waiting here is honest about what it waits on. The Collector is another
 process with a batch processor, so the test cannot know when it will POST; it
@@ -38,13 +43,26 @@ REPO = Path(__file__).resolve().parent.parent
 COLLECTOR_DIR = REPO / "collector"
 BINARY = COLLECTOR_DIR / collector.BINARY_NAME
 
-needs_collector = pytest.mark.skipif(
-    not BINARY.is_file(),
-    reason=(
-        f"{BINARY} is absent (it is a gitignored ~100MB download): "
-        f"run `make collector`. SPEC.md section 4.9."
-    ),
-)
+
+def needs_collector(test):
+    """Two marks at once: the name CI selects by, and the skip.
+
+    The skip is why `make check` is green on a machine that has not downloaded
+    100 MB. The *named marker* is what makes the skip auditable: `make
+    collector-check` selects `-m needs_collector` and fails if any selected
+    test skipped (`tests/collector_check.py`), and a bare `skipif` has no name
+    to select by. Both, on one decorator, so neither can be applied without
+    the other.
+    """
+    skip = pytest.mark.skipif(
+        not BINARY.is_file(),
+        reason=(
+            f"{BINARY} is absent (it is a gitignored ~100MB download): "
+            f"run `make collector`. SPEC.md section 4.9."
+        ),
+    )
+    return pytest.mark.needs_collector(skip(test))
+
 
 HOST = "127.0.0.1"
 PROTOBUF = otlp.export_trace_service_request()
