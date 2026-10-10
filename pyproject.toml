@@ -7,6 +7,12 @@ name = "spanweave-zoo"
 version = "0.0.1"
 description = "Record what real OTLP exporters send, byte for byte. Pre-release: nothing is frozen."
 readme = "README.md"
+# MIT, as `spanweave` and `spanweave-live` are, and declared the same way they
+# declare it: an SPDX expression plus the file itself, so the licence ships in
+# the wheel's metadata rather than only in the repository. `make install-check`
+# asserts the built wheel carries `LICENSE`.
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["telemetry", "tracing", "opentelemetry", "otlp", "capture"]
 classifiers = [
@@ -15,6 +21,7 @@ classifiers = [
     # the capture layout, not `MANIFEST.json`.
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
     # Held equal to the matrix in `.github/workflows/ci.yml`. A harness that
     # records a stranger's exporter must not narrow the runtime the stranger's
     # app happens to run on.
@@ -87,6 +94,7 @@ include = [
     "/collector",
     "/.github",
     "/*.md",
+    "/LICENSE",
     "/Makefile",
     "/pyproject.toml",
     "/uv.lock",

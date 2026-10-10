@@ -3,6 +3,45 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A0a — the README is true, the licence exists, and the open question has a home
+
+Documentation only: no module under `spanweave_zoo/` changed, and `SPEC.md` is
+unchanged. What changed is what a stranger reads, plus the tests that hold it.
+
+- **Every command the README prints is complete and runnable as printed**, and
+  `tests/test_readme.py` parses each one with the CLI's own parser on every
+  `make check`. The first `zoo capture` an operator met did not run -- exit 2,
+  "the following arguments are required: --kind, --project-manifest", because
+  both flags were introduced sixty lines further down the page (review finding
+  F3). Every `zoo` command now carries the `uv run` prefix that makes it
+  typeable in a bare checkout, every `make` target is checked against the
+  `Makefile`, and every `uv sync --extra` against `pyproject.toml`. The pet
+  project's own `make run-real` / `make run-recorded` are exempt from the
+  target lookup and `EXPORT-CONTRACT.md` is asserted to be where they come
+  from.
+- **The operator flow is a numbered list of the commands themselves, starting
+  with `uv sync --extra dev`, and nothing counts them.** Three counts
+  disagreed: the plan's row said four commands and a `Ctrl-C`, the README said
+  five, and an operator had to type six because the `uv sync` was prose beside
+  the list rather than a step in it (review finding F15). The numbers are now
+  the count, a test fails on any "N commands" phrasing, and the explanation of
+  each step sits with the step rather than in a second list that could drift
+  from the first. The verified way for a supervisor to wait on the readiness
+  line is printed with it.
+- **`LICENSE` (MIT) and `license` / `license-files` in `pyproject.toml`**
+  (review thread T5). There was neither, so the built wheel carried no licence
+  at all. Declared exactly as `spanweave` and `spanweave-live` declare it, with
+  a `LICENSE` byte-identical to theirs; `make install-check` now asserts the
+  wheel ships it, and `tests/test_packaging.py` that the file, the metadata and
+  the README agree.
+- **`OPEN_QUESTIONS.md` exists** (review finding F14). `CLAUDE.md` says a batch
+  that would have to invent a rule stops and writes the options there, and
+  there was no such file -- A3 met that trigger and recorded the question in a
+  commit message instead. §1 is the manifest-timing question with the decision
+  that settled it (copied at the end, A3b), §2 the licence, §3 the one edge
+  that is still open as a preference. An answered question is kept with its
+  answer.
+
 ## A3d — `verify` refuses what it did not check, and CI checks something
 
 - **`zoo verify <path>` on a path that is not a capture exits 2, naming the
