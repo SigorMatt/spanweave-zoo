@@ -238,9 +238,7 @@ def verify(root: Path, *, named: bool = False) -> int:
         for problem in problems:
             print(f"  ! {problem}")
         print(
-            f"zoo verify: {len(problems)} problem(s). A capture is immutable "
-            f"(CLAUDE.md section 0.6): these bytes are not the bytes that "
-            f"were recorded."
+            f"zoo verify: {len(problems)} problem(s), each named above -- not verified."
         )
         return 1
     print("zoo verify: every recorded body still hashes to what was recorded")

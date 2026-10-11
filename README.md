@@ -79,10 +79,17 @@ which bodies never reached it (`SPEC.md` §4).
 
 The capture directory is created **last**: all three listeners accept and the
 Collector has logged its own ready line before anything is written, and then
-`zoo capture` prints one line -- `the raw bytes are the record. Ctrl-C to
-stop.` A refusal before that names the port or the cause, exits 2 and leaves
-nothing behind, so a capture directory means a capture was made (`SPEC.md`
-§4.6).
+`zoo capture` prints the readiness line -- `zoo capture: the raw bytes are the
+record. Ctrl-C to stop.` -- followed by two more: the raw sink's address and
+the `raw/` it writes to, and the Collector's version with the `json/` its
+re-encoding lands in and the json sink's address. A refusal before that names
+the port or the cause, exits 2 and leaves nothing behind, so a capture
+directory means a capture was made (`SPEC.md` §4.6).
+
+None of the Collector's own lines reach the terminal. Its stdout and stderr go,
+byte for byte, to `collector.log` in the run directory -- the lines from before
+readiness included -- which is listed and hashed in `MANIFEST.json` like every
+other file (`SPEC.md` §4.2).
 
 The Collector is **stock**, pinned in `collector/VERSION`, with its sha256 in
 `collector/SHA256SUMS` and its config checked in at `collector/config.yaml`.
@@ -192,9 +199,11 @@ depends on this having run.
 make collector
 ```
 
-Downloads the pinned release and checks its sha256 against the release's own
-digest. Once per machine; `zoo capture` refuses to start if the binary is
-missing or is not the pin.
+Downloads the pinned release and checks its sha256 against the pin
+checked in at `collector/SHA256SUMS`; a second run uses the archive cached in
+`collector/.cache/`, re-hashed against the same pin, instead of fetching it
+again. Once per checkout -- the binary lands in this checkout's `collector/`;
+`zoo capture` refuses to start if the binary is missing or is not the pin.
 
 **3. In the zoo's checkout -- start the capture, and leave it running.**
 
@@ -207,9 +216,10 @@ uv run zoo capture --project z4 --run-id 2026-10-10T09-00-00Z \
 Brings up the raw sink on **4318** -- the port every brief gave the pet
 projects -- the Collector behind it, and the json sink the re-encoding lands
 in. It prints one line per recorded body as it arrives, flushed as it is
-printed. `--kind real` is the declaration the audit keys off and has no
-default; `--project-manifest` is the project's own `MANIFEST.json`, copied into
-the capture verbatim. Both are **required**, and the path is checked before
+printed -- one for the exporter's body in `raw/` and one for its re-encoding
+in `json/`, so a single export prints two. `--kind real` is the declaration
+the audit keys off and has no default; `--project-manifest` is the project's
+own `MANIFEST.json`, copied into the capture verbatim. Both are **required**, and the path is checked before
 anything is recorded.
 
 Wait for the one readiness line -- `zoo capture: the raw bytes are the record.
@@ -221,13 +231,17 @@ supervisor can wait on it instead of a human watching the terminal:
 uv run zoo capture --project z4 --run-id 2026-10-10T09-00-00Z \
                    --kind real \
                    --project-manifest ../streaming-concierge/MANIFEST.json \
-                   > capture.log 2>&1 &
-timeout 30 bash -c 'until grep -q "^zoo capture: the raw bytes are the record" capture.log; do sleep 0.1; done'
+                   > "${TMPDIR:-/tmp}"/zoo-capture-2026-10-10T09-00-00Z.log 2>&1 &
+timeout 30 bash -c 'until grep -q "^zoo capture: the raw bytes are the record" "${TMPDIR:-/tmp}"/zoo-capture-2026-10-10T09-00-00Z.log; do sleep 0.1; done'
 ```
 
 Grep the log rather than the pipe, and anchor it: `recording POST /v1/traces on
 http://127.0.0.1:4318` is printed by `zoo sink` as well, so an unanchored match
-can be satisfied by the wrong process.
+can be satisfied by the wrong process. The log goes outside the checkout and
+outside the run directory, never into either: a file in the run directory is
+hashed into the manifest before `zoo capture` prints its last line into it,
+and a redirect there would create the directory before readiness. The
+operator log is not part of the record, because `collector.log` is.
 
 **4. In the pet project's checkout, in a second terminal -- make its run.**
 
@@ -249,11 +263,20 @@ Ctrl-C
 A keystroke rather than a command, and the only one in the flow. It stops the
 raw sink, lets the Collector flush its last batch, stops the json sink,
 copies the project's `MANIFEST.json`, completes the capture's own and prints
-what it recorded. `SIGTERM` does the same, so a supervisor can end a run. The
-exit status is non-zero if any body failed to reach the Collector, if the
-Collector exited during the run, or if the project's own `MANIFEST.json` could
-not be copied -- the capture is intact either way and the manifest says what
-happened.
+what it recorded, counted by side -- `zoo capture: 1 body/bodies in raw/, 1 in
+json/, under captures/z4/2026-10-10T09-00-00Z/, MANIFEST.json written:
+kind=real` for one export. The Collector runs in a session of its own, so the
+terminal's Ctrl-C reaches the zoo and not the Collector, and the zoo stops it:
+a clean run exits **0** and leaves no Collector running. `SIGTERM` does the
+same, so a supervisor can end a run. The exit status is non-zero if any body
+failed to reach the Collector, if the Collector exited during the run, or if
+the project's own `MANIFEST.json` could not be copied -- the capture is intact
+either way and the manifest says what happened.
+
+The project's `make run` rewrites its own `MANIFEST.json` in its checkout
+every time (`EXPORT-CONTRACT.md` §1), so step 4 leaves that file modified
+there. The capture already holds the copy it took; the operator does not
+commit the pet project's checkout.
 
 **6. In the zoo's checkout -- re-hash what was recorded.**
 
@@ -262,9 +285,10 @@ make verify
 ```
 
 Re-hashes every capture under `captures/`, and the committed one under
-`tests/fixtures/capture/`, against its manifest. `make check` depends on it, so
-from then on every run of the gates re-checks this capture's bytes. For just
-this run:
+`tests/fixtures/capture/`, against its manifest. After a clean run it is
+green with the new capture present, and so is `make check`, which depends on
+it -- so from then on every run of the gates re-checks this capture's bytes.
+For just this run:
 
 ```bash
 uv run zoo verify captures/z4/2026-10-10T09-00-00Z
@@ -360,9 +384,12 @@ captures/<project>/<run-id>/raw/NNNN.body          the bytes as received
 captures/<project>/<run-id>/raw/NNNN.headers.raw   the head, octet for octet
 captures/<project>/<run-id>/raw/NNNN.headers.json  that head, split on CRLF
 captures/<project>/<run-id>/json/NNNN.json         the Collector's re-encoding
+captures/<project>/<run-id>/json/NNNN.headers.raw  the head the Collector sent it with
+captures/<project>/<run-id>/json/NNNN.headers.json that head, split on CRLF
 captures/<project>/<run-id>/rejected/NNNN.body     a POST aimed at another path
 captures/<project>/<run-id>/bodies.jsonl           each body as it was recorded
 captures/<project>/<run-id>/forwards.jsonl         each forward as it completed
+captures/<project>/<run-id>/collector.log          the Collector's own output, verbatim
 captures/<project>/<run-id>/MANIFEST.json          what this capture is, its hashes, its seal
 ```
 

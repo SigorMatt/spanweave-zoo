@@ -3,6 +3,32 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A0c — the README survives its own rehearsal
+
+Run-2 review §1.5; `OPEN_QUESTIONS.md` §4 (option 2). Docs only, except the
+`zoo verify` closing-line wording (review N-1).
+
+- **The operator flow says what a run does.** Ctrl-C to the terminal's group
+  exits 0 and leaves no Collector running; `make verify` and `make check` are
+  green with the new capture present; the terminal shows the readiness line,
+  the two lines naming the ports and directories, one line per body per side
+  and the summary (`1 body/bodies in raw/, 1 in json/`), and none of the
+  Collector's lines, which are in `collector.log`; step 2 checks against
+  `collector/SHA256SUMS`, uses the cache on a second run, and is once per
+  checkout; the pet project's `make run` rewrites its own `MANIFEST.json`,
+  which the operator does not commit from the pet's checkout.
+- **The log-to-file variant** writes to
+  `"${TMPDIR:-/tmp}"/zoo-capture-<run-id>.log`, outside the checkout and the
+  run directory; the operator log is not part of the record, because
+  `collector.log` is.
+- README Layout and the `SPEC.md` §2 tree list `collector.log` and
+  `json/NNNN.headers.*`, which every capture already holds. The Makefile's
+  `collector` comment names `collector/SHA256SUMS` as the pin.
+- **`zoo verify`'s closing line** is `N problem(s), each named above -- not
+  verified.`; it no longer says "these bytes are not the bytes that were
+  recorded" for a recorded problem, a bad `kind`, a missing `ended_at` or a
+  seal mismatch. Test: four non-byte failures, red on the parent.
+
 ## A4a — replay sends the captured head
 
 Run-2 review, A4 (N-6); the decision of 2026-10-11 ("replay").

@@ -106,9 +106,12 @@ captures/<project>/<run-id>/
         ...
     json/
         0001.json               the Collector's JSON re-encoding of 0001.body
+        0001.headers.raw        the head the Collector sent it with, octet for octet
+        0001.headers.json       that same head split on CRLF (§2.3)
         ...
     bodies.jsonl                one line per recorded body, written as it lands
     forwards.jsonl              one line per attempted forward to the Collector
+    collector.log               the Collector's stdout and stderr, verbatim (§4.2)
     MANIFEST.json
 ```
 

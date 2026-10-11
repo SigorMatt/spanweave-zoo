@@ -43,9 +43,10 @@ verify:
 	uv run zoo verify tests/fixtures/capture
 
 # Fetch the pinned stock OpenTelemetry Collector and check its sha256 against
-# the release's own digest (SPEC.md section 4.1). The version lives in
-# collector/VERSION and the digests in collector/SHA256SUMS; the ~100MB binary
-# is gitignored, because the pin is the record and the bytes are a download.
+# the pin checked in at collector/SHA256SUMS (SPEC.md section 4.1); a cached
+# archive in collector/.cache/ is re-hashed against the same pin. The version
+# lives in collector/VERSION; the ~100MB binary is gitignored, because the pin
+# is the record and the bytes are a download.
 #
 # Deliberately NOT a prerequisite of anything. `make check` is green with the
 # binary and without it: the integration test that runs the real Collector is

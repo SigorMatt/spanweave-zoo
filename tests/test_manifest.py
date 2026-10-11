@@ -409,6 +409,49 @@ def test_a_capture_with_no_ended_at_fails_verify_and_says_how_to_remove_it(
     assert f"rm -rf {run}" in out
 
 
+def _record_a_problem(run: Path) -> None:
+    manifest.append_problem(run, "collector exited: 0")
+
+
+def _declare_an_unnamed_kind(run: Path) -> None:
+    document = manifest.read(run)
+    document[manifest.KIND] = "almost-real"
+    manifest.write_json(run / manifest.MANIFEST_NAME, document)
+
+
+def _drop_ended_at(run: Path) -> None:
+    document = manifest.read(run)
+    del document[manifest.ENDED_AT]
+    manifest.write_json(run / manifest.MANIFEST_NAME, document)
+
+
+def _break_the_seal(run: Path) -> None:
+    document = manifest.read(run)
+    document["seal"] = "0" * 64
+    manifest.write_json(run / manifest.MANIFEST_NAME, document)
+
+
+@pytest.mark.parametrize(
+    "fail",
+    [_record_a_problem, _declare_an_unnamed_kind, _drop_ended_at, _break_the_seal],
+)
+def test_a_failure_that_is_not_about_bytes_is_not_blamed_on_the_bytes(
+    tmp_path, capsys, fail
+):
+    # Review N-1. Every file here still hashes to what the manifest says, so
+    # the closing line must not tell the operator the bytes changed: the run
+    # recorded a problem, or the manifest's own claims fail, and that is what
+    # the per-problem lines above it say.
+    run = hand_written_capture(tmp_path)
+    fail(run)
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert "sha256 is" not in out, "every file was meant to re-hash as recorded"
+    assert "bytes that were recorded" not in out
+    assert "not verified" in out.splitlines()[-1]
+
+
 def test_a_problem_recorded_during_the_run_fails_verify(tmp_path, capsys):
     # A3a writes `problems` when something goes wrong that the capture cannot
     # fix -- a Collector that exited -- and A3b is where `zoo verify` starts
