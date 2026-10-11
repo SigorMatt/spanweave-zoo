@@ -7,10 +7,10 @@ that runs spanweave and spanweave-live over every capture and writes the
 next series' probes. One batch = one sub-agent = one commit = one concern.
 This file plus git is the only state; any session can resume cold from it.
 
-Last updated: 2026-10-10 (runs 1 and 2 complete: A0–A3, A3a–A3d, A0a,
-A0b, A4 done. Next: the run-2 cold review (aux), then the operator
-captures Z4 — `real` and `recorded` — with the README's commands and
-commits them. Run 3 = A5 → A6.)
+Last updated: 2026-10-11 (runs 1 and 2 complete: A0–A3, A3a–A3d, A0a,
+A0b, A4 done; the run-2 cold review decided. Next: run 2b = A3e → A3f →
+A4a → A0c, then a scoped review (aux), then the operator captures Z4 —
+`real` and `recorded` — and commits them. Run 3 = A5 → A6.)
 
 ---
 
@@ -163,16 +163,22 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | A0a | **The README is true, the licence exists, and the open question has a home.** Review F3, F15, F14, T5, T18, T20, F16. README: the operator section lists the exact commands, each complete and runnable as printed, numbered, with `uv sync --extra dev` as the first; the row and §4 stop counting and cite the README. `LICENSE` MIT and `license` in `pyproject.toml`. `OPEN_QUESTIONS.md` created with §1 = the manifest-timing question and its decision (§3). §4 gains: the A2 CI line; the `c965c9b` → `9074ecd` force-push; the `b913e2b` two-clause subject. Docs only; say so in the body. | done (91e91af) | 5 |
 | A0b | **CI proves the Collector claim.** Review T25. A sixth job `collector (ubuntu-latest)`: `make collector` with the release archive cached by its sha256, then the `@needs_collector` tests run and are shown **not skipped** (the job fails if any is). Pin the Collector download's sha in `collector/SHA256SUMS` as today. Say in the body how long the job takes. | done (222825f) | 5 |
 | A4 | **The replayer re-sends what was captured.** `zoo replay captures/<project>/<run-id> --to http://host:port [--raw\|--json] [--timing]` (SPEC §6): re-sends each body with its captured headers (content type and encoding intact) in receipt order; `--timing` sleeps the captured inter-arrival gaps through an injected `sleep`; prints each response status; exits non-zero if any status is not 2xx but still sends the rest. Tests: replaying a capture into a fresh sink produces byte-identical bodies and headers; `--timing` on a fake clock sleeps the recorded gaps. | done (0c1e538) | 6 |
+| A3e | **Ctrl-C stops the capture and nothing else.** Review blocker. The Collector child in its own session; `zoo capture` on SIGINT: stop accepting, let the Collector flush (bounded), SIGTERM it, wait (bounded), SIGKILL if needed, finalize; a Collector exit inside that sequence is not a `problems` entry; outside it, it is. `collector.log` in the run directory, listed in the manifest. The body count counts bodies. Tests red on the parent: SIGINT to the **process group** of a running capture (as a terminal sends it) → exit 0, no `problems`, `verify` green, ten of ten runs; the Collector killed by hand mid-capture → `problems`, exit non-zero; `collector.log` present and listed. Mutation: a capture that leaves the child in its own group fails the group-SIGINT test. SPEC §4 states the shutdown order. | todo | 8 |
+| A3f | **The manifest is sealed, and the parse cannot invent.** Review A3b-1, A3c. `seal` as §3 defines; `zoo verify` recomputes it; `kind` flipped, a `problems` entry removed, a file entry edited — each fails verify. `NNNN.headers.json` derived from `.headers.raw` by the strict CRLF split; the bare-CR-plus-header-shaped-text case (`otel\rX-Injected: yes`) yields no `X-Injected` key. Tests red on the parent for each; the committed fixture capture regenerated with a seal and the explanation in the body. Mutation: a verify that skips the seal passes the flipped-`kind` test's inverse. | awaiting A3e | 8 |
+| A4a | **Replay sends the captured head.** Review A4. Raw head bytes over a socket, `Host` substituted, body appended, response read; `--json` likewise with the json file's head reconstructed as the Collector sent it. Test red on the parent: replaying into a fresh sink yields `.headers.raw` byte-identical except the `Host` line (the four differences the review lists are gone); bodies byte-identical as before. Mutation: a replay through `http.client` fails the head-identity test. | awaiting A3f | 6 |
+| A0c | **The README survives its own rehearsal.** Review §1.5. The seven differences closed: Ctrl-C now true (A3e); `make verify`/`make check` green after a clean run; the Collector's lines out of the terminal (A3e); the body count (A3e); the digest wording in step 2; the log-to-file variant writes under the run directory; the note that a pet project's `make run` rewrites its own `MANIFEST.json`, which the operator does not commit from the pet's checkout. A reviewer runs the README's commands again after this batch. Docs only; say so in the body. | awaiting A4a | 4 |
 | A5 | **The audit: every capture through spanweave-live and spanweave, and what broke.** `zoo audit captures/<project>/<run-id>` (SPEC §7; the one module that imports both): (1) `zoo replay --raw` into `spanweave-live serve` and record every response status and every receiver event — a 415 on protobuf is a finding, not an error; (2) `zoo replay --json` into `serve` with a completion policy of `Cap(0)`-at-end (replay then signal end of input), collect each trace's final graph and every event; (3) for each trace, the records the receiver fed, in order, through `spanweave.build` — the live graph must equal the batch graph byte for byte (prefix consistency on a stranger's trace); (4) `spanweave inspect` on each graph: diagnostics by code, unmapped attributes by size, unknown kinds; (5) `agentgolden`'s `Signature` computed on each graph as a smoke, no rules evaluated. Output `audit/<project>-<run-id>.md`: a table per step, every diagnostic code with its count, every event, every divergence — each as a reproduction with the capture path and the command. **Findings are never fixed here**: each names the repo that owns it. The `real` capture is Z4's, taken by the operator after run 2 with the commands README names. | awaiting captures (A4 done and at least one `real` capture present) | 15 |
 | A6 | **The series closes.** `TASKS.md` registry A0–A6 with shas; §3 and §4 folded; `reviews/` with every review byte-for-byte and sha256; `audit/` findings consolidated into `PROBES.md`: the next series' probe list for spanweave and spanweave-live, each with its capture and command; WORKPLAN.md deleted; PR `zoo` → `main`. No `plan:` commit follows. | awaiting A5 | 6 |
 
 ## 2. Execution order
 
-Run 1 = A0 → A1 → A2 → A3 (done). Run 2 = A3a → A3b → A3c → A3d → A0a → A0b
-→ A4, then stop: cold review (aux), decisions. Then the operator captures Z4
-— `real` and `recorded` — with the README's commands, and commits the
-captures. Run 3 = A5 → A6, then the scoped review of the close and the PR.
-Every batch: CI green on the pushed tip before `done`.
+Run 1 = A0 → A1 → A2 → A3 (done). Run 2 = A3a → A3b → A3c → A3d → A0a →
+A0b → A4 (done). Run 2b = A3e → A3f → A4a → A0c, then stop: scoped cold
+review of the four with the operator rehearsal repeated (aux), decisions.
+Then the operator captures Z4 — `real` and `recorded` — with the README's
+commands, and commits the captures. Run 3 = A5 → A6, then the scoped review
+of the close and the PR. Every batch: CI green on the pushed tip before
+`done`.
 
 ## 3. Decisions log
 
@@ -187,6 +193,12 @@ Every batch: CI green on the pushed tip before `done`.
 | 2026-10-10 | CI (T25) | A sixth CI leg, `collector (ubuntu-latest)`, runs `make collector` (release download cached by sha) and the real-Collector tests, so A2's claim is proven on a machine that is not the maintainer's. | maintainer |
 | 2026-10-10 | protocol (F14, T18, T20) | A batch that reaches "a spec decision, not a patch" ends `awaiting decision` with an `OPEN_QUESTIONS.md` entry, never `done`; the repo gains `OPEN_QUESTIONS.md` with F4 recorded as its §1. Force-pushing a series branch is forbidden: an amended batch is a new commit, and the replaced sha is recorded in §4. `c965c9b` → `9074ecd` is recorded now. | maintainer |
 | 2026-10-10 | run 2 | A3a → A3b → A3c → A3d → A0a → A0b → A4, then stop for a cold review. Then the operator captures Z4 (`real` and `recorded`). Run 3 = A5 → A6. §2's gate on a `real` capture moves from run 2 to A5. Licence: MIT, in A0a. | maintainer |
+| 2026-10-11 | Ctrl-C | The decision of 2026-10-10 that "the Collector child exiting is a failure" collided with how a terminal delivers Ctrl-C to the foreground process group. The Collector child is started in its own session (`start_new_session=True`), so only `zoo capture` receives the terminal's SIGINT; `zoo capture` then stops the Collector itself — SIGTERM after the final flush, SIGKILL after a bounded wait — and a Collector exit during that shutdown is not a problem. A Collector exit at any other time still is. The test signals the **process group**, as a terminal does. | maintainer |
+| 2026-10-11 | the seal | A capture's manifest carries `seal`: the sha256 of the manifest's canonical JSON with `seal` absent. `zoo verify` recomputes it and fails on any difference, so `kind`, `problems`, `project_manifest` and the file list cannot be changed by hand afterwards. Z4's captures are taken only after the seal exists, because a seal cannot be added to a capture after it is taken. | maintainer |
+| 2026-10-11 | the parse | `NNNN.headers.json` is derived by the zoo from `NNNN.headers.raw` with a strict split on CRLF only — a bare CR or LF inside a value stays inside the value — never from the stdlib's parse, so the json cannot assert a header the client did not send. The stdlib's parse is still what the sink *handled* the request with; SPEC §2.3 says so. | maintainer |
+| 2026-10-11 | replay | `zoo replay` sends the captured head bytes itself over a socket, substituting only the `Host` line, followed by the captured body; it does not go through `http.client`. The replayed head is byte-identical to `.headers.raw` except `Host`, and a test holds that. | maintainer |
+| 2026-10-11 | the run's record | The Collector's stdout and stderr go to `collector.log` in the run directory, listed and sealed like every other file, so the operator's terminal shows the readiness line and the per-body lines only. The body count reports bodies, not files. The README's optional log-to-file variant writes under the run directory, never into the checkout. | maintainer |
+| 2026-10-11 | run 2b | A3e → A3f → A4a → A0c, then a scoped review of the four (aux) with the operator rehearsal repeated; then the operator captures Z4 (`real` and `recorded`); then run 3 = A5 → A6. | maintainer |
 
 ## 4. Resume note
 
@@ -454,6 +466,13 @@ because a batch never edits this file:
   waits on a `real` capture, which is the operator's next move, not a
   batch's. The replayer is the only thing a capture needs to reach
   `spanweave-live serve`, and `--json` is ready for A5's step 2.
+- 2026-10-11: run-2 cold review read and decided (§3). The rehearsal with
+  the real Z4 project captured correctly and then failed on Ctrl-C, because
+  the 2026-10-10 "Collector exit is a failure" rule met the terminal's
+  process-group SIGINT; the Collector now lives in its own session and the
+  capture stops it. The manifest gains a seal before the first real capture;
+  the header parse is derived from the raw head; replay sends the raw head.
+  Run 2b is four batches; then Z4.
 
 ## 5. Origins
 
