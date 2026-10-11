@@ -123,8 +123,9 @@ first.
 
 ## 4. A0c: the log-to-file variant and the run directory
 
-**Status: open, awaiting decision. Asked by A0c (2026-10-11), which stopped
-rather than write a README sentence the code makes false.**
+**Status: resolved, 2026-10-11, by the maintainer: option 2. Asked by A0c
+(2026-10-11), which stopped rather than write a README sentence the code
+makes false.**
 
 **The conflict.** The decision of 2026-10-11, "the run's record"
 (`WORKPLAN.md` §3), says: *"The README's optional log-to-file variant writes
@@ -218,3 +219,13 @@ anything:
 - README step 2 says `make collector` is "once per machine"; the binary lands
   in `collector/` of the checkout, so it is once per checkout.
 - Review N-1: `zoo verify`'s message wording.
+
+**The decision.** Option 2. The README's log-to-file variant writes outside
+the checkout and outside the run directory, to
+`"${TMPDIR:-/tmp}"/zoo-capture-<run-id>.log`, and the README says in one
+sentence that the operator log is not part of the record, because
+`collector.log` is. The 2026-10-11 decision "the run's record"
+(`WORKPLAN.md` §3) is amended to say so. Nothing in the code changes for
+this: neither (a) nor (b) can arise when the log is not in the run
+directory. A0c re-runs in full with the six differences above, this one as
+decided, and the side findings.
