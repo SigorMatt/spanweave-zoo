@@ -118,3 +118,103 @@ Nothing is blocked on this: a capture that hits the case fails loudly either
 way, and the only difference is whether its bytes are kept. It is registered so
 that the choice is a decision rather than an accident of the batch that met it
 first.
+
+---
+
+## 4. A0c: the log-to-file variant and the run directory
+
+**Status: open, awaiting decision. Asked by A0c (2026-10-11), which stopped
+rather than write a README sentence the code makes false.**
+
+**The conflict.** The decision of 2026-10-11, "the run's record"
+(`WORKPLAN.md` §3), says: *"The README's optional log-to-file variant writes
+under the run directory, never into the checkout."* The README's variant
+(step 3, `> capture.log 2>&1 &` plus the anchored `grep`) cannot be pointed
+under the run directory without breaking two things the spec already states.
+This was established by a rehearsal in a scratch clone, not inferred:
+
+- **(a) The log breaks `zoo verify`.** The manifest lists and hashes every file
+  in the run directory except `MANIFEST.json` (`SPEC.md` §2.5, §5.6), so a
+  `capture.log` sitting there is walked, hashed and sealed like any other file.
+  But `zoo capture` prints its summary line — into that same log, through the
+  shell's redirect — *after* the manifest is assembled. The file then no longer
+  matches its own entry. Observed: `zoo verify` fails with
+  `capture.log sha256 is efea…, MANIFEST.json says 4758…`, rc 1, on a capture
+  that is otherwise sound. A clean run that fails verification is exactly the
+  "capture silently fine / silently broken" ambiguity §1 above was decided
+  against.
+- **(b) The log creates the capture before it is ready.** A redirect into
+  `captures/<project>/<run-id>/capture.log` makes the shell create that run
+  directory before `zoo capture` has even started. README step 3 says that
+  until the readiness line prints "the capture directory does not exist", and
+  `SPEC.md` §4.6 says a capture exists on disk only once it is ready and that a
+  refusal to start writes nothing. With the variant as the decision words it,
+  both become false: a refused start leaves a run directory holding a log.
+
+Only a code change can make the decision's wording true. A0c is docs only, so
+it stops here.
+
+**The options, each with its cost.**
+
+1. **`zoo capture --log <name>`.** The zoo itself opens the operator log
+   inside the run directory *after* readiness (so nothing exists before
+   ready, and a refusal still writes nothing), and finalizes it — summary line
+   included — *before* the manifest is assembled, so its hash is the file's
+   last state. The decision's wording becomes true as written. Cost: code, a
+   `SPEC.md` change (§4.6's options and output, §5.5's write order), tests
+   red-first, and a new batch; the readiness wait in the README would then grep
+   a file that does not exist until ready, so the supervisor snippet changes
+   too (it must wait for the file before grepping it). Pre-readiness output
+   (a refusal's message) still has to go somewhere — stderr to the terminal.
+2. **The log goes outside the checkout** (`"$TMPDIR"/capture.log`, or under
+   `~`). Docs only; A0c can finish with it. Cost: the decision's wording is
+   amended ("…writes outside the checkout and outside the run directory"), and
+   the operator log is not part of the record — which is arguably correct,
+   since `collector.log` already is, and the operator log is only the
+   readiness line, the per-body lines and the summary, all of which the
+   manifest and the journals restate.
+3. **Exclude the operator log from the manifest by name.** Small code change
+   in the walk and in `zoo verify`. Cost: it weakens "every file in the run
+   directory except itself" (§2.5, §5.6) into a list of exceptions, it leaves
+   (b) untouched (the redirect still creates the directory before ready), and
+   a file name becomes something `zoo verify` trusts without hashing. Of the
+   options it is the one that makes the record say less than it holds.
+4. **Drop the variant from the README.** Docs only. Cost: a supervisor (the
+   README's stated reason for the variant) loses its documented way to wait for
+   readiness, and the decision's sentence is retired rather than satisfied.
+5. **A git-ignored directory in the checkout** (e.g. `logs/capture.log`, plus
+   a `.gitignore` line). Docs and one ignore line, no code. Cost: it is still
+   "into the checkout", so it contradicts the decision's wording the same way
+   option 2 amends it, and `.gitignore` gains an entry whose only job is an
+   operator convenience. Its gain over 2 is that the log is findable beside
+   the capture it describes.
+
+A log written *beside* the run directory (`captures/<project>/<run-id>.log`)
+was considered and not offered: `captures/` is committed by design
+(`.gitignore`), so the log would enter the record without being sealed, and
+whether `zoo verify`'s walk of `captures/` tolerates a stray file there was not
+tested.
+
+**Context for the decision, not options.** A0c's row lists seven differences.
+The rehearsal showed the other six are closable by documentation alone, and
+none of them is blocked by this question:
+
+1. Ctrl-C — made true by A3e.
+2. `make verify` / `make check` green after a clean run.
+3. The Collector's lines out of the terminal (A3e; now `collector.log`).
+4. The body count — `N body/bodies in raw/, M in json/`, as A3e prints it.
+5. The digest wording in step 2.
+6. The note that a pet project's `make run` rewrites its own `MANIFEST.json`,
+   which the operator does not commit from the pet's checkout.
+
+Side findings the rehearsal turned up, all docs, none of them deciding
+anything:
+
+- `README.md`'s Layout and the `SPEC.md` §2 tree list neither `collector.log`
+  nor `json/NNNN.headers.*`, both of which a real capture contains.
+- The `Makefile` comment on `collector` says the sha256 is checked against
+  "the release's own digest"; it is checked against the pin in
+  `collector/SHA256SUMS`.
+- README step 2 says `make collector` is "once per machine"; the binary lands
+  in `collector/` of the checkout, so it is once per checkout.
+- Review N-1: `zoo verify`'s message wording.
