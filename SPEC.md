@@ -13,9 +13,10 @@ needs -- see §4.5); §5 is specified and implemented (A3: the whole of
 directions; A3a: a capture exists only once it is ready; A3b: the manifest is
 assembled once, at the end, from the run's journals, and covers every file in
 the capture; A3c: the octets of each request's head are the record, with the
-stdlib's parse beside them -- see §2.3); §6 is specified and implemented (A4:
-`zoo replay`, which re-sends a capture's bytes and its captured head octets to
-another receiver and adds nothing). §7 is a heading naming what A5 will fill;
+zoo's CRLF split of them beside them -- see §2.3; A3f: the manifest is
+sealed -- see §5 -- and that split replaced the stdlib's parse); §6 is
+specified and implemented (A4: `zoo replay`, which re-sends a capture's bytes
+and its captured head octets to another receiver and adds nothing). §7 is a heading naming what A5 will fill;
 nothing in it is implemented today.
 
 ---
@@ -98,7 +99,7 @@ captures/<project>/<run-id>/
     raw/
         0001.body               the bytes of the first POST, exactly as received
         0001.headers.raw        that request's head, octet for octet
-        0001.headers.json       the stdlib's parse of that same head
+        0001.headers.json       that same head split on CRLF (§2.3)
         0002.body
         0002.headers.raw
         0002.headers.json
@@ -114,7 +115,8 @@ captures/<project>/<run-id>/
 `bodies.jsonl` and `forwards.jsonl` are the run's own notes, written as the run
 goes and flushed line by line (§3.5). `MANIFEST.json` is assembled from them
 when the run ends (§5.5), and lists a sha256 for **every** file above except
-itself — the journals and both headers files included (§5.6).
+itself — the journals and both headers files included (§5.6) — and is sealed
+by a digest of its own (§5).
 
 ### 2.1 `<project>` and `<run-id>`
 
@@ -146,28 +148,54 @@ matters:
   header block as the octets arrived — CRLFs intact, in the order sent, up to
   and including the blank line that ends them. Nothing is decoded, reordered,
   folded, case-normalized or dropped. This is the file a reader believes.
-- **`NNNN.headers.json` is a parse of those same octets**, written for
-  convenience: Python's `http.server` already parsed the head to route the
-  request, and this is what it got. It is kept *beside* the octets, never
-  instead of them, on the same rule as §2.4's `json/`: if the two disagree,
-  the octets are what arrived.
+- **`NNNN.headers.json` is the zoo's split of those same octets**, written
+  for convenience and **derived from `NNNN.headers.raw` alone**, by the rule
+  below. It is kept *beside* the octets, never instead of them, on the same
+  rule as §2.4's `json/`: if the two disagree, the octets are what arrived.
 
-The parse loses things, which is why the octets are kept. A **bare CR inside a
-header value** is the case this file was added for: HTTP forbids it, real
-clients emit it, and `email`'s header parser splits the line on it — so the
-value arrives truncated and every header after the split is absent from the
-parse altogether. A recorder whose record was the parse would hold what Python
-can represent rather than what the exporter sent, which is the one thing this
-repository exists not to do (§1). The parse is not wrong to be a parse; it is
-only not the record.
+It is **not** the stdlib's parse (A3f). Python's `http.server` parses the head
+to handle the request — its `Content-Length` frames the body, its
+`Content-Type` is echoed (§3.3), its headers are what a forward sends on
+(§4.3) — and that parse is still what the sink *handled* the request with. It
+is not what the record says the request carried, because it can say more than
+the request did. A **bare CR inside a header value** is the case: HTTP forbids
+it, real clients emit it, and `email`'s header parser splits the line on it.
+For `X-Weird: a\rb` the parse says `X-Weird: a`; for
+`User-Agent: otel\rX-Injected: yes` it says the request carried an
+`X-Injected` header, which no client sent. A record that can assert a header
+the client did not send is not a record (§1).
+
+**The split.** The octets of `NNNN.headers.raw` are decoded as Latin-1 (one
+character per octet, so nothing is replaced or lost) and split on **CRLF and on
+nothing else**. A bare CR, or a bare LF, is inside the line it arrived in and
+therefore inside the value.
+
+- The **first line** is the request line. `method` is what precedes its first
+  space; `path` is what lies between that space and the next one (or the end
+  of the line), verbatim, query string included.
+- Every **later non-empty line** is a header if what precedes its first colon
+  is a non-empty field-name token (RFC 9110 §5.6.2: letters, digits and
+  ``!#$%&'*+-.^_`|~``). Its pair is `[name, value]`: the name as sent, the
+  value as sent with the spaces and horizontal tabs around it removed (RFC
+  9110 §5.5's optional whitespace, which is not part of a value) — a CR or LF
+  inside it stays. Pairs are in the order received, repeats included.
+- Every **other non-empty line** — a continuation line (RFC 9110's obsolete
+  line folding), a line with no colon, a line whose name is not a token — is
+  no header and is not joined to one. It is listed verbatim, in order, under
+  `unparsed`, which is **absent** when there is none.
+- **Empty lines** are the block's terminator and carry nothing.
+
+The split is a pure function of the octets: the same `NNNN.headers.raw` gives
+the same `headers`, `method`, `path` and `unparsed` on any machine.
 
 `NNNN.headers.json` is JSON with `sort_keys=True`: the method, the path, every
-header the parse produced (names and values unmodified), the body length in
-bytes, and the receipt time. A1 (§3.2) wrote these key names and A3 kept them.
+header the split produced, `unparsed` when there is any, the body length in
+bytes, and the receipt time. The last two are the only things in it the octets
+of the head do not carry. A1 (§3.2) wrote these key names and A3 kept them.
 The manifest carries two of these values across — `Content-Type` and
 `Content-Encoding` — so that a reader of one `bodies` entry knows what the
-request claimed (§5.4); it reads them from the parse because they are the
-values the sink echoed, and the octets remain the record of everything the
+request claimed (§5.4); it reads them from this file, the first value the
+request sent for each, and the octets remain the record of everything the
 request said, repeats included.
 
 Both files have a digest of their own in the manifest (§5.6), so `zoo verify`
@@ -268,8 +296,8 @@ A `POST` to `/v1/traces` — that exact path, no other — is recorded as the ne
   bytes as they are read off the socket, before anything parses them, and the
   body is not in it. This is the unmodified record of the request; the file
   below is a parse of it.
-- **`NNNN.headers.json`**: that same request as the stdlib parsed it, as JSON
-  with `sort_keys=True`:
+- **`NNNN.headers.json`**: that same head split on CRLF (§2.3), as JSON with
+  `sort_keys=True`:
 
   ```json
   {
@@ -284,15 +312,16 @@ A `POST` to `/v1/traces` — that exact path, no other — is recorded as the ne
   ```
 
   `headers` is a **list of `[name, value]` pairs in the order received**, with
-  names and values exactly as sent, because a header may legally repeat and a
-  JSON object would silently keep one of them. `path` is the request target
+  names as sent and values as sent less the whitespace around them (§2.3),
+  because a header may legally repeat and a JSON object would silently keep
+  one of them. `path` is the request target
   verbatim, query string included. `bytes` is the length of `NNNN.body` on
   disk. `received_at` comes from the injected `now` (§3.6) and is the only
   clock the record has. (§2.3: A1 wrote these key names and A3 kept them;
   §5.4 carries two of these values into the manifest and changes nothing here.)
-  A head the parse cannot represent — a bare CR in a value — is in
-  `NNNN.headers.raw` and not here, and §2.3 says which of the two a reader
-  believes.
+  It is derived from `NNNN.headers.raw` and never from the stdlib's parse, so
+  a bare CR in a value is inside that value here too (§2.3); the octets are
+  still the file a reader believes.
 
 `NNNN` is a zero-padded four-digit counter in **receipt order**, starting at
 `0001`, assigned when the body has been read and under a lock, so two POSTs in
@@ -936,6 +965,7 @@ re-hashes the tree against it on every `make check`.
   "kind": "real",
   "project_manifest": {"contract_version": "1.0", "framework": "openai",
                        "instrumentation": ["..."], "mode": "real"},
+  "seal": "6016b6...",
   "sink_version": "0.0.1",
   "started_at": "2026-10-09T12:00:00.117000+00:00"
 }
@@ -952,6 +982,34 @@ re-hashes the tree against it on every `make check`.
 | `files` | one entry per **other** file in the run directory, `MANIFEST.json` excepted (§5.6) |
 | `forwards` | one entry per attempted forward: delivery, not bytes (§4.5) |
 | `problems` | what went wrong during the run — **absent** above because nothing did (§4.5, §4.6, §5.3) |
+| `seal` | the sha256 of this document's canonical JSON with `seal` absent (below) |
+
+**The seal.** A capture's manifest carries `seal`: the sha256, as lowercase
+hex, of the manifest's **canonical JSON with the `seal` key absent**. Canonical
+means exactly the bytes of
+
+```python
+json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+```
+
+over the document as `json.loads` reads it from `MANIFEST.json`: keys sorted
+by code point at every level, no whitespace between tokens, every character
+outside ASCII written as a `\uXXXX` escape (a UTF-16 surrogate pair beyond the
+BMP), so the text is ASCII and its encoding is not a choice; numbers as
+Python's `json` writes them. Every parameter is pinned rather than defaulted,
+so the bytes are the same on any platform and in any locale. What is sealed is
+the document and not the file: re-indenting `MANIFEST.json` changes no claim
+and no seal, and changing any value — `kind`, a `problems` line, an entry of
+`bodies`, `files` or `forwards`, `project_manifest`, a timestamp — changes the
+seal it should carry. `zoo verify` recomputes it (§5.6).
+
+The seal is what makes the manifest's own claims checkable. The file digests
+cover every other file, but nothing covered the manifest: `kind` flipped
+between the two values the spec names, a `problems` line deleted, or a `files`
+entry rewritten together with the file it describes all left every digest
+agreeing. A seal cannot be added to a capture after it is taken, because
+adding one would be the zoo vouching for a document it did not write at the
+time (§5.6, the committed fixture).
 
 Nothing else. The manifest has no field for how many spans a capture holds, how
 long an export was, which project the bytes came from beyond what the project's
@@ -1085,7 +1143,7 @@ exactly one home for a digest (§3.5).
 | each forward, as it completes (§4.5) | `forwards.jsonl` | one line |
 | the Collector child is seen to have exited (§4.6) | `MANIFEST.json` | one `problems` entry |
 | the run directory is made, before the manifest is labelled (§4.2) | `collector.log` | the Collector's output so far, and then each line as it is written |
-| `zoo capture` stops, after both sinks and the Collector have (§4.6) | `MANIFEST.json` | `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, and `ended_at` |
+| `zoo capture` stops, after both sinks and the Collector have (§4.6) | `MANIFEST.json` | `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
 
 The declaration is written **first** so that a run stopped the hard way still
 says what it was. The bodies go to a journal rather than into the document, so
@@ -1095,10 +1153,14 @@ are down, so the last `json/NNNN.json` is in `bodies` with its headers carried
 like every other, and the digest of every file is the digest of the file as the
 run left it.
 
-**`ended_at` is written last, and nothing is written after it** — it is one
-atomic write with everything above, and it is the last of them. That is what
-lets `zoo verify` read its absence as a capture that was never completed
-(§5.6) rather than as a field somebody forgot.
+**`ended_at` is written last, and nothing is written after it** but the seal —
+it is one atomic write with everything above, and it is the last field of
+them; `seal` is computed over that whole document, `ended_at` included, and
+goes into the same write. That is what lets `zoo verify` read the absence of
+`ended_at` as a capture that was never completed (§5.6) rather than as a field
+somebody forgot, and the seal as covering everything the run wrote. A run
+stopped the hard way has neither. `zoo sink` assembles its manifest the same
+way when it stops, so its captures are sealed too.
 
 The assembly runs once per capture: `stop()` is also what a failed `start()`
 unwinds through, and a capture that never got as far as a labelled manifest is
@@ -1157,7 +1219,15 @@ The walk is also why `NNNN.headers.raw` needed nothing added to `verify` when
 A3c introduced it: `files` is a walk of the run directory, so a capture is
 covered whether or not a recorder announced a file.
 
-It then checks three things the manifest says about itself:
+It then checks the manifest itself, and three things it says about itself:
+
+- **The seal is the one its contents hash to** (§5). `seal` is recomputed
+  from the document as read — canonical JSON, `seal` absent — and a seal that
+  is absent, that is not that string, or that differs is a failure. Absent is
+  not "nothing to check": a manifest nothing vouches for is not verified,
+  and removing the seal must not be the way round it. This is the check that
+  sees an edit no file digest can: `kind` flipped from `recorded` to `real`,
+  a `problems` entry removed, a `files` entry rewritten along with its file.
 
 - **`ended_at` is there.** A capture without one was never completed — the run
   was killed or died between its first body and its last line — and nothing
@@ -1175,8 +1245,9 @@ It then checks three things the manifest says about itself:
 
 It exits non-zero, printing one line per problem, on any of those: a digest
 that differs, a length that differs, a listed file that is missing, a **file on
-disk that the manifest does not list**, a missing `ended_at`, a `kind` the spec
-does not name, a recorded problem, and a manifest that is absent or unreadable.
+disk that the manifest does not list**, a seal that is absent or differs, a
+missing `ended_at`, a `kind` the spec does not name, a recorded problem, and a
+manifest that is absent or unreadable.
 A manifest it cannot read is a refusal, never a pass.
 
 The second direction is why the check walks the **directory** and not only the
@@ -1204,9 +1275,14 @@ under `tests/fixtures/capture/`: a single OTLP protobuf body through the real
 tee — the hand-built export of `tests/otlp.py` into the raw sink, the stock
 Collector behind it, its JSON re-encoding into the json sink — with both
 headers files on each side, both journals and the manifest the run assembled,
-on a clock the run chose. It is a capture, so it is never edited and never
-regenerated (`CLAUDE.md`, "Halt points"); and it is deliberately not under
-`captures/`, which is where the zoo's own recorded runs go. A fixture that went
+and the Collector's `collector.log`, on a clock the run chose. It is a capture,
+so it is never edited (`CLAUDE.md`, "Halt points"); and it is deliberately not
+under `captures/`, which is where the zoo's own recorded runs go. It was
+**regenerated once**, by A3f, as the decision of 2026-10-11 ("the seal")
+required: a seal cannot be added to a capture after it is taken, so the
+unsealed fixture A3d took could only be replaced by a new capture through the
+same tee, never sealed in place. The replacement is a new run and was never
+an edit of the old one; its two bodies are byte-identical to the old one's. A fixture that went
 missing makes `make verify` exit 2 by the rule above, rather than quietly
 checking nothing again.
 

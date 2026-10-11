@@ -493,12 +493,14 @@ def test_a_head_the_wire_refuses_is_not_tidied_into_one_it_accepts(tmp_path, cap
     """The capture's octets, or nothing: `SPEC.md` §6.2.
 
     The first request's `User-Agent` carries a **bare CR**. HTTP forbids it,
-    real clients emit it, `email`'s parser truncates the value at it (so
-    `NNNN.headers.json` says `otel`) and `http.client` refuses to put the real
-    value on a socket. A replayer reading the parse would cheerfully send
+    real clients emit it, `email`'s parser truncates the value at it, and
+    `http.client` refuses to put the real value on a socket. A replayer that
+    tidied the value into one the wire accepts would cheerfully send
     `User-Agent: otel` and exit 0, having sent a request no exporter made with
     the capture that says otherwise on disk beside it. So the send is refused,
-    named, and the second body still goes out.
+    named, and the second body still goes out. (Since A3f `NNNN.headers.json`
+    is the CRLF split of the octets and carries the whole value too, `SPEC.md`
+    §2.3.)
     """
     source = crafted(
         tmp_path / "source",
@@ -516,7 +518,7 @@ def test_a_head_the_wire_refuses_is_not_tidied_into_one_it_accepts(tmp_path, cap
     # The capture really does hold the two, and they really do differ.
     assert b"otel\rpython/1.0" in sent_head(source)
     parsed = json.loads((source / "raw" / "0001.headers.json").read_text())
-    assert ["User-Agent", "otel"] in parsed["headers"]
+    assert ["User-Agent", "otel\rpython/1.0"] in parsed["headers"]
 
     with scripted(200) as (server, port):
         status = cli.main(["replay", str(source), "--to", f"http://127.0.0.1:{port}"])

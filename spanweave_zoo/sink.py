@@ -39,6 +39,15 @@ from it. A recorder whose record was the parse would hold what Python can
 represent rather than what arrived, so the octets are kept as they go past
 (`_Head`) and the parse is kept beside them.
 
+A3f made `NNNN.headers.json` the zoo's own derivation of those octets rather
+than the stdlib's parse of them (`SPEC.md` §2.3): the head split on CRLF and on
+nothing else (`split_head`), so a bare CR or LF stays inside the value it
+arrived in. The stdlib's parse had done worse than truncate: a value of
+`otel\\rX-Injected: yes` came out of it as two headers, one of which no client
+sent. The stdlib's parse is still what the sink *handled* the request with --
+its `Content-Length`, the content type it echoes, the headers it forwards --
+and it is no longer what the record says the request carried.
+
 A2 added one more seam and no new taste (`SPEC.md` §4.3): `forward`, which the
 recorder calls with the body **once the body is on disk**, so the Collector can
 re-encode the same bytes to JSON beside the record. The order is the point --
@@ -90,6 +99,63 @@ HEADERS_RAW_SUFFIX = manifest.HEADERS_RAW_SUFFIX
 # Both of them, for the startup refusal: either file is a capture's, and a
 # `*.json` glob over a json sink's directory also matches `*.headers.json`.
 HEADERS_GLOB = "*.headers.*"
+
+# The characters of an HTTP field name, a `token` (RFC 9110 §5.1, §5.6.2). A
+# line of the head is a header only if what precedes its first colon is one.
+_TCHAR = frozenset(
+    "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
+
+# The optional whitespace around a field value (RFC 9110 §5.5), which is not
+# part of the value. Space and horizontal tab, and nothing else: a CR or LF in
+# a value is the client's, and stays.
+_OWS = " \t"
+
+
+def split_head(head: bytes) -> dict[str, object]:
+    """What `NNNN.headers.json` says a head carried (`SPEC.md` §2.3).
+
+    The octets are decoded as Latin-1 -- one character per octet, so nothing
+    is lost or replaced -- and split on CRLF and on nothing else. A bare CR or
+    a bare LF is inside the line it arrived in, and so inside the value: the
+    record cannot be made to assert a header the client did not send.
+
+    - The first line is the request line: `method` is what precedes its first
+      space, `path` what lies between that space and the next (or the line's
+      end).
+    - Every later line that is not empty is a header if what precedes its
+      first colon is a field-name token; the `[name, value]` pair has the name
+      as sent and the value with surrounding spaces and tabs removed, in the
+      order received.
+    - Any other non-empty line -- a continuation line, a line with no colon --
+      is no header and part of none: it is listed verbatim under `unparsed`,
+      which is absent when there are none.
+    - The empty lines are the block's terminator and carry nothing.
+
+    Pure: the same octets give the same document on any machine.
+    """
+    lines = head.decode("latin-1").split("\r\n")
+    method, _, rest = lines[0].partition(" ")
+    path = rest.split(" ", 1)[0]
+    headers: list[list[str]] = []
+    unparsed: list[str] = []
+    for line in lines[1:]:
+        if not line:
+            continue
+        name, colon, value = line.partition(":")
+        if colon and name and all(character in _TCHAR for character in name):
+            headers.append([name, value.strip(_OWS)])
+        else:
+            unparsed.append(line)
+    document: dict[str, object] = {
+        "headers": headers,
+        "method": method,
+        "path": path,
+    }
+    if unparsed:
+        document["unparsed"] = unparsed
+    return document
+
 
 # (method, path, headers as received, body) -> the forwarded request's status.
 # Raises on a forward that did not happen. `SPEC.md` §4.8.
@@ -226,13 +292,15 @@ class Recorder:
         """Write one request to disk and return its manifest entry.
 
         `head` is the request line and the header block as the octets arrived
-        (`SPEC.md` §2.3) and `headers` is the stdlib's parse of those same
-        octets. Both are written, the octets first: the record is not the
-        parse, and a head the parse cannot represent -- a bare CR in a value --
-        is still in the capture. `head` is a required argument because every
-        recorded request has one, and a recorder that could be handed the parse
-        without the octets is a recorder that can write a capture missing its
-        own record.
+        (`SPEC.md` §2.3), and `headers` is the stdlib's parse of those same
+        octets. The octets are written, and `NNNN.headers.json` is derived
+        from them by `split_head` -- never from `headers`, which a bare CR
+        can make assert a header nobody sent. `method`, `path` and `headers`
+        are what the sink *handled* the request with: the path chose the
+        directory, and the parse is what a forward sends on. `head` is a
+        required argument because every recorded request has one, and a
+        recorder that could be handed the parse without the octets is a
+        recorder that can write a capture missing its own record.
         """
         if self._before_record is not None:
             self._before_record(body)
@@ -249,18 +317,13 @@ class Recorder:
             directory.mkdir(parents=True, exist_ok=True)
             body_file = directory / (stem + suffix)
             body_file.write_bytes(body)
-            # The unmodified record, then the parse of it (`SPEC.md` §2.3).
+            # The unmodified record, then the zoo's split of it (`SPEC.md`
+            # §2.3), and the two facts the octets of a head cannot carry.
             (directory / (stem + HEADERS_RAW_SUFFIX)).write_bytes(head)
-            manifest.write_json(
-                directory / (stem + HEADERS_SUFFIX),
-                {
-                    "bytes": len(body),
-                    "headers": [[name, value] for name, value in headers],
-                    "method": method,
-                    "path": path,
-                    "received_at": self._now(),
-                },
-            )
+            parsed = split_head(head)
+            parsed["bytes"] = len(body)
+            parsed["received_at"] = self._now()
+            manifest.write_json(directory / (stem + HEADERS_SUFFIX), parsed)
             entry = manifest.BodyEntry(
                 file=body_file.relative_to(self.run).as_posix(),
                 sha256=manifest.digest(body),

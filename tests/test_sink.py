@@ -210,11 +210,11 @@ def test_the_headers_raw_file_is_the_octets_the_client_sent(tmp_path):
     assert body_of(raw) == b"hello"
 
 
-def test_a_bare_cr_in_a_header_value_is_in_raw_and_not_in_json(tmp_path):
+def test_a_bare_cr_in_a_header_value_stays_inside_the_value(tmp_path):
     # The degenerate head, and the reason the raw file exists. The octets are
-    # kept; the stdlib's parse beside them cannot carry them, and says so by
-    # not carrying them -- rather than the capture quietly becoming a record of
-    # what Python could represent.
+    # kept, and `NNNN.headers.json` is derived from them by a split on CRLF and
+    # nothing else (`SPEC.md` §2.3) -- so the bare CR is inside the value it
+    # arrived in, rather than the end of a value the stdlib's parse truncated.
     raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
     with running(raw) as (_, port):
         answer = send_octets(port, BARE_CR_HEAD, b"hello")
@@ -225,12 +225,77 @@ def test_a_bare_cr_in_a_header_value_is_in_raw_and_not_in_json(tmp_path):
     assert b"X-Weird: a\rb\r\n" in recorded
 
     parsed = headers_of(raw)["headers"]
-    assert ["X-Weird", "a"] in parsed, "the stdlib's parse is not what it was"
-    assert ["X-Weird", "a\rb"] not in parsed
-    assert all("\r" not in value for _, value in parsed)
+    assert ["X-Weird", "a\rb"] in parsed
+    assert ["X-Weird", "a"] not in parsed, "the stdlib's truncation is back"
     # And the bytes after the head are still the body: recording the octets
     # reads nothing the request parser did not already read.
     assert body_of(raw) == b"hello"
+
+
+# Header-shaped text after a bare CR (the A3f row's case). `email`'s parser
+# splits the line on the CR and so reports a second header, `X-Injected`, that
+# no client sent: the client sent one `User-Agent` whose value contains a CR.
+INJECTED_HEAD = HEAD[: -len(b"\r\n")] + b"User-Agent: otel\rX-Injected: yes\r\n\r\n"
+
+
+def test_header_shaped_text_after_a_bare_cr_is_not_a_header(tmp_path):
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    with running(raw) as (_, port):
+        answer = send_octets(port, INJECTED_HEAD, b"hello")
+    assert answer.startswith(b"HTTP/1.1 200"), answer
+    assert head_of(raw) == INJECTED_HEAD
+
+    parsed = headers_of(raw)["headers"]
+    names = [name.lower() for name, _ in parsed]
+    assert "x-injected" not in names, "the json asserts a header nobody sent"
+    assert ["User-Agent", "otel\rX-Injected: yes"] in parsed
+    assert names.count("user-agent") == 1
+
+
+def test_a_bare_lf_in_a_header_value_stays_inside_the_value(tmp_path):
+    # LF is not CRLF either: the strict split leaves it where it arrived.
+    head = HEAD[: -len(b"\r\n")] + b"X-Weird: a\nb\r\n\r\n"
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head, b"hello")
+    assert answer.startswith(b"HTTP/1.1 200"), answer
+    assert head_of(raw) == head
+    assert ["X-Weird", "a\nb"] in headers_of(raw)["headers"]
+
+
+def test_headers_json_is_the_crlf_split_of_headers_raw(tmp_path):
+    # An ordinary head: every header line, in order, name as sent, value with
+    # the optional whitespace around it removed; the method and the target
+    # from the request line. Nothing that is not in the octets.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    with running(raw) as (_, port):
+        send_octets(port, HEAD, b"hello")
+    recorded = headers_of(raw)
+    assert recorded["method"] == "POST"
+    assert recorded["path"] == "/v1/traces"
+    assert recorded["headers"] == [
+        ["Host", "127.0.0.1"],
+        ["Content-Type", "application/x-protobuf"],
+        ["Content-Length", "5"],
+        ["Connection", "close"],
+    ]
+    assert "unparsed" not in recorded
+
+
+def test_a_line_that_is_not_a_header_is_listed_and_not_folded(tmp_path):
+    # A continuation line (RFC 9110's obsolete line folding) and a line with no
+    # colon are not `name: value`, so neither becomes a header or part of one.
+    # They are listed under `unparsed`, verbatim, so the json says something
+    # in the head was not a header rather than dropping it unseen.
+    head = HEAD[: -len(b"\r\n")] + b"X-Folded: a\r\n  b\r\nno colon here\r\n\r\n"
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head, b"hello")
+    assert answer.startswith(b"HTTP/1.1 200"), answer
+    recorded = headers_of(raw)
+    assert ["X-Folded", "a"] in recorded["headers"]
+    assert recorded["unparsed"] == ["  b", "no colon here"]
+    assert all(name != "no colon here" for name, _ in recorded["headers"])
 
 
 def test_each_request_on_one_connection_gets_its_own_head(tmp_path):

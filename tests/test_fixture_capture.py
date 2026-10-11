@@ -21,6 +21,7 @@ is not one of them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -31,11 +32,13 @@ REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "capture"
 
 # Every file one request through the tee leaves behind: the body, the head as
-# octets and as the stdlib's parse, on the raw side and the json side alike,
-# plus the two journals and the manifest (`SPEC.md` §2).
+# octets and as the zoo's CRLF split of them, on the raw side and the json side
+# alike, plus the two journals, the Collector's log and the manifest
+# (`SPEC.md` §2, §4.2).
 EXPECTED_FILES = (
     "MANIFEST.json",
     "bodies.jsonl",
+    "collector.log",
     "forwards.jsonl",
     "json/0001.json",
     "json/0001.headers.json",
@@ -114,3 +117,31 @@ def test_make_verify_reads_the_committed_capture():
     assert "verify" in makefile.split("\ncheck:", 1)[1].splitlines()[0]
     workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "run: make check" in workflow
+
+
+def test_the_committed_capture_is_sealed():
+    # A3f regenerated this capture through the real tee so that it carries a
+    # seal: a seal cannot be added to a capture after it is taken (`SPEC.md`
+    # §5.6). Computed here from the definition, not from the implementation.
+    document = manifest.read(FIXTURE)
+    unsealed = {key: value for key, value in document.items() if key != "seal"}
+    text = json.dumps(
+        unsealed, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    assert document["seal"] == hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def test_each_headers_json_is_the_crlf_split_of_its_headers_raw():
+    # On both sides of the tee: what the json says the request carried is the
+    # octets split on CRLF and on nothing else (`SPEC.md` §2.3).
+    for side in ("raw", "json"):
+        octets = (FIXTURE / side / "0001.headers.raw").read_bytes()
+        lines = octets.decode("latin-1").split("\r\n")
+        expected = [
+            [name, value.strip(" \t")]
+            for name, _, value in (line.partition(":") for line in lines[1:] if line)
+        ]
+        parsed = json.loads((FIXTURE / side / "0001.headers.json").read_bytes())
+        assert parsed["headers"] == expected
+        method, path = lines[0].split(" ")[:2]
+        assert (parsed["method"], parsed["path"]) == (method, path)

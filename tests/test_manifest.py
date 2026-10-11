@@ -21,6 +21,7 @@ check whose whole job is trust.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -566,3 +567,122 @@ def test_sixteen_hundred_bodies_cost_the_same_each(tmp_path):
     assert manifest.body_count(recorder.run) == 0, "nothing is in the manifest yet"
     manifest.finish(recorder.run, ended_at=ENDED)
     assert manifest.body_count(recorder.run) == BODIES
+
+
+# --- A3f: the manifest is sealed (`SPEC.md` §5, §5.5, §5.6) ------------------
+#
+# Every check above re-hashes *files*. None of them can notice an edit to the
+# manifest's own claims that leaves every file hashing as recorded: `kind`
+# flipped from one named value to the other, a `problems` entry deleted, or a
+# `files` entry rewritten together with the file it describes. The seal is the
+# sha256 of the manifest's canonical JSON with `seal` absent, so any of those
+# is a difference `zoo verify` sees.
+
+
+def canonical_seal(document: dict[str, object]) -> str:
+    """The seal as `SPEC.md` §5 defines it, computed here independently.
+
+    Written out rather than imported, so that the test holds the definition
+    and the implementation cannot quietly move it.
+    """
+    unsealed = {key: value for key, value in document.items() if key != "seal"}
+    text = json.dumps(
+        unsealed, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def rewrite_manifest(run: Path, change) -> None:
+    """Edit a finished manifest by hand, as an operator could, seal and all."""
+    document = manifest.read(run)
+    change(document)
+    manifest.write_json(run / manifest.MANIFEST_NAME, document)
+
+
+def test_a_finished_manifest_carries_the_seal_section_5_defines(tmp_path):
+    run = hand_written_capture(tmp_path)
+    document = manifest.read(run)
+    assert document["seal"] == canonical_seal(document)
+    assert cli.verify(tmp_path / "captures") == 0
+
+
+def test_a_kind_flipped_by_hand_fails_verify(tmp_path, capsys):
+    # `recorded` -> `real` is a change between two values the spec names, so
+    # the kind check passes it and every file still hashes as recorded. Only
+    # the seal sees it -- and it is the one field the audit reads as the truth.
+    run = hand_written_capture(tmp_path, kind="recorded")
+    assert cli.verify(tmp_path / "captures") == 0
+    capsys.readouterr()
+
+    rewrite_manifest(run, lambda document: document.update({manifest.KIND: "real"}))
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert "seal" in out
+
+
+def test_a_problems_entry_removed_by_hand_fails_verify(tmp_path, capsys):
+    # A capture that recorded a problem fails verify for as long as the
+    # problem is there; deleting the line must not be how it starts passing.
+    path = project_manifest_file(tmp_path)
+    path.unlink()
+    run = hand_written_capture(tmp_path, project_manifest=path)
+    assert manifest.read(run)[manifest.PROBLEMS]
+
+    rewrite_manifest(run, lambda document: document.pop(manifest.PROBLEMS))
+
+    assert cli.verify(tmp_path / "captures") == 1
+    assert "seal" in capsys.readouterr().out
+
+
+def test_a_file_entry_edited_with_its_file_fails_verify(tmp_path, capsys):
+    # The edit that re-hashing cannot see: the headers file rewritten *and* its
+    # `files` entry rewritten to match, so both directions of the walk agree.
+    run = hand_written_capture(tmp_path)
+    headers_file = run / "raw" / ("0001" + manifest.HEADERS_SUFFIX)
+    tidied = json.loads(headers_file.read_text(encoding="utf-8"))
+    tidied["headers"] = [["Content-Type", "application/json"]]
+    manifest.write_json(headers_file, tidied)
+    data = headers_file.read_bytes()
+
+    def change(document: dict[str, object]) -> None:
+        for entry in document[manifest.FILES]:  # type: ignore[attr-defined]
+            if entry["file"] == "raw/0001" + manifest.HEADERS_SUFFIX:
+                entry["sha256"] = manifest.digest(data)
+                entry["bytes"] = len(data)
+
+    rewrite_manifest(run, change)
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert "seal" in out
+    assert "sha256 is" not in out, "the file entry was meant to agree with its file"
+
+
+def test_a_manifest_with_no_seal_fails_verify(tmp_path, capsys):
+    # Absent is not "nothing to check": a manifest without a seal is one whose
+    # claims nothing vouches for, and removing the seal must not be the way
+    # round it.
+    run = hand_written_capture(tmp_path)
+    rewrite_manifest(run, lambda document: document.pop("seal"))
+
+    assert cli.verify(tmp_path / "captures") == 1
+    assert "seal" in capsys.readouterr().out
+
+
+def test_a_seal_that_is_not_a_string_fails_verify(tmp_path, capsys):
+    run = hand_written_capture(tmp_path)
+    rewrite_manifest(run, lambda document: document.update({"seal": None}))
+
+    assert cli.verify(tmp_path / "captures") == 1
+    assert "seal" in capsys.readouterr().out
+
+
+def test_the_seal_is_over_the_document_and_not_its_whitespace(tmp_path):
+    # Canonical JSON is what is sealed, so re-indenting the file changes no
+    # claim and no seal; the claims are what the seal is about.
+    run = hand_written_capture(tmp_path)
+    path = run / manifest.MANIFEST_NAME
+    document = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(document, indent=7), encoding="utf-8")
+    assert manifest.problems(run) == []

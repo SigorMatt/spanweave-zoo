@@ -53,7 +53,7 @@ uv run zoo sink --port 4318 --out captures/z4/2026-10-09T12-00-00Z/raw
 Every `POST /v1/traces` becomes `raw/NNNN.body` -- the bytes exactly as
 received, **still gzipped if they arrived gzipped** -- beside
 `raw/NNNN.headers.raw`, the octets of the request's head as they arrived, and
-`raw/NNNN.headers.json`, the stdlib's parse of that same head; it is answered
+`raw/NNNN.headers.json`, that same head split on CRLF; it is answered
 `200` with an empty body. A POST to any other path is answered `404` and
 recorded anyway, under `rejected/`: an
 exporter aimed at the wrong endpoint is exactly the kind of fact this
@@ -358,12 +358,12 @@ quietly.
 ```
 captures/<project>/<run-id>/raw/NNNN.body          the bytes as received
 captures/<project>/<run-id>/raw/NNNN.headers.raw   the head, octet for octet
-captures/<project>/<run-id>/raw/NNNN.headers.json  the parse of that head
+captures/<project>/<run-id>/raw/NNNN.headers.json  that head, split on CRLF
 captures/<project>/<run-id>/json/NNNN.json         the Collector's re-encoding
 captures/<project>/<run-id>/rejected/NNNN.body     a POST aimed at another path
 captures/<project>/<run-id>/bodies.jsonl           each body as it was recorded
 captures/<project>/<run-id>/forwards.jsonl         each forward as it completed
-captures/<project>/<run-id>/MANIFEST.json          what this capture is, and its hashes
+captures/<project>/<run-id>/MANIFEST.json          what this capture is, its hashes, its seal
 ```
 
 `SPEC.md` §2 is the authority on that tree; this is a map of it.

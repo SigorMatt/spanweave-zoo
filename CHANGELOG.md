@@ -3,6 +3,38 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A3f — the manifest is sealed, and the parse cannot invent
+
+Run-2 review, A3b-1 and A3c; the decisions of 2026-10-11 ("the seal", "the
+parse").
+
+- **`MANIFEST.json` carries `seal`** (`SPEC.md` §5, §5.5): the sha256 of the
+  manifest's canonical JSON with `seal` absent — `json.dumps(document,
+  sort_keys=True, separators=(",", ":"), ensure_ascii=True)` encoded as ASCII
+  — written in the same atomic write as `ended_at`, by `zoo capture` and
+  `zoo sink` alike. **`zoo verify` recomputes it** (§5.6) and fails on a seal
+  that is absent, not a string, or different: `kind` flipped from `recorded`
+  to `real`, a `problems` entry removed, or a `files` entry rewritten together
+  with its file all used to pass, because every file still hashed as recorded.
+  Re-indenting the file changes no seal; the document is sealed, not its
+  whitespace.
+- **`NNNN.headers.json` is derived from `NNNN.headers.raw`** (`SPEC.md` §2.3,
+  §3.2) by a split on CRLF and nothing else, never from the stdlib's parse. A
+  bare CR or LF stays inside the value it arrived in: `User-Agent:
+  otel\rX-Injected: yes` is one `User-Agent` header, where the stdlib's parse
+  reported an `X-Injected` header no client sent. A line that is not a header
+  (a continuation line, no colon) is listed under `unparsed` rather than
+  folded into one. The stdlib's parse is still what the sink handles the
+  request with (framing, the echoed content type, the forward).
+- **The committed fixture capture was regenerated** through the real tee with
+  the stock Collector 0.162.0, so that it carries a seal — a seal cannot be
+  added to a capture after it is taken. Its two bodies are byte-identical to
+  A3d's; it now also holds `collector.log` (A3e), and its headers files are
+  the new split.
+- Tests: seven on the seal in `tests/test_manifest.py`, five on the split in
+  `tests/test_sink.py`, two on the fixture. The A4 replay test whose premise
+  was the stdlib's truncated `User-Agent` now reads the whole value.
+
 ## A3e — Ctrl-C stops the capture and nothing else
 
 A review blocker (run-2 review, Z-1). A terminal sends Ctrl-C to its whole

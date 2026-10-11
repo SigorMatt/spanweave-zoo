@@ -38,6 +38,14 @@ cost of recording a body stopped depending on how many bodies came before it:
 appending a line is constant work, where rewriting a manifest that grows by an
 entry per POST is not.
 
+A3f sealed it (`SPEC.md` §5, §5.6). Every check `zoo verify` made before
+re-hashed *files*, so an edit to the manifest's own claims that left every file
+hashing as recorded -- `kind` flipped between the two values the spec names, a
+`problems` line deleted, a `files` entry rewritten together with its file --
+passed. `seal` is the sha256 of the manifest's canonical JSON with `seal`
+absent, written in the same atomic write as `ended_at`, and `verify`
+recomputes it.
+
 Nothing here parses a body. It hashes bytes and counts them. The one document
 it does parse is the project's own manifest, which is not a payload: the zoo
 copies that document whole and reads exactly one field of it -- `started_at`,
@@ -116,6 +124,11 @@ ENDED_AT = "ended_at"
 # had none, rather than an empty list, because a reader asking "did anything go
 # wrong here" should not have to tell `[]` from a field nobody wrote.
 PROBLEMS = "problems"
+
+# The manifest's own digest (`SPEC.md` §5): the sha256 of `canonical` of the
+# document with this key absent. Written last, with `ended_at`, by `finish`;
+# recomputed by `zoo verify`. A manifest without one is not verified.
+SEAL = "seal"
 
 # The two values a body entry carries across from its own headers file. The
 # header names are matched case-insensitively -- HTTP says they are -- and the
@@ -205,6 +218,29 @@ def digest(data: bytes) -> str:
 def dumps(document: object) -> str:
     """The one JSON spelling: two-space indent, `sort_keys=True`, newline."""
     return json.dumps(document, indent=2, sort_keys=True) + "\n"
+
+
+def canonical(document: object) -> bytes:
+    """The one canonical spelling of a document, as bytes (`SPEC.md` §5).
+
+    `sort_keys=True`, `separators=(",", ":")` -- no whitespace anywhere --
+    `ensure_ascii=True`, so every character outside ASCII is a `\\uXXXX`
+    escape and the text is ASCII, encoded as ASCII. Every choice is pinned
+    rather than defaulted, so the bytes do not depend on the platform, the
+    locale or a default that moves; and this is what is sealed, so the seal is
+    about the manifest's claims and not about how the file happens to be
+    indented.
+    """
+    text = json.dumps(
+        document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return text.encode("ascii")
+
+
+def seal_of(document: dict[str, Any]) -> str:
+    """The seal a manifest should carry: its canonical JSON, `seal` absent."""
+    unsealed = {key: value for key, value in document.items() if key != SEAL}
+    return digest(canonical(unsealed))
 
 
 def write_json(path: Path, document: object) -> None:
@@ -481,6 +517,9 @@ def finish(
         # Last, and after everything above: an `ended_at` means the rest of
         # this document is there (`SPEC.md` §5.5).
         document[ENDED_AT] = ended_at
+        # And the seal over all of it, `ended_at` included, in the same write
+        # (`SPEC.md` §5): from here on the manifest's claims are checkable.
+        document[SEAL] = seal_of(document)
 
     update(run, change)
     return found
@@ -677,9 +716,10 @@ def problems(run: Path) -> list[str]:
     (`SPEC.md` §5.6): every file the manifest lists -- bodies, headers files,
     journals, the Collector's re-encodings -- is on disk with the length and
     the sha256 it recorded; every file on disk is one the manifest lists; the
-    capture was completed (`ended_at`); it declares a `kind` the spec names, or
-    declares none at all; and nothing went wrong during the run that the
-    capture could not fix (`problems`).
+    capture was completed (`ended_at`); its `seal` is the one its claims hash
+    to; it declares a `kind` the spec names, or declares none at all; and
+    nothing went wrong during the run that the capture could not fix
+    (`problems`).
 
     The directions matter both ways round. A check that only iterated the
     manifest could never notice a file nobody recorded, and would report a
@@ -703,7 +743,30 @@ def problems(run: Path) -> list[str]:
     for key in (BODIES, FILES):
         found += _rehashed(run, document, key)
     found += _unlisted(run, document)
-    return found + _incomplete(run, document)
+    return found + _unsealed(run, document) + _incomplete(run, document)
+
+
+def _unsealed(run: Path, document: dict[str, Any]) -> list[str]:
+    """Whether the manifest's claims are the ones it was sealed with.
+
+    The files are re-hashed above; this is the manifest itself (`SPEC.md`
+    §5.6). A seal that is absent, that is not a string, or that differs from
+    the one recomputed here is one line, because in each case nothing vouches
+    for what the manifest says -- its `kind`, its `problems`, its lists.
+    """
+    sealed = document.get(SEAL)
+    if sealed is None:
+        return [
+            f"{run}: {MANIFEST_NAME} has no {SEAL}, so nothing vouches for "
+            f"what it says about this capture (SPEC.md section 5.6)"
+        ]
+    expected = seal_of(document)
+    if sealed != expected:
+        return [
+            f"{run}: {MANIFEST_NAME}'s {SEAL} is {sealed!r}, its contents seal "
+            f"to {expected}: the manifest was changed after the run sealed it"
+        ]
+    return []
 
 
 def _rehashed(run: Path, document: dict[str, Any], key: str) -> list[str]:
