@@ -3,6 +3,36 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A3e — Ctrl-C stops the capture and nothing else
+
+A review blocker (run-2 review, Z-1). A terminal sends Ctrl-C to its whole
+foreground process group, and the Collector child was in `zoo capture`'s: it
+heard the keystroke itself, exited 0, and was recorded as `problems:
+["collector exited: 0"]` — exit 1, `verify` and `make check` red, on a capture
+that was fine and is immutable. Reproduced on the parent by the new test, with
+the stand-in and with the stock binary alike.
+
+- **The Collector child runs in its own session** (`SPEC.md` §4.6). Only
+  `zoo capture` hears Ctrl-C, and it stops the Collector itself.
+- **The shutdown order is stated and kept** (`SPEC.md` §4.6): the raw sink
+  stops accepting; every POST it is handling — every forward the Collector has
+  not answered — finishes, for at most 10 s; one last look at the Collector,
+  then `SIGTERM` (its own shutdown flushes into the json sink), `SIGKILL` after
+  a bounded wait, said aloud; the json sink stops; the manifest is assembled.
+  An exit before `SIGTERM` is a problem; an exit after it is not.
+- **`collector.log` in the run directory** (`SPEC.md` §4.2, §5.5): the
+  Collector's stdout and stderr, verbatim, from its first line, listed in
+  `files` and re-hashed by `verify`. None of it is echoed to the terminal any
+  more.
+- **The body count counts bodies** by where they are: `1 body/bodies in raw/,
+  1 in json/` in `zoo capture`'s summary and `zoo verify`'s line, rather than
+  "2 body/bodies" for one export.
+- A Ctrl-C during the readiness wait stops the child the launcher started,
+  which its own session no longer does for it.
+- Tests: `tests/test_shutdown.py` sends `SIGINT` to the process group of a real
+  `zoo capture` process; the stock-binary variant is a `needs_collector` test
+  in `tests/test_collector_real.py`.
+
 ## A4 — `zoo replay`: the capture's bytes, and its head, sent again
 
 `SPEC.md` §6, which was a heading. A capture is only worth recording if a

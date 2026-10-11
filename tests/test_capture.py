@@ -76,12 +76,17 @@ class Started:
     def __init__(self) -> None:
         self.stopped = 0
         self.exited: int | None = None
+        self.log: Path | None = None
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         self.stopped += 1
+        return False
 
     def returncode(self) -> int | None:
         return self.exited
+
+    def keep_log(self, path: Path) -> None:
+        self.log = path
 
 
 class FakeLauncher:

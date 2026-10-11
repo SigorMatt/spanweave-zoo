@@ -226,13 +226,12 @@ def verify(root: Path, *, named: bool = False) -> int:
     problems: list[str] = []
     for run in runs:
         found = manifest.problems(run)
-        bodies = manifest.body_count(run)
         # The declaration the audit keys off, printed as the capture carries
         # it -- and as nothing where the capture carries nothing (`zoo sink`
         # alone writes no `kind`).
         declared = manifest.kind_of(run) or "none declared"
         print(
-            f"  {run}: kind={declared}, {bodies} body/bodies, {len(found)} problem(s)"
+            f"  {run}: kind={declared}, {manifest.tally(run)}, {len(found)} problem(s)"
         )
         problems.extend(found)
     if problems:
@@ -379,8 +378,13 @@ def run_capture(args: argparse.Namespace) -> int:
     # The readiness line is `capture.READY_LINE`, printed by `start()` itself
     # once the directory exists, so that there is one place where "a capture is
     # up" is said and it cannot be said by a run that refused.
-    previous = _stop_on_signal(running)
+    previous: dict[int, Any] = {}
     try:
+        # Inside the `try`, so that the `finally` stops the Collector however
+        # the run ends: it is in its own session (`SPEC.md` §4.6) and no
+        # longer dies with the terminal's process group, so a run that left
+        # without stopping it would leave it holding its port.
+        previous = _stop_on_signal(running)
         running.serve_forever()
     except KeyboardInterrupt:
         pass

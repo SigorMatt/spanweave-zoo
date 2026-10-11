@@ -358,7 +358,8 @@ def _capture(tmp_path: Path) -> Path:
 def test_verify_passes_on_a_capture_the_sink_wrote(tmp_path, capsys):
     _capture(tmp_path)
     assert cli.verify(tmp_path / "captures") == 0
-    assert "3 body" in capsys.readouterr().out
+    # Counted by where the bodies are, not summed (`SPEC.md` §5.6).
+    assert "2 body/bodies in raw/, 1 in rejected/" in capsys.readouterr().out
 
 
 def test_verify_fails_after_one_byte_of_one_body_changes(tmp_path, capsys):

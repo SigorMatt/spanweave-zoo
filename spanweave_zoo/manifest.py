@@ -846,3 +846,27 @@ def body_count(run: Path) -> int:
         return len(read(run)[BODIES])
     except (OSError, ValueError):
         return 0
+
+
+def tally(run: Path) -> str:
+    """The bodies the manifest lists, counted by the directory they are in.
+
+    `1 body/bodies in raw/, 1 in json/`: `raw/` first, because those are the
+    exporter's bodies and the capture's record, then every other directory a
+    body is in, in sorted order. A sum across them would count one export and
+    its re-encoding as two bodies, which is what the run-2 rehearsal's summary
+    said about one export (`SPEC.md` §4.6).
+    """
+    counts: dict[str, int] = {}
+    try:
+        entries = read(run)[BODIES]
+    except (OSError, ValueError, KeyError):
+        entries = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        directory = str(entry.get("file", "")).partition("/")[0]
+        counts[directory] = counts.get(directory, 0) + 1
+    raw = counts.pop("raw", 0)
+    others = [f"{counts[name]} in {name}/" for name in sorted(counts)]
+    return ", ".join([f"{raw} body/bodies in raw/", *others])

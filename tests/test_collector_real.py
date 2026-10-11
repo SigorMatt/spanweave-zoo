@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 
 from spanweave_zoo import capture, cli, collector, forward, manifest
-from tests import otlp
+from tests import otlp, test_shutdown
 
 REPO = Path(__file__).resolve().parent.parent
 COLLECTOR_DIR = REPO / "collector"
@@ -281,3 +281,32 @@ def test_the_collector_refuses_rather_than_hangs_when_it_cannot_listen(tmp_path)
     with pytest.raises(collector.CollectorRefused) as refused:
         launcher.start("http://127.0.0.1:1")
     assert "127.0.0.1:1" in str(refused.value)
+
+
+@needs_collector
+def test_ctrl_c_to_the_process_group_with_the_real_collector(tmp_path):
+    """A3e, with the stock binary: `tests/test_shutdown.py` has the rest."""
+    # The same keystroke with the stock binary behind the tee: the export is
+    # re-encoded, Ctrl-C ends the run clean, and the Collector's own log --
+    # which it writes in its own words -- says it was terminated, not
+    # interrupted.
+    zoo = test_shutdown.ZooCapture(tmp_path, COLLECTOR_DIR)
+    try:
+        zoo.wait_for(test_shutdown.READY_LINE)
+        assert test_shutdown.post(zoo.port, PROTOBUF) == 200
+        zoo.wait_for("json/0001.json")
+    except BaseException:
+        zoo.kill()
+        raise
+    status = zoo.ctrl_c()
+    printed = "\n".join(zoo.printed)
+
+    assert status == 0, printed
+    assert manifest.PROBLEMS not in manifest.read(zoo.run)
+    assert cli.verify(zoo.run) == 0
+    log = (zoo.run / collector.LOG_NAME).read_text(encoding="utf-8")
+    assert test_shutdown.COLLECTOR_READY in log
+    assert '"signal": "terminated"' in log, log
+    assert '"signal": "interrupt"' not in log, log
+    assert collector.LOG_NAME in test_shutdown.listed(zoo.run)
+    assert test_shutdown.COLLECTOR_READY not in printed

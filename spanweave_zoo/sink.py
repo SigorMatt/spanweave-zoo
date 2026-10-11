@@ -51,7 +51,8 @@ from __future__ import annotations
 
 import io
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -142,6 +143,12 @@ class Recorder:
         self._lock = threading.Lock()
         self._counters: dict[Path, int] = {self.raw: 0, self.rejected: 0}
         self.forwards: list[manifest.ForwardEntry] = []
+        # How many POSTs are being handled right now -- read, recorded,
+        # forwarded, answered. `settle()` waits for it to reach zero, which is
+        # how `zoo capture` lets every forward already under way be answered
+        # before it stops the Collector (`SPEC.md` §4.6).
+        self._busy = 0
+        self._quiet = threading.Condition()
 
         for directory, suffix in (
             (self.raw, body_suffix),
@@ -175,6 +182,27 @@ class Recorder:
         # two differ in when a directory appears and in nothing else.
         if create_directory:
             self.raw.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def handling(self) -> Iterator[None]:
+        """Count one POST as under way for as long as the block runs."""
+        with self._quiet:
+            self._busy += 1
+        try:
+            yield
+        finally:
+            with self._quiet:
+                self._busy -= 1
+                self._quiet.notify_all()
+
+    def settle(self, timeout: float) -> bool:
+        """Wait, at most `timeout` seconds, for every POST under way to finish.
+
+        Returns whether they did. Called once the listener has stopped
+        accepting, so nothing new can start while it waits.
+        """
+        with self._quiet:
+            return self._quiet.wait_for(lambda: self._busy == 0, timeout=timeout)
 
     def accepts(self, path: str) -> bool:
         """Whether `path` is the traces endpoint, compared exactly.
@@ -386,17 +414,18 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # http.server's own naming, not ours
         recorder = self._recorder
-        body = self._read_body()
-        accepted = recorder.accepts(self.path)
-        recorder.record(
-            method=self.command,
-            path=self.path,
-            headers=list(self.headers.items()),
-            head=self._head,
-            body=body,
-            accepted=accepted,
-        )
-        self._answer(HTTPStatus.OK if accepted else HTTPStatus.NOT_FOUND)
+        with recorder.handling():
+            body = self._read_body()
+            accepted = recorder.accepts(self.path)
+            recorder.record(
+                method=self.command,
+                path=self.path,
+                headers=list(self.headers.items()),
+                head=self._head,
+                body=body,
+                accepted=accepted,
+            )
+            self._answer(HTTPStatus.OK if accepted else HTTPStatus.NOT_FOUND)
 
     def _read_body(self) -> bytes:
         """Exactly the bytes `Content-Length` declared, and no guessing.

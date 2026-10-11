@@ -496,9 +496,22 @@ Collector logs `Everything is ready. Begin running and processing data.` at
 readiness means (§4.6). At `warn` — which this config asked for until A3a — a
 healthy Collector says nothing at all on startup, and readiness would have to
 be guessed from a port accepting a connection, which a stranger holding that
-port does too. The Collector's log is the Collector's own: the zoo reads one
-line of it to know it is running, echoes it to the operator, and copies none of
-it into a capture.
+port does too.
+
+The Collector's log is the Collector's own, and it is **the run's, not the
+terminal's**. Its stdout and stderr are one pipe, read by the zoo; the zoo
+reads one line of it to know it is running (§4.6), and writes every byte of it,
+verbatim and as it is written, to **`collector.log` in the run directory** —
+the lines from before that directory existed included, because the zoo keeps
+them until it does. It is a file in the run directory like any other, so it is
+listed in `files` with a digest of its own and `zoo verify` re-hashes it
+(§5.6). Nothing of it is echoed: the operator's terminal shows the zoo's own
+lines — the readiness line, one line per recorded body, the summary — and no
+Collector line. A refusal before the run directory exists quotes the
+Collector's last lines in the refusal instead (§4.6), because there is no
+directory to put a log in. `collector.log` is opened to be created, never to
+overwrite or append: one already in the run directory is refused, like a body
+already there (§3.1).
 
 The `WORKPLAN.md` A2 row names this exporter `otlphttp`. At the pinned version
 that spelling is a **deprecated alias** and the Collector says so on every
@@ -685,12 +698,31 @@ port it is about are written — and `zoo capture` exits **2** leaving **no run
 directory at all**. That is what makes a capture directory mean a capture was
 made.
 
-Then it serves until interrupted. Then it stops the raw sink, stops the
-Collector, stops the json sink, **assembles the manifest** (§5.5) — the
-journals, a digest for every other file, the project's own manifest copied as
-it stands now (§5.3), `ended_at` last — prints what it recorded and exits
-non-zero if any forward failed (§4.4), the Collector exited (below), or the
-manifest could not be completed as asked (§5.3).
+Then it serves until interrupted, and then it shuts down **in this order**,
+which is the order that lets the Collector's last batch land:
+
+1. **the raw sink stops accepting.** Nothing more will be recorded;
+2. **every POST it is already handling finishes** — which is every forward the
+   Collector has not yet answered — for at most a bounded wait (10 seconds,
+   longer than the forward's own timeout, §4.4). What the Collector has
+   answered is what its final flush can carry. A wait that runs out is said,
+   and the shutdown goes on: a Collector that never answers must not become a
+   capture that never stops;
+3. **the Collector is looked at one last time, and then sent `SIGTERM`.** Its
+   own shutdown flushes its last batch into the json sink, which is still
+   serving. It is given a bounded wait (10 seconds) to exit, then **`SIGKILL`**
+   and another bounded wait. A `SIGKILL` is said, because a killed Collector
+   may not have flushed;
+4. **the json sink stops**, once the requests it is handling have finished;
+5. **the manifest is assembled** (§5.5) — the journals, a digest for every
+   other file, `collector.log` included, the project's own manifest copied as
+   it stands now (§5.3), `ended_at` last.
+
+It then prints what it recorded — the bodies **counted by the directory they
+are in**, `1 body/bodies in raw/, 1 in json/`, `raw/` first and never summed
+with the rest, because one export and its re-encoding are not two exports —
+and exits non-zero if any forward failed (§4.4), the Collector exited on its
+own (below), or the manifest could not be completed as asked (§5.3).
 
 **Every line it prints is flushed as it is written.** An operator watching a
 pet project export into a log file sees each body as it lands, not when the
@@ -706,8 +738,13 @@ line goes nowhere, and the manifest is completed. The exit status is then what
 the capture was — zero when nothing else went wrong — because a reader walking
 away is not a fact about the bytes.
 
-**A Collector that exits during the run** is recorded, not absorbed. The
-caller's wait notices it on its next hop, writes
+**A Collector that exits during the run** is recorded, not absorbed. "During
+the run" is every moment **until `zoo capture` sends it `SIGTERM`**: at step 3
+above, and not after. An exit noticed on any hop of the caller's wait, or at
+the last look before `SIGTERM`, is a Collector that went on its own; an exit
+after `SIGTERM` — or after the `SIGKILL` that follows it — is the one
+`zoo capture` asked for, and is **not** a problem. The caller's wait notices an
+exit on its next hop, writes
 `problems: ["collector exited: <code>"]` into `MANIFEST.json` there and then
 (§4.5), prints it, and `zoo capture` exits non-zero. It is recorded once,
 however often it is looked at. The raw sink keeps recording, because the raw
@@ -717,9 +754,22 @@ leaving an operator to find a `json/` that quietly stopped filling. `zoo
 verify` fails on any capture whose manifest records a problem (§5.6), so a
 capture nobody can trust does not pass the check whose whole job is trust.
 
+**The Collector child runs in its own session**, and so in its own process
+group. A terminal does not send Ctrl-C to a process: it sends `SIGINT` to its
+whole foreground process group. A Collector in `zoo capture`'s group heard the
+keystroke itself, shut down on its own, and was then recorded as a Collector
+that had exited — a clean capture failed for good by the one way the README
+says to end it. In its own session only `zoo capture` hears Ctrl-C, and the
+Collector is stopped by `zoo capture`, in the order above. The cost is stated
+rather than hidden: a `zoo capture` killed with `SIGKILL` cannot stop its
+Collector, which is then left running, holding its ports, until it is stopped by
+hand.
+
 **`SIGINT` and `SIGTERM` both end a run**, through a handler that only asks it
 to stop; the shutdown itself happens on the main thread, which is where the
-Collector gets stopped rather than orphaned holding its port. This is installed
+Collector gets stopped rather than orphaned holding its port. A Ctrl-C during
+the readiness wait, before the handler is installed, still stops the child the
+launcher started before it propagates. This is installed
 rather than relied upon, and the caller waits in short hops rather than once
 and forever: a capture has three threads blocked in `select`, the kernel may
 hand the signal to any of them, and a main thread parked in an untimed wait
@@ -781,7 +831,7 @@ columns line up — that would be improving the capture.
 | Seam | What it is | Why |
 |---|---|---|
 | `forward` | called with the method, path, headers and body once the body is on disk; returns the forwarded request's HTTP status or raises | the only outbound socket in the package. A test drives the tee with a forward that records what it was handed, so the tee's mechanics need no Collector |
-| `launch` | called with the resolved config, environment and ports; returns a handle that can be stopped **and asked whether the child is still there** | starting a process is touching the world. A test passes a launcher that starts nothing, reports the pinned version, and can say the child exited — which is how §4.6's mid-run failure is driven without killing anything |
+| `launch` | called with the resolved config, environment and ports; returns a handle that can be stopped — saying whether it took a `SIGKILL` — **asked whether the child is still there**, and told where to keep the child's log once the run directory exists | starting a process is touching the world. A test passes a launcher that starts nothing, reports the pinned version, and can say the child exited — which is how §4.6's mid-run failure is driven without killing anything |
 | `sleep` | the readiness wait between looks, a bounded number of them | no module under `spanweave_zoo/` reads a clock or sleeps on its own (`CLAUDE.md`); `cli.py` passes the one real `sleep`, as it passes the one real `now` |
 | `after_forward` | called with each forward's outcome once it is in the manifest | one printed line per forward, and the way a test observes a forward without polling a file |
 
@@ -803,7 +853,12 @@ against a **stand-in child process** — a few lines that bind the receiver
 endpoint they are given through `ZOO_COLLECTOR_OTLP_HTTP` and log the way the
 Collector does. It stands in for the Collector's *lifecycle*, which is all
 readiness is about: a port it cannot have, a ready line it does or does not
-log, a config it cannot load. It stands in for no re-encoding, which is the one
+log, a config it cannot load — and, since A3e, how it ends: a stand-in that
+logs which signal stopped it, as the stock Collector does, is what lets a test
+send `SIGINT` to the **process group** of a real `zoo capture` process, as a
+terminal does, and read in `collector.log` that the Collector got `SIGTERM` from
+the zoo rather than the keystroke. The same test runs against the stock binary
+as a `needs_collector` test. It stands in for no re-encoding, which is the one
 thing it is not allowed to claim. What only a machine with the binary proves is that a
 real protobuf export comes back as JSON with the same ids — and a test that
 quietly passed without proving it would be the kind of reassuring pass this
@@ -860,6 +915,7 @@ re-hashes the tree against it on every `make check`.
   "ended_at": "2026-10-09T12:04:11.902000+00:00",
   "files": [
     {"bytes": 211, "file": "bodies.jsonl", "sha256": "4f7c91..."},
+    {"bytes": 2730, "file": "collector.log", "sha256": "0d5e17..."},
     {"bytes": 104, "file": "forwards.jsonl", "sha256": "b1d4a0..."},
     {"bytes": 389, "file": "json/0001.headers.json", "sha256": "7a0c3e..."},
     {"bytes": 214, "file": "json/0001.headers.raw", "sha256": "5d2f88..."},
@@ -1018,7 +1074,8 @@ exactly one home for a digest (§3.5).
 | each POST, as it is recorded (§3.5) | `bodies.jsonl` | one line: `file`, `sha256`, `bytes` |
 | each forward, as it completes (§4.5) | `forwards.jsonl` | one line |
 | the Collector child is seen to have exited (§4.6) | `MANIFEST.json` | one `problems` entry |
-| `zoo capture` stops, after both sinks and the Collector have | `MANIFEST.json` | `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files`, `project_manifest` (§5.3), any further `problems`, and `ended_at` |
+| the run directory is made, before the manifest is labelled (§4.2) | `collector.log` | the Collector's output so far, and then each line as it is written |
+| `zoo capture` stops, after both sinks and the Collector have (§4.6) | `MANIFEST.json` | `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, and `ended_at` |
 
 The declaration is written **first** so that a run stopped the hard way still
 says what it was. The bodies go to a journal rather than into the document, so
@@ -1119,7 +1176,8 @@ a capture with a file in it from somewhere else as verified. A capture is the
 bytes that were recorded, so a file nothing recorded is a problem with the
 capture even when every digest in it agrees.
 
-`zoo verify` prints each run's `kind` as the capture declares it, and `none
+`zoo verify` prints each run's bodies counted by the directory they are in
+(§4.6), and its `kind` as the capture declares it, and `none
 declared` where it declares nothing — a `zoo sink` run (§3) records bodies and
 digests and declares nothing, and inventing one for the line would be inventing
 the one field the audit reads. `zoo sink` does assemble its manifest when it

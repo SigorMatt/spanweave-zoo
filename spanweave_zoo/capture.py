@@ -36,7 +36,12 @@ run directory created, the manifest labelled, the sinks set serving and the one
 readiness line printed (`SPEC.md` §4.6). A refusal for any reason -- a port
 held, the Collector exiting, a bad config -- therefore leaves no directory at
 all, rather than a capture that was never a capture. Stop order is the reverse
-of start order, so that the Collector's last batch has somewhere to go.
+of start order, so that the Collector's last batch has somewhere to go: the raw
+sink stops accepting, every forward already under way is answered (a bounded
+wait), the Collector is sent `SIGTERM` -- its own shutdown flushes its last
+batch -- and `SIGKILL` after a bounded wait, the json sink stops, and the
+manifest is assembled. A Collector exit inside that sequence is the one
+`zoo capture` asked for; outside it, it is a problem (`SPEC.md` §4.6).
 
 Nothing here starts a process, binds a socket, reads a clock or sleeps: it is
 handed a launcher, a listener factory, a forward and a `now` (`SPEC.md` §4.8).
@@ -75,6 +80,13 @@ READY_LINE = "zoo capture: the raw bytes are the record. Ctrl-C to stop."
 # blocked in `select`. `socketserver.serve_forever` takes the same parameter
 # for the same reason.
 STOP_POLL = 0.2
+
+# How long a stopping sink waits for the POSTs it is already handling -- for
+# the raw sink, the forwards the Collector has not yet answered -- before the
+# shutdown goes on without them (`SPEC.md` §4.6). Bounded, because a Collector
+# that never answers must not become a capture that never stops; longer than
+# the default forward timeout, so a forward ends by its own timeout first.
+FLUSH_WAIT = 10.0
 
 MakeServer = Callable[..., ThreadingHTTPServer]
 
@@ -123,6 +135,11 @@ class _Listener:
         self._thread.start()
 
     def stop(self) -> None:
+        """Stop accepting and close the listening socket.
+
+        A POST already being handled is not cut off: its thread goes on, and
+        `settle()` is how a caller waits for it.
+        """
         # `shutdown()` waits for `serve_forever` to notice and return, so it
         # must not be called on a listener that never served: it would wait for
         # a loop that never started. A bound-but-unserved listener is exactly
@@ -131,6 +148,9 @@ class _Listener:
             self.server.shutdown()
             self._thread.join(timeout=30)
         self.server.server_close()
+
+    def settle(self, timeout: float) -> bool:
+        return self.recorder.settle(timeout)
 
 
 class Capture:
@@ -157,6 +177,7 @@ class Capture:
         make_server: MakeServer = sink.make_server,
         log: Callable[[str], None] = _say,
         on_record: Callable[[manifest.BodyEntry], None] | None = None,
+        flush_wait: float = FLUSH_WAIT,
     ) -> None:
         self.run = run
         self.host = host
@@ -182,6 +203,7 @@ class Capture:
         # directory, which is how a test that waits for another process stays a
         # test and not a race.
         self._on_record = on_record
+        self._flush_wait = flush_wait
         self.raw: _Listener | None = None
         self.json: _Listener | None = None
         self.collector: collector.Running | None = None
@@ -280,6 +302,16 @@ class Capture:
             raise
 
         self.run.mkdir(parents=True, exist_ok=True)
+        try:
+            # The Collector's log, from its first line -- the ones written
+            # before this directory existed included -- goes here and not to
+            # the operator's terminal (`SPEC.md` §4.2). A file already there
+            # is not overwritten: that is a refusal, and it unwinds like one.
+            assert self.collector is not None
+            self.collector.keep_log(self.run / collector.LOG_NAME)
+        except BaseException:
+            self.stop()
+            raise
         self._started_at = self._now()
         manifest.label(
             self.run,
@@ -328,29 +360,45 @@ class Capture:
             self.check_collector()
 
     def stop(self) -> None:
-        """Stop the raw sink, then the Collector, then the json sink.
+        """The shutdown sequence, in this order and no other (`SPEC.md` §4.6).
 
-        That order and no other: the exporter is told nothing more will be
-        recorded, then the Collector is asked to shut down -- which flushes its
-        last batch -- and only then does the thing it flushes into go away.
+        1. the raw sink stops accepting;
+        2. every POST it is already handling finishes -- which is every forward
+           the Collector has not yet answered -- for at most `flush_wait`;
+        3. the Collector is looked at one last time, and then sent `SIGTERM`:
+           its own shutdown flushes its last batch into the json sink, which
+           is still serving; `SIGKILL` follows a bounded wait;
+        4. the json sink stops, once what it is handling has finished;
+        5. the manifest is closed (`SPEC.md` §5): `ended_at` is the end of the
+           run, and the content headers are carried across from the headers
+           files of every body -- including the ones the Collector's last flush
+           only just landed -- and `collector.log` is hashed whole.
 
-        Then, and only then, the manifest is closed (`SPEC.md` §5): `ended_at`
-        is the end of the run, and the content headers are carried across from
-        the headers files of every body -- including the ones the Collector's
-        last flush only just landed.
+        An exit noticed at step 3's last look, or at any look before it, is a
+        Collector that went on its own and is a problem. Once `SIGTERM` is
+        sent, the exit is the one `zoo capture` asked for, and is not -- even
+        if it took a `SIGKILL`, which is said, because a killed Collector may
+        not have flushed.
         """
         self._stopping.set()
         if self.raw is not None:
             self.raw.stop()
+            if not self.raw.settle(self._flush_wait):
+                self._log(
+                    f"  ! a forward was still waiting on the Collector after "
+                    f"{self._flush_wait:g}s; stopping it anyway"
+                )
         if self.collector is not None:
-            # Asked before it is stopped: afterwards every Collector has an
-            # exit status, and the one worth recording is the one it had
-            # before anybody asked it to go (`SPEC.md` §4.6).
             self.check_collector()
-            self.collector.stop()
-            self.collector = None
+            running, self.collector = self.collector, None
+            if running.stop():
+                self._log(
+                    "  ! the Collector did not stop on SIGTERM and was sent "
+                    "SIGKILL: its last batch may not have reached json/"
+                )
         if self.json is not None:
             self.json.stop()
+            self.json.settle(self._flush_wait)
         self._finish()
 
     def check_collector(self) -> None:
@@ -415,10 +463,9 @@ class Capture:
         return self.raw.recorder.failed_forwards
 
     def summary(self) -> str:
-        bodies = manifest.body_count(self.run)
         failures = len(self.failed_forwards)
         line = (
-            f"zoo capture: {bodies} body/bodies under {self.run}/, "
+            f"zoo capture: {manifest.tally(self.run)}, under {self.run}/, "
             f"{manifest.MANIFEST_NAME} written: kind={self._kind}"
         )
         if failures:

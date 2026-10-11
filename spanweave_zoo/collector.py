@@ -25,7 +25,16 @@ exited. So readiness is the Collector's **own** statement that it is running,
 read from its own log, **and** a connection its receiver accepts -- both, every
 time (`SPEC.md` §4.6). The child's output is piped here and drained by a thread
 rather than inherited, so the refusal can quote the Collector's last words
-instead of telling an operator to scroll.
+instead of telling an operator to scroll -- and, once the run directory exists,
+so that every byte of it goes to `collector.log` there rather than to the
+operator's terminal (`SPEC.md` §4.2).
+
+The child is started in **its own session** (`SPEC.md` §4.6). A terminal sends
+Ctrl-C to its whole foreground process group, and a Collector in that group
+heard the keystroke itself, shut down on its own, and was then recorded as a
+Collector that had died. In its own session only `zoo capture` hears it, and
+`zoo capture` stops the Collector: `SIGTERM`, a bounded wait, `SIGKILL` if it
+is still there.
 """
 
 from __future__ import annotations
@@ -67,6 +76,16 @@ READY_MARKER = "Everything is ready. Begin running and processing data."
 
 # How many of the Collector's own lines a refusal quotes.
 LOG_TAIL = 8
+
+# Where the Collector's own output goes, in the run directory (`SPEC.md` §4.2).
+LOG_NAME = "collector.log"
+
+# How long the Collector is given to go after `SIGTERM` -- its own shutdown,
+# which flushes its last batch into the json sink -- and then after `SIGKILL`
+# (`SPEC.md` §4.6). Bounded, because a capture that cannot stop is a Collector
+# left holding its port.
+STOP_WAIT = 10.0
+KILL_WAIT = 10.0
 
 
 class CollectorRefused(Exception):
@@ -113,15 +132,21 @@ def pin(directory: Path = DEFAULT_DIR) -> Pin:
 class Running(Protocol):
     """A Collector that is up.
 
-    Two things are asked of it: stop, and say whether it is still there. The
-    second is what lets `zoo capture` notice a Collector that exited during a
-    run and record it rather than finish with a silently empty `json/`
-    (`SPEC.md` §4.6).
+    Three things are asked of it: stop, say whether it is still there, and
+    keep its log in the run directory once there is one. The second is what
+    lets `zoo capture` notice a Collector that exited during a run and record
+    it rather than finish with a silently empty `json/` (`SPEC.md` §4.6).
+
+    `stop()` returns whether the child had to be killed: it did not go within
+    the bounded wait after `SIGTERM`, which an operator is told about, because
+    a killed Collector may not have flushed its last batch.
     """
 
-    def stop(self) -> None: ...
+    def stop(self) -> bool: ...
 
     def returncode(self) -> int | None: ...
+
+    def keep_log(self, path: Path) -> None: ...
 
 
 class Launcher(Protocol):
@@ -143,15 +168,17 @@ class ChildLog:
 
     A thread drains the pipe because a pipe nobody reads fills up and stops the
     child, and because `start()` has to be able to *ask* what the log says
-    without blocking on a read that may never return. Each line is kept and
-    echoed, so the operator still sees the Collector's log as it happens and a
-    refusal can quote it (`SPEC.md` §4.6).
+    without blocking on a read that may never return. Each line is kept as the
+    bytes the child wrote, so a refusal can quote it (`SPEC.md` §4.6); once
+    `keep()` names a file, everything written so far and everything after goes
+    there, verbatim and as it happens (`SPEC.md` §4.2). Nothing of it is echoed:
+    the operator's terminal is the zoo's, and the Collector's log is the run's.
     """
 
-    def __init__(self, stream: IO[bytes], echo: Callable[[str], None]) -> None:
+    def __init__(self, stream: IO[bytes]) -> None:
         self._stream = stream
-        self._echo = echo
-        self._lines: list[str] = []
+        self._lines: list[bytes] = []
+        self._kept: IO[bytes] | None = None
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._drain, daemon=True)
 
@@ -160,27 +187,48 @@ class ChildLog:
 
     def _drain(self) -> None:
         for raw in self._stream:
-            # `replace`: this is a stranger's process writing bytes, and a log
-            # line that is not UTF-8 is a line to show, not a crash.
-            line = raw.decode("utf-8", "replace").rstrip("\r\n")
             with self._lock:
-                self._lines.append(line)
-            self._echo(line)
+                self._lines.append(raw)
+                if self._kept is not None:
+                    self._kept.write(raw)
+                    self._kept.flush()
+
+    def keep(self, path: Path) -> None:
+        """From now on, write the child's output to `path` -- starting with
+        every line it has already written, which is the log from before the run
+        directory existed. `x`: a file already there is not the zoo's to
+        overwrite or to append to.
+        """
+        with self._lock:
+            kept = path.open("xb")
+            kept.writelines(self._lines)
+            kept.flush()
+            self._kept = kept
+
+    def _decoded(self) -> list[str]:
+        # `replace`: this is a stranger's process writing bytes, and a log line
+        # that is not UTF-8 is a line to show, not a crash.
+        with self._lock:
+            return [
+                raw.decode("utf-8", "replace").rstrip("\r\n") for raw in self._lines
+            ]
 
     def says(self, marker: str) -> bool:
         """Whether any line the child has written so far contains `marker`."""
-        with self._lock:
-            return any(marker in line for line in self._lines)
+        return any(marker in line for line in self._decoded())
 
     def tail(self, count: int = LOG_TAIL) -> str:
         """The child's last few lines, for a refusal to quote."""
-        with self._lock:
-            lines = self._lines[-count:]
+        lines = self._decoded()[-count:]
         return "\n".join(lines) if lines else "(it logged nothing)"
 
     def close(self) -> None:
         self._thread.join(timeout=5)
         self._stream.close()
+        with self._lock:
+            if self._kept is not None:
+                self._kept.close()
+                self._kept = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,19 +237,32 @@ class _Process:
 
     process: subprocess.Popen[bytes]
     log: ChildLog = field(compare=False)
+    stop_wait: float = STOP_WAIT
+    kill_wait: float = KILL_WAIT
 
-    def stop(self) -> None:
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=10)
+    def stop(self) -> bool:
+        """`SIGTERM`, a bounded wait, then `SIGKILL` (`SPEC.md` §4.6).
+
+        Returns whether it came to `SIGKILL`.
+        """
+        killed = False
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=self.stop_wait)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=self.kill_wait)
+                killed = True
         self.log.close()
+        return killed
 
     def returncode(self) -> int | None:
         """The child's exit status, or `None` while it is still running."""
         return self.process.poll()
+
+    def keep_log(self, path: Path) -> None:
+        self.log.keep(path)
 
 
 class Binary:
@@ -221,7 +282,7 @@ class Binary:
         sleep: Callable[[float], None],
         attempts: int = READY_ATTEMPTS,
         pause: float = READY_PAUSE,
-        log: Callable[[str], None] = print,
+        stop_wait: float = STOP_WAIT,
     ) -> None:
         self.pin = pinned
         self.host = host
@@ -230,10 +291,7 @@ class Binary:
         self._sleep = sleep
         self._attempts = attempts
         self._pause = pause
-        # Where the child's own log goes. It is piped rather than inherited so
-        # that a refusal can quote it; echoing each line keeps the operator's
-        # view of it unchanged, verbatim and as it happens.
-        self._log = log
+        self._stop_wait = stop_wait
 
     def version(self) -> str:
         """What the binary says it is: `otelcol-contrib version 0.162.0`."""
@@ -278,17 +336,25 @@ class Binary:
             # wrote it. It is drained by `ChildLog`'s thread from here on.
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            # Its own session, and so its own process group: a terminal's
+            # Ctrl-C reaches `zoo capture` and not the Collector, and the
+            # Collector is stopped by `zoo capture` -- `SIGTERM`, then
+            # `SIGKILL` -- rather than by the keystroke (`SPEC.md` §4.6).
+            start_new_session=True,
         )
         stream = process.stdout
         if stream is None:  # pragma: no cover - `stdout=PIPE` always gives one
             process.kill()
             raise CollectorRefused("the Collector's output could not be read")
-        child_log = ChildLog(stream, self._log)
+        child_log = ChildLog(stream)
         child_log.start()
-        running = _Process(process=process, log=child_log)
+        running = _Process(process=process, log=child_log, stop_wait=self._stop_wait)
         try:
             self._wait_until_ready(running)
-        except CollectorRefused:
+        except BaseException:
+            # Any way out, Ctrl-C during the wait included: a child in its own
+            # session no longer dies with the terminal's process group, so a
+            # start that does not return it must stop it.
             running.stop()
             raise
         return running
