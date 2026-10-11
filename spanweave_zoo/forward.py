@@ -1,10 +1,11 @@
-"""The tee's forward: the same bytes again, to the Collector (`SPEC.md` §4.3).
+"""The package's outbound sockets: the tee's forward, and the replay's send.
 
 The raw sink writes a body and then hands those same bytes to the Collector so
-that it can re-encode them to JSON *beside* the record. This module is the
-`forward` seam's one real implementation and the only outbound socket in the
-package -- `sink.make_server` binds one, this connects one, and `SPEC.md` names
-both.
+that it can re-encode them to JSON *beside* the record (`SPEC.md` §4.3). This
+module holds the `forward` seam's one real implementation and the `send`
+seam's (`SPEC.md` §6.2) -- the only outbound sockets in the package.
+`sink.make_server` binds one, this connects them, and `SPEC.md` names all
+three.
 
 It is byte-identical on purpose, and that is a stronger claim than it looks:
 
@@ -30,6 +31,7 @@ beyond its status: a forward's outcome belongs in the manifest (`SPEC.md`
 from __future__ import annotations
 
 import http.client
+import socket
 from collections.abc import Sequence
 
 # RFC 9110 §7.6.1. A hop-by-hop header describes the connection it arrived on,
@@ -118,3 +120,35 @@ class HttpForward:
             return response.status
         finally:
             connection.close()
+
+
+def send_head(
+    host: str,
+    port: int,
+    head: bytes,
+    body: bytes,
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> int:
+    """Put `head` and then `body` on one connection, and return the status.
+
+    The replay's `send` (`SPEC.md` §6.2): the octets go out as they are handed
+    over, so nothing here re-forms a request line, re-orders, re-spaces or
+    re-terminates a header, adds one or drops one -- which is what
+    `http.client` does to every head it writes, and why the replay does not
+    write through it. The caller has already substituted the `Host` line.
+
+    The answer is read by the stdlib's response parser, which frames it (a
+    `Content-Length`, chunks, or the connection's close) so the connection
+    ends cleanly; nothing but its status is kept (`SPEC.md` §6.5). Raises
+    whatever the socket raises, as `HttpForward` does.
+    """
+    with socket.create_connection((host, port), timeout=timeout) as connection:
+        connection.sendall(head + body)
+        response = http.client.HTTPResponse(connection)
+        try:
+            response.begin()
+            response.read()
+            return response.status
+        finally:
+            response.close()

@@ -7,19 +7,22 @@ claim, and each is a thing not done:
 
 - the body is the bytes on disk, unread except to send them. Still gzipped if
   it was recorded gzipped, still protobuf if it was recorded as protobuf;
-- the method, the target and every header come from `NNNN.headers.raw`, the
-  octets of the head as they arrived (`SPEC.md` §2.3) -- **never** from
-  `NNNN.headers.json`, which is what Python could represent of them. A
-  replayer built on the parse would send a tidied request no exporter sent,
-  with the capture that says otherwise sitting on disk beside it;
-- the send itself is `forward.HttpForward`, the tee's own forward (`SPEC.md`
-  §4.3) pointed somewhere else. Re-sending captured bytes is one act, and a
-  second implementation of it would be a second chance to improve them.
+- the head is `NNNN.headers.raw`, the octets as they arrived (`SPEC.md`
+  §2.3), put back on a socket as they are with **one** line substituted: the
+  `Host` line, because the destination has changed (the decision of
+  2026-10-11, "replay"). Never `NNNN.headers.json`, and never `http.client`:
+  both hand over the pieces of a head and get back a head of their own --
+  re-ordered, re-spaced, upgraded to HTTP/1.1, re-terminated in CRLF, minus
+  its hop-by-hop headers. A replayer built on either would send a tidied
+  request no exporter sent, with the capture that says otherwise on disk;
+- the send itself is the `send` seam (`SPEC.md` §6.2), whose one real
+  implementation is `forward.send_head`, next to the tee's forward.
 
-What cannot be sent is **not tidied into what can**: a head with no request
-line, or a value the wire refuses -- a bare CR, which RFC 9110 forbids and
-`http.client` will not put on a socket -- is one printed line and a non-zero
-exit, with the rest of the capture still sent (`SPEC.md` §6.4).
+What cannot be sent is **not tidied into what can**: a head that is empty, or
+that does not end with the empty line that closes a header block, is one
+printed line and a non-zero exit, with the rest of the capture still sent
+(`SPEC.md` §6.4). A head HTTP forbids -- a bare CR in a value -- is not one of
+them: it arrived on a socket, and it goes out on one.
 
 Nothing here sleeps, reads a clock or parses a body: `--timing`'s sleep is an
 injected seam (`SPEC.md` §6.3) and the receipt times it works from are values
@@ -28,12 +31,12 @@ the sink wrote down.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from spanweave_zoo import capture, forward, manifest
+from spanweave_zoo import capture, forward, manifest, sink
 
 # Which side of a capture to send (`SPEC.md` §6.1): the exporter's own bytes,
 # or the Collector's re-encoding of them (`SPEC.md` §2.4).
@@ -73,10 +76,8 @@ class Request:
     file: str
     """The body's path relative to the run directory: `raw/0001.body`."""
 
-    method: str
-    target: str
-    headers: tuple[tuple[str, str], ...]
-    """Every header as the octets had them, in order, repeats included."""
+    head: bytes
+    """`NNNN.headers.raw`'s octets, as recorded: `Host` not yet substituted."""
 
     body: bytes
     received_at: str | None
@@ -154,73 +155,43 @@ def planned(run: Path, source: str) -> list[str]:
     return files
 
 
-def _lines(octets: bytes) -> list[tuple[bytes, bytes]]:
-    """The head's lines as `(content, line ending)`, split on LF alone.
+# The empty line that ends a header block, after the line ending before it:
+# CRLF, or the bare LF some clients send and the sink's reader accepts.
+_TERMINATORS = (b"\n\r\n", b"\n\n")
 
-    On LF and not on CR, which is the point: `bytes.splitlines` would split a
-    **bare CR inside a header value** into two lines and so lose exactly the
-    thing `NNNN.headers.raw` was kept for (`SPEC.md` §2.3). A line's own ending
-    is carried with it so that a folded value can be rejoined as it arrived,
-    and a last line with no LF at all -- a truncated head -- is a line with no
-    ending rather than something dropped.
+
+def terminated(octets: bytes) -> bool:
+    """Whether the octets end with the empty line that closes a header block.
+
+    `SPEC.md` §6.2. A head without it is not one a receiver could tell apart
+    from the body sent after it: the body's bytes would arrive as header
+    lines, a request no exporter made. The sink never records such a head (it
+    records one only when it read a block to its end); a capture holding one
+    has been made some other way, and the replay says so instead of sending.
     """
-    pieces = octets.split(b"\n")
-    lines: list[tuple[bytes, bytes]] = []
-    for piece in pieces[:-1]:
-        if piece.endswith(b"\r"):
-            lines.append((piece[:-1], b"\r\n"))
-        else:
-            lines.append((piece, b"\n"))
-    if pieces[-1]:
-        lines.append((pieces[-1], b""))
-    return lines
+    return octets.endswith(_TERMINATORS)
 
 
-def head(octets: bytes) -> tuple[str, str, list[tuple[str, str]]]:
-    """The method, the target and the headers the octets carried.
+def retarget(octets: bytes, host: str) -> bytes:
+    """The head with its `Host` line naming `host`, and nothing else changed.
 
-    `SPEC.md` §6.2. Latin-1 throughout, which is what `http.client` puts a
-    header on the wire as, so a value decoded here and re-encoded there is the
-    same octets. A line beginning with a space or a tab continues the one
-    before it (RFC 9110's deprecated `obs-fold`) and is joined to it with the
-    ending kept: a value that arrived folded arrived folded.
+    `SPEC.md` §6.2. The lines are §2.3's -- the octets split on CRLF and on
+    nothing else -- and a `Host` line is a line after the request line, before
+    the empty line, whose field name (`sink.field_name`) is `Host` in any
+    case. It becomes the name as sent, a colon, one space and `host`; its
+    CRLF stays. Every such line is substituted, so a head that carried two
+    names the destination in both; a head that carried none gets none, because
+    adding a header is adding something. A `Host:` after a bare LF is inside
+    another line, as it is in `NNNN.headers.json`, and is not touched.
     """
-    lines = _lines(octets)
-    if not lines:
-        raise HeadUnreadable("the head is empty")
-    request_line = lines[0][0].decode("latin-1")
-    parts = request_line.split(" ")
-    if len(parts) < 2 or not parts[0] or not parts[1]:
-        raise HeadUnreadable(f"the first line is not a request line: {request_line!r}")
-    method, target = parts[0], parts[1]
-    headers: list[tuple[str, str]] = []
-    for content, ending in lines[1:]:
-        if not content:
+    lines = octets.split(b"\r\n")
+    for index in range(1, len(lines)):
+        if not lines[index]:
             break
-        if content[:1] in (b" ", b"\t"):
-            if not headers:
-                raise HeadUnreadable(
-                    "the header block begins with a continuation line: "
-                    f"{content.decode('latin-1')!r}"
-                )
-            name, value = headers[-1]
-            headers[-1] = (
-                name,
-                value + ending.decode("latin-1") + content.decode("latin-1"),
-            )
-            continue
-        if b":" not in content:
-            raise HeadUnreadable(
-                f"a header line carries no colon: {content.decode('latin-1')!r}"
-            )
-        name_bytes, _, value_bytes = content.partition(b":")
-        headers.append(
-            (
-                name_bytes.decode("latin-1"),
-                value_bytes.decode("latin-1").strip(" \t"),
-            )
-        )
-    return method, target, headers
+        name = sink.field_name(lines[index].decode("latin-1"))
+        if name is not None and name.lower() == "host":
+            lines[index] = name.encode("latin-1") + b": " + host.encode("latin-1")
+    return b"\r\n".join(lines)
 
 
 def _head_file(run: Path, body_file: str) -> Path:
@@ -232,9 +203,10 @@ def _head_file(run: Path, body_file: str) -> Path:
 def request(run: Path, body_file: str) -> Request:
     """One recorded request, read off disk. Raises `HeadUnreadable`.
 
-    The body is read whole and not looked at; the head is read from the octets
-    and the receipt time from the parse beside them, which is the one thing in
-    that file the request did not say (`SPEC.md` §6.3).
+    The body is read whole and not looked at; the head is the octets, read
+    whole and checked only for being a head (`terminated`), and the receipt
+    time comes from the parse beside them, which is the one thing in that file
+    the request did not say (`SPEC.md` §6.3).
     """
     body_path = run / body_file
     try:
@@ -250,12 +222,20 @@ def request(run: Path, body_file: str) -> Request:
             f"{_head_file(run, body_file).name} is not readable ({missing}), so "
             f"nothing here says what request {body_file} arrived in"
         ) from None
-    method, target, headers = head(octets)
+    if not octets:
+        raise HeadUnreadable(
+            f"{_head_file(run, body_file).name} is empty, so nothing here says "
+            f"what request {body_file} arrived in"
+        )
+    if not terminated(octets):
+        raise HeadUnreadable(
+            f"{_head_file(run, body_file).name} does not end with the empty "
+            f"line that closes a header block, and the body sent after it "
+            f"would arrive as more of the head"
+        )
     return Request(
         file=body_file,
-        method=method,
-        target=target,
-        headers=tuple(headers),
+        head=octets,
         body=body,
         received_at=manifest.received_at(run, body_file),
     )
@@ -284,7 +264,9 @@ def gap(earlier: str | None, later: str | None) -> tuple[float | None, str | Non
     return seconds, None
 
 
-Send = Callable[[str, str, Sequence[tuple[str, str]], bytes], int]
+# (the captured head octets, the body) -> the answer's status. Raises on a
+# send that did not happen. `SPEC.md` §6.2.
+Send = Callable[[bytes, bytes], int]
 Log = Callable[[str], None]
 
 
@@ -325,9 +307,7 @@ def replay(
                 slept = seconds
         previous = recorded.received_at
         try:
-            status = send(
-                recorded.method, recorded.target, recorded.headers, recorded.body
-            )
+            status = send(recorded.head, recorded.body)
         except Exception as failure:
             outcomes.append(
                 Outcome(
@@ -344,11 +324,17 @@ def replay(
 
 
 def sender(host: str, port: int, *, timeout: float = forward.DEFAULT_TIMEOUT) -> Send:
-    """The tee's forward, pointed at `--to` (`SPEC.md` §4.3, §6.2).
+    """The real `send`, pointed at `--to` (`SPEC.md` §6.2).
 
-    The same object, so the two differences between the exporter's request and
-    this one are the two that function already names: `Host` is the new
-    destination, and the headers that described a connection that no longer
-    exists are gone.
+    The captured head with its `Host` line naming `host:port` (`retarget`),
+    then the body, on one connection of `forward.send_head`'s. That is the
+    only difference between the request the exporter made and this one.
     """
-    return forward.HttpForward(host, port, timeout=timeout)
+    destination_host = f"{host}:{port}"
+
+    def send(head: bytes, body: bytes) -> int:
+        return forward.send_head(
+            host, port, retarget(head, destination_host), body, timeout=timeout
+        )
+
+    return send

@@ -3,6 +3,36 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A4a — replay sends the captured head
+
+Run-2 review, A4 (N-6); the decision of 2026-10-11 ("replay").
+
+- **`zoo replay` writes `NNNN.headers.raw` onto the socket itself** (`SPEC.md`
+  §6, §6.2), with only the `Host` line substituted, then the body; it no
+  longer goes through `http.client`. The replayed head is byte-identical to
+  the captured one except `Host`. Gone: `Host` moved to the front, value
+  whitespace normalised (`x:v` sent as `x: v`), `HTTP/1.0` sent as
+  `HTTP/1.1`, bare-LF line endings sent as CRLF — and the hop-by-hop
+  headers, which the replay used to drop on §4.3's rule and now sends as
+  captured (§6.5). The tee's forward to the Collector is unchanged.
+- **The `Host` line** is a line of §2.3's CRLF split whose field name is
+  `Host`: every such line names the destination, a head with none gets none,
+  and a `Host:` inside another line (after a bare LF; an all-LF head) is not
+  touched.
+- **`--json`** replays `json/NNNN.headers.raw` — the head the Collector sent,
+  as the json sink recorded it — by the same rule.
+- **A bare CR in a header value now goes out** as it arrived, where the
+  replay used to refuse it because `http.client` would not send it. A head
+  that is empty or unterminated is refused per body, named, exit 1.
+- A new seam, `send` (§6.2), whose real implementation is
+  `forward.send_head`; with §4.8's `forward` it is the package's only
+  outbound socket. `sink.field_name` is the one token rule the split and the
+  substitution share.
+- Tests: the head-identity test over five head shapes, red on the parent and
+  on a replay through `http.client`; `retarget` (six); empty and unterminated
+  heads (three); no `http.client` connection opened; the bare-CR test now
+  asserts the head goes out identical.
+
 ## A3f — the manifest is sealed, and the parse cannot invent
 
 Run-2 review, A3b-1 and A3c; the decisions of 2026-10-11 ("the seal", "the

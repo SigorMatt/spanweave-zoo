@@ -112,6 +112,20 @@ _TCHAR = frozenset(
 _OWS = " \t"
 
 
+def field_name(line: str) -> str | None:
+    """The header name one line of §2.3's split carries, or `None`.
+
+    What precedes the line's first colon, as sent, when that is a non-empty
+    field-name token (RFC 9110 §5.6.2); otherwise the line is no header. One
+    rule, used by the split below and by the replayer's `Host` substitution
+    (`SPEC.md` §6.2), so the two cannot disagree about what a header line is.
+    """
+    name, colon, _ = line.partition(":")
+    if colon and name and all(character in _TCHAR for character in name):
+        return name
+    return None
+
+
 def split_head(head: bytes) -> dict[str, object]:
     """What `NNNN.headers.json` says a head carried (`SPEC.md` §2.3).
 
@@ -142,9 +156,9 @@ def split_head(head: bytes) -> dict[str, object]:
     for line in lines[1:]:
         if not line:
             continue
-        name, colon, value = line.partition(":")
-        if colon and name and all(character in _TCHAR for character in name):
-            headers.append([name, value.strip(_OWS)])
+        name = field_name(line)
+        if name is not None:
+            headers.append([name, line[len(name) + 1 :].strip(_OWS)])
         else:
             unparsed.append(line)
     document: dict[str, object] = {

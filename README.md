@@ -103,10 +103,10 @@ uv run zoo replay captures/z4/2026-10-09T12-00-00Z --to http://127.0.0.1:8080 --
 Sends every body of a capture to another receiver **with its captured head**,
 in receipt order, adding nothing (`SPEC.md` §6). `--raw` (the default) sends the
 bytes the exporter sent; `--json` sends the Collector's re-encoding of them.
-The method, the target and every header come from `NNNN.headers.raw` -- the
-octets, not the parse beside them -- so a request the stdlib could not
-represent is either sent as it arrived or refused by name, never tidied into
-one it can. `--timing` sleeps the recorded inter-arrival gaps, so the receiver
+The head is `NNNN.headers.raw` -- the octets, not the parse beside them --
+written onto the socket as it arrived with only its `Host` line changed, so a
+request the stdlib could not represent goes out as it arrived, never tidied
+into one it can. `--timing` sleeps the recorded inter-arrival gaps, so the receiver
 sees the pattern the exporter had.
 
 **A send that does not succeed never stops the rest.** Every remaining body

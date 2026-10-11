@@ -869,7 +869,7 @@ columns line up — that would be improving the capture.
 
 | Seam | What it is | Why |
 |---|---|---|
-| `forward` | called with the method, path, headers and body once the body is on disk; returns the forwarded request's HTTP status or raises | the only outbound socket in the package. A test drives the tee with a forward that records what it was handed, so the tee's mechanics need no Collector |
+| `forward` | called with the method, path, headers and body once the body is on disk; returns the forwarded request's HTTP status or raises | one of the package's two outbound sockets, with §6.2's `send`. A test drives the tee with a forward that records what it was handed, so the tee's mechanics need no Collector |
 | `launch` | called with the resolved config, environment and ports; returns a handle that can be stopped — saying whether it took a `SIGKILL` — **asked whether the child is still there**, and told where to keep the child's log once the run directory exists | starting a process is touching the world. A test passes a launcher that starts nothing, reports the pinned version, and can say the child exited — which is how §4.6's mid-run failure is driven without killing anything |
 | `sleep` | the readiness wait between looks, a bounded number of them | no module under `spanweave_zoo/` reads a clock or sleeps on its own (`CLAUDE.md`); `cli.py` passes the one real `sleep`, as it passes the one real `now` |
 | `after_forward` | called with each forward's outcome once it is in the manifest | one printed line per forward, and the way a test observes a forward without polling a file |
@@ -1306,11 +1306,14 @@ zoo replay captures/z4/2026-10-10T09-00-00Z --to http://127.0.0.1:4318
 zoo replay captures/z4/2026-10-10T09-00-00Z --to http://127.0.0.1:8080 --json --timing
 ```
 
-Re-send each recorded body to another receiver with its captured headers, in
-receipt order, **adding nothing** (`CLAUDE.md` §0.6 rule 5). It is the tee's
-forward (§4.3) pointed somewhere else and read off disk instead of out of a
-handler, and it is deliberately the same code: re-sending captured bytes is one
-act, and two implementations of it would be two chances to improve them.
+Re-send each recorded body to another receiver with its captured head, in
+receipt order, **adding nothing** (`CLAUDE.md` §0.6 rule 5). It writes the
+captured head octets onto a socket itself, with only the `Host` line
+substituted, and then the body (§6.2). It is **not** the tee's forward (§4.3):
+that one hands the pieces of a head to `http.client`, which writes a head of
+its own from them — and a replay is a claim about the head, where a forward to
+the Collector is only a way to get a body re-encoded (the decision of
+2026-10-11, "replay").
 
 The replayer is what makes a capture usable by a receiver that was not there
 when it was recorded — the audit (§7) is its first caller, and it sends the
@@ -1352,34 +1355,76 @@ and a replay that sent nothing must not read as a replay that worked
 path that is not a capture, or one whose `MANIFEST.json` is absent or
 unreadable, on §5.6's rule: nothing was sent.
 
-### 6.2 The headers are the captured octets
+### 6.2 The head is the captured octets, with the `Host` line substituted
 
-Each request's method, target and headers come from its **`NNNN.headers.raw`**
-— the head as the octets arrived (§2.3) — and **not** from `NNNN.headers.json`.
-That is the whole of why A3c kept the octets: the parse is what Python could
-represent, and a bare CR in a header value arrives there truncated with every
-header after it absent altogether. A replayer built on the parse would send a
-tidied request that no exporter ever sent, and the capture it claimed to be
-replaying would be sitting on disk next to it saying otherwise.
+Each request's head is its **`NNNN.headers.raw`** — the request line and the
+header block as the octets arrived (§2.3) — and **not** `NNNN.headers.json`,
+and not a head rebuilt from either. That is the whole of why A3c kept the
+octets: a parse is what some parser could represent, and a replayer built on
+one sends a tidied request that no exporter sent, with the capture it claimed
+to be replaying sitting on disk next to it saying otherwise.
 
-The octets are read as lines, each ending `CRLF` or `LF` as it was sent: the
-first is the request line, the rest are the header block up to the blank line
-that ends it. A line beginning with a space or a tab is a continuation of the
-one before it (RFC 9110's deprecated `obs-fold`) and is joined to it with the
-line ending kept, because a value that arrived folded arrived folded.
+What goes out on one connection is those octets with **one** line substituted,
+then the body, and nothing else:
 
-What goes out is then §4.3's rule exactly, through the same function: every
-header in the order sent, repeats included, minus `Host` — the destination has
-changed — and the hop-by-hop headers of RFC 9110 §7.6.1. `Content-Type`,
-`Content-Encoding`, `Content-Length` and `User-Agent` go through untouched.
+- **The `Host` line.** The lines are §2.3's — the octets split on CRLF and on
+  nothing else — and a `Host` line is a line after the request line and before
+  the empty line whose field name (§2.3's token rule) is `Host` in any case. It
+  becomes the name as sent, `: `, and the `--to` destination as `host:port`;
+  its CRLF stays. Every such line is substituted, so a head that carried two
+  names the destination in both. A head that carried **none** gets none —
+  adding a header is adding something — and a `Host:` that §2.3's split puts
+  inside another line (after a bare LF, or in a head whose every line ends in
+  a bare LF) is inside that line and is not touched, exactly as
+  `NNNN.headers.json` does not list it.
+- **Everything else as captured, octet for octet**: the request line (an
+  `HTTP/1.0` stays `HTTP/1.0`), the headers in the order sent, repeats
+  included, each name and value with the spacing it had, every line ending as
+  it was (a bare LF stays a bare LF), and the hop-by-hop headers of RFC 9110
+  §7.6.1 too — unlike the tee's forward (§4.3), the replay does not drop them,
+  because they are octets of the head the exporter sent and the replay is a
+  claim about that head.
 
-A head the replayer cannot put on the wire is **not tidied into one it can**.
-`NNNN.headers.raw` missing, holding no request line, or holding a value the
-sender refuses — the bare CR is one, because RFC 9110 forbids it and
-`http.client` will not send it — is one line naming the file and the reason,
-the rest of the capture still sent, and a non-zero exit (§6.4). The alternative
-is a replay that quietly sent something else, which is the one failure the
-record exists to make impossible.
+So the replayed head is **byte-identical to `NNNN.headers.raw` except the
+`Host` line**, and a test holds that by replaying into a fresh `zoo sink`,
+whose own `NNNN.headers.raw` is what actually crossed the socket — for a
+captured head with `Host` not first, with no space after a colon, with
+`HTTP/1.0`, with bare-LF line endings, and with hop-by-hop headers, each of
+which a replay through `http.client` changed.
+
+A head **HTTP forbids** goes out as it arrived. A bare CR inside a value is
+the case: it arrived on a socket, so it goes out on one, and the receiver's
+answer to it is a fact about the receiver. The same holds for a head whose
+framing the recorded body does not match — a `Transfer-Encoding: chunked`
+POST is recorded with a zero-byte body (§3.7), and replayed it leaves the
+receiver waiting for chunks; the timeout that follows is the answer, and it
+counts as not sent (§6.4).
+
+**`--json`.** `json/NNNN.json` is a body the Collector POSTed to the json
+sink, and that sink recorded the Collector's head beside it as
+`json/NNNN.headers.raw` by the same rule as the raw side's (§2.3, §4.5). So
+"the head as the Collector sent it" is that file, octet for octet, and
+`--json` replays it by the same rule: those octets with the `Host` line
+substituted, then the body. Nothing about it is reconstructed from the raw
+side's head or from the Collector's configuration; a `json/` body whose
+`NNNN.headers.raw` is absent is a head that cannot be read (below).
+
+A head that **is not one** is not sent and is not mended into one. A
+`NNNN.headers.raw` that is missing or unreadable, that is empty, or that does
+not end with the empty line closing a header block (a CRLF or a bare LF after
+the last line's ending) is one line naming the file and the reason, the rest
+of the capture still sent, and a non-zero exit (§6.4): a body written after a
+head that never ended would arrive as more of the head, which is a request no
+exporter made. The sink never records such a head; a capture holding one was
+made some other way.
+
+**The `send` seam.** The send is injected, like §4.8's `forward`: called with
+one request's captured head octets and its body, it returns the answer's
+status or raises. `cli.py` passes the real one, which substitutes the `Host`
+line and writes the octets on a socket it connects to `--to`, and reads the
+answer with the stdlib's response parser so that it is framed and the
+connection ends cleanly; a test passes one that records what it was handed.
+Together with §4.8's `forward` it is the only outbound socket in the package.
 
 ### 6.3 `--timing`
 
@@ -1426,7 +1471,7 @@ finding and not an error (`CLAUDE.md` §0.6 rule 7).
 | Exit | When |
 |---|---|
 | **0** | every body was sent and every answer was a 2xx |
-| **1** | any answer was not a 2xx, or any body could not be sent at all — an unreadable head, a value the wire refuses, a body file the manifest lists that is not on disk, a connection that failed |
+| **1** | any answer was not a 2xx, or any body could not be sent at all — a head that is missing, empty or unterminated (§6.2), a body file the manifest lists that is not on disk, a connection that failed or an answer that never came |
 | **2** | nothing was sent: the path is not a capture, its manifest is unreadable, or it holds no body in the chosen directory |
 
 The summary line says how many were sent and how many did not answer 2xx, and
@@ -1443,10 +1488,13 @@ not record anything: a replay produces no capture, and a receiver that wants
 one points a `zoo capture` at itself.
 
 It also adds nothing to the request. No header of its own, no `Accept-Encoding`
-the exporter did not send, no re-framing, no re-ordering. The only two
-differences between the request the exporter made and the request the replayer
-makes are the ones §4.3 already names: the `Host` names the new destination,
-and the headers that described a connection that no longer exists are gone.
+the exporter did not send, no re-framing, no re-ordering, no re-spacing, no
+re-terminating, no protocol version of its own. The **one** difference between
+the head the exporter sent and the head the replayer sends is the `Host` line,
+which names the new destination (§6.2). Where the head carried hop-by-hop
+headers, they go out too: the connection they described no longer exists, but
+the replay sends the head that was sent, and a receiver that reads them is
+reading what the exporter said.
 
 ## 7. The audit — A5
 

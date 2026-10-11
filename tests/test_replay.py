@@ -79,10 +79,10 @@ class Spy:
 
     def __init__(self, *statuses: int) -> None:
         self.statuses = list(statuses) or [200]
-        self.calls: list[tuple[str, str, list[tuple[str, str]], bytes]] = []
+        self.calls: list[tuple[bytes, bytes]] = []
 
-    def __call__(self, method, target, headers, body):
-        self.calls.append((method, target, list(headers), body))
+    def __call__(self, head, body):
+        self.calls.append((head, body))
         return self.statuses[min(len(self.calls) - 1, len(self.statuses) - 1)]
 
 
@@ -202,16 +202,17 @@ def sent_body(run: Path, number: int = 1) -> bytes:
 def with_host(head: bytes, port: int) -> bytes:
     """`head` with its `Host` line pointing at `port` instead.
 
-    The one line a replay is *expected* to differ in: the destination has
-    changed, and `SPEC.md` §4.3 names `Host` as one of the two exceptions to
-    byte-identity. Everything else in the head must match octet for octet.
+    The one line a replay is *expected* to differ in (`SPEC.md` §6.2): the
+    destination has changed. Written independently of the replayer, on
+    §2.3's notion of a line -- split on CRLF and nothing else -- with the name
+    kept as sent. Everything else in the head must match octet for octet.
     """
     lines = head.split(b"\r\n")
     return b"\r\n".join(
-        f"Host: 127.0.0.1:{port}".encode("latin-1")
-        if line.lower().startswith(b"host:")
+        line.partition(b":")[0] + f": 127.0.0.1:{port}".encode("latin-1")
+        if index and line.partition(b":")[0].lower() == b"host"
         else line
-        for line in lines
+        for index, line in enumerate(lines)
     )
 
 
@@ -252,6 +253,84 @@ def test_a_replayed_head_is_the_captured_octets_with_only_the_host_changed(tmp_p
     assert sent_head(tmp_path / "again") == with_host(sent_head(FIXTURE), port)
 
 
+# The four differences the run-2 review found (N-6) between a captured head
+# and the head a replay put on the wire, plus the hop-by-hop drop, each in a
+# head a client could really send. `SPEC.md` §6.2: only the `Host` line moves.
+DIFFERENT_HEADS = {
+    # `Host` not the first header: the replay moved it to the front.
+    "host-not-first": lambda port, body: (
+        b"POST /v1/traces HTTP/1.1\r\n"
+        + b"User-Agent: otel/1.0\r\n"
+        + f"Host: 127.0.0.1:{port}\r\n".encode("latin-1")
+        + b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode("latin-1")
+    ),
+    # No space after the colon, and a tab: the replay wrote `name: value`.
+    "value-whitespace": lambda port, body: (
+        b"POST /v1/traces HTTP/1.1\r\n"
+        + f"Host:127.0.0.1:{port}\r\n".encode("latin-1")
+        + b"X-Tight:v\r\nX-Tab:\tv \r\n"
+        + b"Content-Type:application/json\r\n"
+        + f"Content-Length:{len(body)}\r\n\r\n".encode("latin-1")
+    ),
+    # An HTTP/1.0 request line: the replay sent HTTP/1.1.
+    "http-1.0": lambda port, body: (
+        b"POST /v1/traces HTTP/1.0\r\n"
+        + f"Host: 127.0.0.1:{port}\r\n".encode("latin-1")
+        + b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode("latin-1")
+    ),
+    # Every line ending a bare LF: the replay sent CRLF. (On §2.3's split
+    # this head has no Host *line*, so nothing in it changes at all.)
+    "lf-only": lambda port, body: (
+        b"POST /v1/traces HTTP/1.1\n"
+        + f"Host: 127.0.0.1:{port}\n".encode("latin-1")
+        + b"Content-Type: application/json\n"
+        + f"Content-Length: {len(body)}\n\n".encode("latin-1")
+    ),
+    # A hop-by-hop header: the replay dropped it.
+    "hop-by-hop": lambda port, body: (
+        b"POST /v1/traces HTTP/1.1\r\n"
+        + f"Host: 127.0.0.1:{port}\r\n".encode("latin-1")
+        + b"Connection: keep-alive\r\nKeep-Alive: timeout=5\r\n"
+        + b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode("latin-1")
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(DIFFERENT_HEADS))
+def test_a_replayed_head_differs_from_the_captured_one_in_the_host_line_only(
+    tmp_path, shape
+):
+    """`SPEC.md` §6.2 and the decision of 2026-10-11 ("replay").
+
+    Replayed into a fresh `zoo sink`, whose `.headers.raw` is what actually
+    crossed the socket, the head is the captured octets with the `Host` line
+    substituted and nothing else: not re-ordered, not re-spaced, not upgraded
+    to HTTP/1.1, not re-terminated, not stripped of its hop-by-hop headers.
+    A replay built on `http.client` fails every one of these, because
+    `http.client` writes a head of its own from the pieces it is handed.
+    """
+    build = DIFFERENT_HEADS[shape]
+    source = crafted(
+        tmp_path / "source",
+        [(lambda port: build(port, JSON_BODY), JSON_BODY)],
+        Clock("2026-10-09T12:00:00+00:00"),
+    )
+    again = tmp_path / "again"
+    with destination(again / "raw") as (_, port):
+        outcomes = replay.replay(
+            source,
+            source=replay.RAW,
+            send=replay.sender("127.0.0.1", port),
+            log=lambda line: None,
+        )
+    assert [outcome.status for outcome in outcomes] == [200], outcomes
+    assert sent_head(again) == with_host(sent_head(source), port)
+    assert sent_body(again) == JSON_BODY
+
+
 def test_the_json_side_sends_the_collectors_re_encoding(tmp_path):
     # `SPEC.md` §6.1: `--json` is the other form of the same export (§2.4).
     again = tmp_path / "again"
@@ -269,12 +348,24 @@ def test_the_json_side_sends_the_collectors_re_encoding(tmp_path):
     )
 
 
-def test_the_replayer_sends_through_the_tees_own_forward(tmp_path):
-    # `SPEC.md` §6.2: re-sending captured bytes is one act, and the replayer
-    # does not get a second implementation of it to improve.
-    from spanweave_zoo import forward
+def test_the_replayer_does_not_send_through_http_client(tmp_path, monkeypatch):
+    # The decision of 2026-10-11 ("replay"), held structurally as well as by
+    # the head-identity tests above: `http.client` writes a head of its own,
+    # so the replay must not reach for one to write with.
+    import http.client
 
-    assert isinstance(replay.sender("127.0.0.1", 1), forward.HttpForward)
+    def refused(*args, **kwargs):
+        raise AssertionError("the replay opened an http.client connection")
+
+    monkeypatch.setattr(http.client.HTTPConnection, "__init__", refused)
+    with destination(tmp_path / "again" / "raw") as (_, port):
+        outcomes = replay.replay(
+            FIXTURE,
+            source=replay.RAW,
+            send=replay.sender("127.0.0.1", port),
+            log=lambda line: None,
+        )
+    assert [outcome.status for outcome in outcomes] == [200], outcomes
 
 
 # --- order, encoding, and the bytes in between -------------------------------
@@ -303,8 +394,10 @@ def test_the_bodies_go_out_in_the_order_the_capture_recorded_them(tmp_path):
         "raw/0002.body",
         "raw/0003.body",
     ]
-    assert [body for _, _, _, body in spy.calls] == [b"first", b"second", b"third"]
-    assert [target for _, target, _, _ in spy.calls] == [sink.TRACES_PATH] * 3
+    assert [body for _, body in spy.calls] == [b"first", b"second", b"third"]
+    assert [head for head, _ in spy.calls] == [
+        sent_head(source, number) for number in (1, 2, 3)
+    ]
 
 
 def test_a_gzipped_body_goes_out_gzipped_with_the_encoding_it_declared(tmp_path):
@@ -340,21 +433,63 @@ def test_a_gzipped_body_goes_out_gzipped_with_the_encoding_it_declared(tmp_path)
     assert sent_head(again) == with_host(sent_head(source), port)
 
 
-def test_head_joins_a_folded_value_as_it_arrived(tmp_path):
-    # `SPEC.md` §6.2: a value that arrived folded arrived folded.
-    method, target, headers = replay.head(
-        b"POST /v1/traces HTTP/1.1\r\nX-Folded: one\r\n\ttwo\r\nHost: h\r\n\r\n"
+def test_retarget_substitutes_the_host_line_and_nothing_else():
+    # `SPEC.md` §6.2: the name as sent, one space, the destination; the line's
+    # CRLF and every other octet as they were.
+    head = b"POST /v1/traces HTTP/1.0\r\nX-A:a\r\nhOsT:\told:1 \r\nX-B: b\r\n\r\n"
+    assert replay.retarget(head, "new:2") == (
+        b"POST /v1/traces HTTP/1.0\r\nX-A:a\r\nhOsT: new:2\r\nX-B: b\r\n\r\n"
     )
-    assert (method, target) == ("POST", "/v1/traces")
-    assert headers == [("X-Folded", "one\r\n\ttwo"), ("Host", "h")]
 
 
-def test_head_keeps_every_header_in_order_repeats_included():
-    # `SPEC.md` §4.3's rule, which §6.2 re-sends by: a dict would keep one.
-    _, _, headers = replay.head(
-        b"POST /v1/traces HTTP/1.1\r\nX-Twice: a\r\nX-Twice: b\r\n\r\n"
+def test_retarget_adds_no_host_to_a_head_that_carried_none():
+    # Adding a header is adding something (`CLAUDE.md` §0.6 rule 5).
+    head = b"POST /v1/traces HTTP/1.0\r\nContent-Length: 0\r\n\r\n"
+    assert replay.retarget(head, "new:2") == head
+
+
+def test_retarget_names_the_destination_in_every_host_line():
+    head = b"POST / HTTP/1.1\r\nHost: a\r\nX: y\r\nHost: b\r\n\r\n"
+    assert replay.retarget(head, "n:1") == (
+        b"POST / HTTP/1.1\r\nHost: n:1\r\nX: y\r\nHost: n:1\r\n\r\n"
     )
-    assert headers == [("X-Twice", "a"), ("X-Twice", "b")]
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        # After a bare LF, `Host:` is inside the X-A line on §2.3's split.
+        b"POST / HTTP/1.1\r\nX-A: a\nHost: old\r\n\r\n",
+        # An LF-only head is one line on §2.3's split: no Host line at all.
+        b"POST / HTTP/1.1\nHost: old\n\n",
+        # Not a header line: no colon after a token.
+        b"POST / HTTP/1.1\r\nHost old\r\n\r\n",
+        # The request line is never a header, whatever it says.
+        b"Host: old\r\n\r\n",
+    ],
+)
+def test_retarget_touches_no_host_that_is_not_a_header_line(head):
+    assert replay.retarget(head, "new:2") == head
+
+
+@pytest.mark.parametrize(
+    "octets, said",
+    [
+        (b"", "is empty"),
+        (b"POST /v1/traces HTTP/1.1\r\nHost: h\r\n", "does not end"),
+        (b"POST /v1/traces HTTP/1.1\r\nHost: h", "does not end"),
+    ],
+)
+def test_a_head_that_is_empty_or_unterminated_is_not_sent(tmp_path, octets, said):
+    # `SPEC.md` §6.2: a body sent after a head that never ended would arrive
+    # as more of the head -- a request no exporter made.
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "0001.body").write_bytes(b"x")
+    (tmp_path / "raw" / "0001.headers.raw").write_bytes(octets)
+    with pytest.raises(replay.HeadUnreadable) as refused:
+        replay.request(tmp_path, "raw/0001.body")
+    assert said in str(refused.value)
+    assert "0001.headers.raw" in str(refused.value)
 
 
 # --- `--timing` --------------------------------------------------------------
@@ -489,18 +624,15 @@ def test_a_non_2xx_does_not_stop_the_rest_and_exits_non_zero(tmp_path, capsys):
     assert "1 that did not answer 2xx" in printed
 
 
-def test_a_head_the_wire_refuses_is_not_tidied_into_one_it_accepts(tmp_path, capsys):
-    """The capture's octets, or nothing: `SPEC.md` §6.2.
+def test_a_head_http_forbids_goes_out_as_it_arrived_and_is_not_tidied(tmp_path):
+    """The capture's octets, bare CR and all: `SPEC.md` §6.2.
 
-    The first request's `User-Agent` carries a **bare CR**. HTTP forbids it,
-    real clients emit it, `email`'s parser truncates the value at it, and
-    `http.client` refuses to put the real value on a socket. A replayer that
-    tidied the value into one the wire accepts would cheerfully send
-    `User-Agent: otel` and exit 0, having sent a request no exporter made with
-    the capture that says otherwise on disk beside it. So the send is refused,
-    named, and the second body still goes out. (Since A3f `NNNN.headers.json`
-    is the CRLF split of the octets and carries the whole value too, `SPEC.md`
-    §2.3.)
+    The request's `User-Agent` carries a **bare CR**. HTTP forbids it, real
+    clients emit it, and `http.client` refuses to put it on a socket -- so
+    before A4a this send was refused. The replay now writes the octets itself,
+    and they arrived on a socket, so they go out on one: the receiver's answer
+    to them is a fact about the receiver. What must never happen is the
+    tidied request, `User-Agent: otel`, which no exporter sent.
     """
     source = crafted(
         tmp_path / "source",
@@ -515,19 +647,18 @@ def test_a_head_the_wire_refuses_is_not_tidied_into_one_it_accepts(tmp_path, cap
         ],
         Clock("2026-10-09T12:00:00+00:00"),
     )
-    # The capture really does hold the two, and they really do differ.
+    # The capture really does hold the bare CR, in the octets and the split.
     assert b"otel\rpython/1.0" in sent_head(source)
     parsed = json.loads((source / "raw" / "0001.headers.json").read_text())
     assert ["User-Agent", "otel\rpython/1.0"] in parsed["headers"]
 
-    with scripted(200) as (server, port):
+    again = tmp_path / "again"
+    with destination(again / "raw") as (_, port):
         status = cli.main(["replay", str(source), "--to", f"http://127.0.0.1:{port}"])
-        received = list(server.bodies)
-    assert received == [b"two"], "a head the wire refuses was tidied and sent"
-    assert status == 1
-    printed = capsys.readouterr().out
-    assert "raw/0001.body  not sent" in printed
-    assert "ValueError" in printed
+    assert status == 0
+    assert sent_head(again, 1) == with_host(sent_head(source, 1), port)
+    assert sent_head(again, 2) == with_host(sent_head(source, 2), port)
+    assert [sent_body(again, 1), sent_body(again, 2)] == [b"one", b"two"]
 
 
 def test_a_body_the_manifest_lists_that_is_not_on_disk_is_named(tmp_path):
