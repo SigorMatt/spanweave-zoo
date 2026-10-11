@@ -50,6 +50,7 @@ not a decode: it hands on the bytes and the headers it was given.
 from __future__ import annotations
 
 import io
+import socketserver
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -475,6 +476,22 @@ class _Server(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], recorder: Recorder) -> None:
         self.recorder = recorder
         super().__init__(address, _Handler)
+
+    def server_bind(self) -> None:
+        """Bind, and resolve no name (`SPEC.md` §3.7).
+
+        `http.server.HTTPServer.server_bind` follows the bind with
+        `socket.getfqdn(host)` -- a reverse lookup of the address it was given,
+        whose answer only a CGI or WSGI environment ever reads. On a macOS CI
+        runner the first such lookup in a process took tens of seconds and,
+        being a C call, held off the process's own signal handlers while it
+        ran; a sink is a bind and nothing else, so the name is the address it
+        was given.
+        """
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def make_server(recorder: Recorder, *, host: str, port: int) -> ThreadingHTTPServer:

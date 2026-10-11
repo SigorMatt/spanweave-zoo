@@ -58,6 +58,7 @@ PATIENCE = 60.0
 STUB_BODY = """
 import os
 import signal
+import socketserver
 import sys
 import threading
 import time
@@ -79,6 +80,15 @@ class Answer(BaseHTTPRequestHandler):
         pass
 
 
+class Server(ThreadingHTTPServer):
+    # Bind and resolve no name, as the zoo's own sink does (SPEC.md 3.7):
+    # the stock server_bind's getfqdn is a reverse lookup that took longer
+    # than the whole readiness wait on a macOS runner.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 NAMES = {signal.SIGINT: "interrupt", signal.SIGTERM: "terminated"}
 
 
@@ -95,7 +105,7 @@ signal.signal(
     signal.SIGTERM, signal.SIG_IGN if BEHAVIOUR == "stubborn" else stop
 )
 host, _, port = os.environ["ZOO_COLLECTOR_OTLP_HTTP"].rpartition(":")
-server = ThreadingHTTPServer((host, int(port)), Answer)
+server = Server((host, int(port)), Answer)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pid"), "w") as f:
     f.write(str(os.getpid()))

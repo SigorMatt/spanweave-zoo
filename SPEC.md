@@ -396,6 +396,16 @@ guess one it was not: decoding a `Transfer-Encoding` is decoding. What it could
 see is what the capture says it saw, and the header that said so is in the
 record.
 
+It **binds and resolves no name**. `http.server`'s own bind follows with
+`socket.getfqdn(host)` — a reverse lookup of the address it was just given,
+which only a CGI or WSGI environment ever reads — and the sink's server skips
+it: its `server_name` is the `--host` it was given, as given. A sink is a bind
+and nothing else, and the lookup is not free: on a macOS CI runner the first
+one in a process took tens of seconds, during which the process's own signal
+handlers could not run, so a `zoo capture` started as its own process sat
+silent past its first bind. `tests/test_sink.py` fails if binding a sink
+resolves a name.
+
 ## 4. The Collector, and the tee
 
 The sink records bytes (§3). The Collector makes those same bytes readable as

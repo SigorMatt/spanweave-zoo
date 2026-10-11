@@ -32,6 +32,14 @@ the stand-in and with the stock binary alike.
 - Tests: `tests/test_shutdown.py` sends `SIGINT` to the process group of a real
   `zoo capture` process; the stock-binary variant is a `needs_collector` test
   in `tests/test_collector_real.py`.
+- **A sink binds and resolves no name** (`SPEC.md` §3.7; fixes 89b8dbf's
+  `check (macos-latest, 3.12)` leg). `http.server`'s bind follows with
+  `socket.getfqdn(host)`, a reverse lookup; on the macOS runner the first one
+  in a process took tens of seconds, during which the process's own signal
+  handlers could not run. A `zoo capture` run as its own process paid it on its first sink bind and the
+  stand-in Collector on its receiver bind, which overran the readiness wait.
+  The sink now binds without the lookup; so does the stand-in.
+  `tests/test_sink.py` fails if binding a sink resolves a name.
 
 ## A4 — `zoo replay`: the capture's bytes, and its head, sent again
 

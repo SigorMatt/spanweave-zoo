@@ -561,3 +561,22 @@ def test_the_sink_command_refuses_without_binding(tmp_path, capsys):
     # Port 1 would need privileges to bind: reaching the bind at all fails.
     assert cli.main(["sink", "--port", "1", "--out", str(raw)]) != 0
     assert "refus" in capsys.readouterr().err.lower()
+
+
+def test_binding_a_sink_resolves_no_name(tmp_path, monkeypatch):
+    # `http.server`'s own bind follows with `socket.getfqdn(host)`, a reverse
+    # lookup. On a macOS CI runner the first one in a process outlasted the
+    # Collector's whole readiness wait, and a sink is a bind and nothing else
+    # (`SPEC.md` §3.7). A lookup is a failure here, not a slow pass.
+    def no_lookup(*args):
+        raise AssertionError(f"the sink resolved a name: {args!r}")
+
+    monkeypatch.setattr(socket, "getfqdn", no_lookup)
+    monkeypatch.setattr(socket, "gethostbyaddr", no_lookup)
+    recorder = sink.Recorder(tmp_path / "raw", now=Clock())
+    server = sink.make_server(recorder, host="127.0.0.1", port=0)
+    try:
+        assert server.server_name == "127.0.0.1"
+        assert server.server_port == server.server_address[1]
+    finally:
+        server.server_close()
