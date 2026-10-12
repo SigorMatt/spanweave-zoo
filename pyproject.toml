@@ -35,9 +35,9 @@ classifiers = [
 # ZERO RUNTIME DEPENDENCIES, and not by accident. The sink is `http.server`,
 # the manifest is `json`, the hashes are `hashlib`: a recorder that must be
 # believed byte for byte is better with nothing between it and the socket.
-# `spanweave` and `spanweave_live` are NOT dependencies of this package --
-# they are what it captures for, and the `audit` extra below is the only
-# place they appear (`CLAUDE.md` §0.6).
+# `spanweave`, `spanweave_live` and `agentgolden` are NOT dependencies of
+# this package -- they are what it captures for and what the audit smokes, and
+# the `audit` extra below is the only place they appear (`CLAUDE.md` §0.6).
 dependencies = []
 
 [project.scripts]
@@ -63,11 +63,11 @@ dev = [
 audit = [
     "spanweave @ git+https://github.com/SigorMatt/spanweave@fec7da27af517ad8b58ae3ec57827916aae60674",
     "spanweave-live @ git+https://github.com/SigorMatt/spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d",
-    # The audit's step 5 (`SPEC.md` §7.6): agentgolden's `signature` on each
-    # final graph, as a smoke, no rules evaluated. Pinned like the other two,
-    # decided 2026-10-12 (`OPEN_QUESTIONS.md` §5). It requires
-    # `spanweave>=0.9.1,<1.0`, which the pin above (0.9.1) satisfies, so the
-    # resolver adds no second spanweave.
+    # The audit's step 5 (`SPEC.md` §7.3; its seam, §7.6): agentgolden's
+    # `signature` on each final graph, as a smoke, no rules evaluated. Pinned
+    # like the other two, decided 2026-10-12 (`OPEN_QUESTIONS.md` §5). It
+    # requires `spanweave>=0.9.1,<1.0`, which the pin above (0.9.1) satisfies,
+    # so the resolver adds no second spanweave.
     "agentgolden @ git+https://github.com/SigorMatt/agentgolden@aa1847f2a2ad51a95b98ab3e180bc5d211e6b138",
 ]
 

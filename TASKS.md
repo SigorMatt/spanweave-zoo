@@ -15,8 +15,9 @@ the way it was.
 Branch `zoo`, opened from `main` at `d33059e`. The plan as it stood at the
 close is `git show 22be077:WORKPLAN.md`; its §1 rows are the full text of each
 batch below. The reviews it took are kept byte for byte under `reviews/`
-(`reviews/SHA256SUMS`, 24 files: three review files and the 21 section files
-they were assembled from; `cd reviews && sha256sum -c SHA256SUMS`). The audit's
+(`reviews/SHA256SUMS`, 25 files: four review files and the 21 section files
+the first three were assembled from; `cd reviews && sha256sum -c SHA256SUMS`).
+The fourth is the scoped review of the close, below. The audit's
 findings are the next series' probes, in `PROBES.md`.
 
 ### Registry
@@ -133,6 +134,45 @@ registered at close per its §5 item 3:
 - A0c: the README's anchor rationale names a line the pattern does not contain (A0c-6); the `../streaming-concierge` sibling-checkout assumption is unstated (A0c-7).
 - Plan: "ten of ten locally" was unevidenced (P-4); `b012fe5` is a `plan:` commit that also edits `OPEN_QUESTIONS.md` (P-5); option 2's maintainer provenance exists only in a builder commit, and a maintainer-signed decision row was rewritten in place (P-6); `OPEN_QUESTIONS.md` §4 lacked "where the decision now lives" (P-7).
 - Operator: `collector.log` publishes the machine's UTC offset (OP-1).
+
+**Close review** (`reviews/REVIEW-2026-10-12.md`, "Findings" and "A5's review
+items"), the scoped cold review of the close, taken after it and decided
+2026-10-12 (b). Its dispositions, each with the commit that closed it:
+
+- R-1 A live/batch divergence reaching the report had no test: accepted, a
+  test drives one through `serve_command` (`partition_findings`' owner
+  mutation now fails it). `1ddf386`.
+- R-2 PROBES.md L2 cited only the route: accepted, it cites spanweave-live
+  `cddc694` §1.1/§1.5 beside §4.3/§5.4/§8.5, names their tension, says its
+  command runs without `--deltas`, and notes what `serve --deltas` writes.
+  The `docs:` commit that archives this review.
+- R-3 The hop-by-hop list's citation: accepted, the list is the zoo's own with
+  a reason per name, `Proxy-Connection` and the fields `Connection` names are
+  dropped. `441e1d5`.
+- R-4 `CONTRIBUTING.md:10` read `WORKPLAN.md` as present: accepted, made
+  conditional, pointing at this file between series. The `docs:` commit that
+  archives this review.
+- R-5 Stale "two" for three: accepted, every item (`pyproject.toml`,
+  `spanweave_zoo/__init__.py`, the gate test's name), and `pyproject.toml`'s
+  agentgolden comment cites step 5 at `SPEC.md` §7.3 and its seam at §7.6.
+  The `docs:` commit that archives this review.
+- R-6 701fc80's test was red on its parent by a collection error, not the CI
+  skip: accepted, the shadow packages raise `ModuleNotFoundError`. `1ddf386`.
+- R-7 The audit's uninjected bounded waits: ruled — a bounded wait on a stdlib
+  timeout with a named constant is not a clock read; the audit's seams and
+  each timeout are written as `SPEC.md` §7.6. The seventh CI leg, `audit`, is
+  accepted. The `docs:` commit that archives this review.
+- R-8 `selftest.sh`'s reused `$TMP/repo4`: **owned by spanweave-ops**, not this
+  repository; not acted on here.
+- A5's four items: (1) the seventh leg accepted (R-7); (2) §7.4's owner table
+  counting the unclaimed root against both libraries accepted; (3) the
+  reports' run-to-run difference confirmed exact; (4) CLAUDE.md rules 6/8 done
+  in the `close:` commit. A3g's four readings: 1–3 stand, 4 is R-3. These
+  close the two threads above that were left open for this review.
+- The no-skip guard's hint named the wrong cause on `f60f69c` (it said the
+  binary was absent; a module-level skip was): `701fc80` did not change it.
+  `tests/collector_check.py`'s hint names both causes. The `docs:` commit
+  that archives this review.
 
 ### Decisions log (`WORKPLAN.md` §3, folded verbatim)
 

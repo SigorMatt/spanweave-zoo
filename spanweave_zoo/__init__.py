@@ -2,8 +2,9 @@
 
 The zoo captures telemetry and never improves it (`CLAUDE.md` §0.6). Nothing
 here parses a trace, fixes a trace, or has an opinion about one. The audit
-module -- the single exception, written by A5 -- is the only place `spanweave`
-or `spanweave_live` may be imported, and `tests/gates.py` holds that.
+module -- the single exception, written by A5 -- is the only place `spanweave`,
+`spanweave_live` or `agentgolden` may be imported, and `tests/gates.py` holds
+that.
 """
 
 from __future__ import annotations

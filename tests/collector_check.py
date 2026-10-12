@@ -123,7 +123,8 @@ def main() -> int:
             f"The `{MARKER}` tests are the only check that the stock Collector "
             f"re-encodes a real protobuf export (SPEC.md §4.9), and on this "
             f"run they did not all pass. A skip here means the pinned binary "
-            f"is absent: run `make collector` first."
+            f"is absent (run `make collector` first) or a module skipped at "
+            f"collection (a module-level skip, e.g. `pytest.importorskip`)."
         )
     print(
         f"collector-check: OK -- {len(cases)} tests ran against the real "

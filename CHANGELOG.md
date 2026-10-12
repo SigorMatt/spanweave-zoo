@@ -4,6 +4,35 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## Close review R-2, R-4, R-5, R-7 — the review archived, its dispositions registered
+
+From `patches/decisions-zoo-2026-10-12b.md`, Commit 3. Docs and one test
+rename: no behaviour change, no capture touched.
+
+- **`SPEC.md` §7.6, the audit's seams** (R-7): `serve_command`,
+  `inspect_command`, `signature` and `installed` as `audit()`'s injectable
+  parameters, replay's `send` seam, `--port 0`, and each bounded wait with its
+  constant: `START_WAIT` 30 s, `SEND_TIMEOUT` 10 s, `FINISH_WAIT` 60 s. A
+  bounded wait on a stdlib timeout is ruled not a clock read. The two places a
+  bound passed is not caught (a second `serve` wait after a kill, and
+  `inspect`'s `subprocess.run`) are stated as the code behaves.
+- **`PROBES.md` L2** (R-2): cites spanweave-live `cddc694` §1.1/§1.5 beside
+  §4.3/§5.4/§8.5 and names their tension; says its command runs without
+  `--deltas`; notes that `serve --deltas` writes the record as a delta carrying
+  `unclaimed_record` and `missing_trace_id`. The "Expected" line is unchanged.
+- **`CONTRIBUTING.md`** (R-4): the reading order names `WORKPLAN.md` only while
+  a series is open, and `TASKS.md` between series.
+- **Three, not two** (R-5): `pyproject.toml`'s dependency comment,
+  `spanweave_zoo/__init__.py`'s docstring, and the gate test, renamed
+  `test_the_package_imports_none_of_the_three`. `pyproject.toml`'s agentgolden
+  comment cites step 5 at §7.3 and its seam at §7.6.
+- **`tests/collector_check.py`**: the failure hint names both causes of a skip,
+  the binary absent or a module-level skip (f60f69c's was the second); 701fc80
+  had not changed it.
+- **Registry**: `reviews/REVIEW-2026-10-12.md`, byte for byte from `patches/`,
+  its sha256 in `reviews/SHA256SUMS` (25 files, `sha256sum -c`); `TASKS.md`
+  records R-1 to R-8's dispositions, R-8 as spanweave-ops'.
+
 ## Close review R-3 — the hop-by-hop list is the zoo's own
 
 From `patches/decisions-zoo-2026-10-12b.md`, Commit 2. Changes what the

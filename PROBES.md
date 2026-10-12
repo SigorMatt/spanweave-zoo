@@ -68,7 +68,8 @@ Each probe also gives the step's own commands, as the reports print them.
   uv run zoo replay captures/z4/2026-10-12-real --to http://127.0.0.1:<port> --json
   ```
 
-  (`--requests 1` and `…-recorded` for the recorded capture.)
+  (`--requests 1` and `…-recorded` for the recorded capture.) The command runs
+  without `--deltas`, as the audit's step 2 does.
 - **Observed:** `finished` reports `routed: 5`; the one graph `serve` wrote holds
   4 of them. The fifth — Z4's root span, which no adapter claims (S1) — went to
   the no-trace builder, which is never completed and never written, and no
@@ -76,6 +77,18 @@ Each probe also gives the step's own commands, as the reports print them.
 - **Expected (the audit's):** each record of a trace reaches that trace's
   graph, or an event says where it went. At the pinned sha, spanweave-live's
   `SPEC.md` §4.3, §5.4 and §8.5 describe the route the record took.
+- **The owner's spec, at `cddc694`:** beside §4.3, §5.4 and §8.5, its §1.1
+  promises "'no trace id' and a counted event" for a record whose trace id
+  cannot be had through the adapter surface, and its §1.5 says every decision
+  is "an event with a code"; its §4.3 says the receiver "invents no event code"
+  for that record's diagnostics. The tension between §1.1/§1.5 and §4.3, inside
+  the owner's own spec, is the strongest form of this probe.
+- **Note:** `stderr` is not `serve`'s only output. With `--deltas` added to the
+  same command, `serve` writes 5 delta lines to stdout on the real capture, and
+  the fifth (empty `trace_id_after`) carries `concierge.conversation`,
+  `unclaimed_record` and `missing_trace_id` (spanweave-live's `SPEC.md` §6.3,
+  §8.4). The record is reported there as a delta; no event on stderr, and no
+  count in `finished`, names it.
 
 ---
 

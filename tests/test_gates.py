@@ -107,7 +107,7 @@ def test_the_gate_names_all_three_libraries():
     assert set(gates.ANALYSER_MODULES) == {"spanweave", "spanweave_live", "agentgolden"}
 
 
-def test_the_package_imports_neither_analyser():
+def test_the_package_imports_none_of_the_three():
     found = gates.check_package()
     assert found == [], "\n".join(str(v) for v in found)
 

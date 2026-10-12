@@ -1814,3 +1814,40 @@ Written whole at the end; a second audit of the same capture overwrites it.
 | **0** | every step ran; the report is written (findings or not) |
 | **1** | the report is written and a step could not be completed: `serve` did not start, did not finish within its bound, the capture has no `json/` body, or step 3's reconstruction did not match what `serve` reported |
 | **2** | refused (§7.2): nothing was audited and no report was written |
+
+### 7.6 The audit's seams
+
+The audit reads no clock, sleeps on no clock of its own, draws no random
+number and binds no socket (`CLAUDE.md`, "Architecture invariants"). Where it
+touches the world — the children it starts, the one socket it connects, the
+installed metadata it reads — the touch is a parameter of `audit.audit()` or a
+seam of §6's, named here:
+
+| Seam | What it is | Why |
+|---|---|---|
+| `serve_command` | the argv prefix that runs `spanweave-live`; the audit appends `serve --port 0 --out graphs --requests N` (§7.3). Default `SERVE_COMMAND`, `python -m spanweave_live.cli` on this interpreter | starting a process is touching the world. A test passes a command that never starts, or one that wraps the real `serve` and changes what it writes — which is how a live ≠ batch divergence is driven to the report |
+| `inspect_command` | the argv prefix that runs `spanweave`; the audit appends `inspect graphs/<trace_id>.json`. Default `INSPECT_COMMAND`, `python -m spanweave.cli` | the same, for step 4 |
+| `signature` | called with each step-3 graph; returns agentgolden's `Signature` or raises. Default `agentgolden.signature.signature` | a test passes one that raises, so a step-5 finding and its owner (§7.4) are driven without a defect in agentgolden |
+| `installed` | called with a distribution name; returns the commit installed (its PEP 610 `direct_url.json`) or `None`. Default `installed_sha` | a test passes one that reports a sha other than the pin, so §7.2's refusal is driven without reinstalling anything |
+| `send` (§6.2) | the capture reaches `serve` through `zoo replay`'s own `send`, in-process: `replay.sender("127.0.0.1", port, timeout=SEND_TIMEOUT)` | the one outbound socket the audit uses is §6.2's, the package's second outbound socket with §4.8's `forward`; the audit opens none of its own |
+| `--port 0` | `serve` is told to bind port `0`; the kernel chooses the port, and the audit reads it from `serve`'s `listening` event on stderr | the audit binds nothing, never collides with a port in use and never races a fixed one |
+
+**Bounded waits are not clock reads.** The audit waits on its children with
+the stdlib's own timeouts, and each is a named constant in `audit.py`, in
+seconds. A bounded wait reads no time into anything the audit records — the
+report carries no clock reading of the audit's — so it is not the clock the
+invariant forbids; the rule is about reading time, not about waiting a bounded
+time (the close review's R-7, ruled 2026-10-12; `TASKS.md`). A bound passed is an incomplete step (exit **1**,
+§7.5), never a finding, except where the table says otherwise:
+
+| Constant | Value | What it bounds | When it passes |
+|---|---|---|---|
+| `START_WAIT` | `30.0` | each `queue.get(timeout=)` on `serve`'s stderr lines until its `listening` event: the wait for the **next** line, not for the event in total | the step is incomplete ("serve wrote no `listening` event in 30s"), nothing is replayed, and `serve` gets `FINISH_WAIT` to exit |
+| `SEND_TIMEOUT` | `10.0` | the socket timeout of each replayed request (`socket.create_connection(timeout=)`): the connect, and each send and receive on it | that body's send raises, so it is not sent (§6.4); `serve` is killed, since it waits for *N* requests, and the step is incomplete |
+| `FINISH_WAIT` | `60.0` | `process.wait(timeout=)` for `serve` to exit after the replay; again after a kill | the first: `serve` is killed and the step is incomplete ("serve did not finish within 60s"). The second is not caught: the audit stops with `subprocess.TimeoutExpired` and writes no report |
+| `FINISH_WAIT` | `60.0` | `thread.join(timeout=)` on the thread draining `serve`'s stderr, once `serve` has exited | the join returns and the report carries the lines read so far |
+| `FINISH_WAIT` | `60.0` | `subprocess.run(timeout=)` of each step-4 `inspect` | not caught: the stdlib kills the child and raises `subprocess.TimeoutExpired`, and the audit stops with it and writes no report |
+
+The two uncaught cases are stated as the code behaves at this commit, not as a
+decision: a bound passed there is neither a finding nor an incomplete step,
+and nothing in a report says so.
