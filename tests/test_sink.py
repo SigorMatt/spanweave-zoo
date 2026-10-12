@@ -28,10 +28,11 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from spanweave_zoo import cli, manifest, sink
+from spanweave_zoo import capture, cli, manifest, sink
 
 # Deliberately binary, with a NUL and a 0xff in it: a protobuf export is not
 # text, and a sink that round-trips only text is broken in the one case that
@@ -797,3 +798,107 @@ def test_a_post_after_the_journals_close_is_recorded_nowhere_and_not_answered(
     assert list(raw.iterdir()) == []
     assert not (raw.parent / manifest.JOURNAL_NAME).exists()
     assert manifest.read(raw.parent)[manifest.BODIES] == []
+
+
+# --- B3a: standalone `zoo sink` seals only once nothing can write ------------
+
+
+def snapshot(run: Path) -> dict[str, bytes]:
+    """Every file in a run directory, by its path under it, and its bytes."""
+    return {
+        path.relative_to(run).as_posix(): path.read_bytes()
+        for path in sorted(run.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_a_post_the_standalone_sink_outwaits_writes_nothing_after_the_seal(
+    tmp_path, monkeypatch, capsys
+):
+    # B3a. B3 closed `zoo capture`'s journals before the seal; `zoo sink` sealed
+    # while a POST was still being handled, and that handler then wrote a body
+    # and a journal line into a capture whose manifest had already hashed it
+    # -- a sealed run that `zoo verify` failed on an unlisted file and a
+    # journal digest. Now `run_sink` stops accepting, waits for its handlers
+    # for a bound, closes the journals, then seals (SPEC.md sections 3.7,
+    # 5.5): the handler held past the bound is the one recorded problem, its
+    # body is recorded nowhere and answered nothing, and every sealed file is
+    # byte-identical afterwards. The handler is held through `before_record`
+    # (section 3.6), so nothing here sleeps; the one wait is the sink's own
+    # bound, shortened.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    held = threading.Event()
+    release = threading.Event()
+    servers: list[Any] = []
+    bound = threading.Event()
+
+    def hold(body: bytes) -> None:
+        held.set()
+        assert release.wait(TIMEOUT), "the test never released the handler"
+
+    class HeldRecorder(sink.Recorder):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, before_record=hold, **kwargs)
+
+    real_make_server = sink.make_server
+
+    def make_server(*args: Any, **kwargs: Any) -> Any:
+        server = real_make_server(*args, **kwargs)
+        servers.append(server)
+        bound.set()
+        return server
+
+    monkeypatch.setattr(sink, "Recorder", HeldRecorder)
+    monkeypatch.setattr(sink, "make_server", make_server)
+    monkeypatch.setattr(capture, "FLUSH_WAIT", 0.2)
+
+    answers: list[bytes] = []
+
+    def client() -> None:
+        assert bound.wait(TIMEOUT), "the sink never bound"
+        port = servers[0].server_address[1]
+        head = (
+            b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\nConnection: close\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(PROTOBUF)
+        )
+        try:
+            answers.append(send_octets(port, head, PROTOBUF))
+        except OSError as error:  # a reset is no answer too
+            answers.append(repr(error).encode())
+
+    def stopper() -> None:
+        # What `zoo sink`'s signal handler does: ask the loop to end, from a
+        # thread of its own, once the POST is under way.
+        assert held.wait(TIMEOUT), "the POST never reached the recorder"
+        servers[0].shutdown()
+
+    threads = [threading.Thread(target=t, daemon=True) for t in (client, stopper)]
+    for thread in threads:
+        thread.start()
+    try:
+        status = cli.run_sink("127.0.0.1", 0, raw)
+        sealed = snapshot(raw.parent)
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=TIMEOUT)
+    assert not any(thread.is_alive() for thread in threads)
+
+    # The handler, released after the seal, wrote nothing and answered nothing.
+    assert answers == [b""], answers
+    assert snapshot(raw.parent) == sealed, "something was written after the seal"
+    assert not (raw / "0001.body").exists()
+
+    document = manifest.read(raw.parent)
+    assert manifest.ENDED_AT in document
+    late = [p for p in document[manifest.PROBLEMS] if sink.STILL_HANDLED in p]
+    assert late == [f"{sink.NOT_YET_RECORDED}: {sink.STILL_HANDLED}"], document
+    printed = capsys.readouterr().out
+    assert f"  ! {late[0]}" in printed
+    assert status == 1, printed
+
+    # `zoo verify` fails on that one problem, and never on a digest or the seal.
+    found = manifest.problems(raw.parent)
+    assert len(found) == 1, found
+    assert found[0].endswith(f"records a problem from the run: {late[0]}"), found
+    assert cli.verify(raw.parent) == 1

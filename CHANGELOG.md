@@ -4,6 +4,33 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B3a — standalone `zoo sink` seals only once nothing can write
+
+B3's close-then-seal extended to `run_sink` (decisions log 2026-10-13: "nothing
+writes after the seal" has no exception). `SPEC.md` §3.3, §3.7, §5.5.
+
+- **`zoo sink` stops in B3's order**: the loop returns and the listening socket
+  is closed, every POST still being handled is waited for (the bound
+  `zoo capture` uses, `capture.FLUSH_WAIT`, 10 s), the recorder's journals are
+  closed (`Recorder.close`, B3's mechanism, not a second one), and only then is
+  the manifest assembled and sealed. Before, it sealed while a handler could
+  still write a body and a journal line into the sealed run.
+- A POST still being handled at the close is a `problems` entry
+  (`a POST not yet recorded: still being handled when the journals closed; …`,
+  or the body it had recorded), printed as a `!` line after
+  `zoo sink: stopped.`; the late body is recorded nowhere and answered nothing.
+- **`zoo sink` exits 1** when the sealed manifest records a problem (that one,
+  or an unreadable journal line `finish` reported, which it used to ignore), 0
+  otherwise — as `zoo capture` does.
+- **Test**: `test_a_post_the_standalone_sink_outwaits_writes_nothing_after_the_seal`
+  holds a POST in `before_record` past a shortened bound; every sealed file is
+  byte-identical after it is released, it gets no answer, and `zoo verify`
+  fails on that one problem only. Red on the parent (sealed at 0 bodies, then
+  `raw/0001.body` written and answered `200`).
+- **Mutation shown caught**: `run_sink` without the `recorder.close()` call
+  (the wait kept) — the late handler is answered `200` and writes after the
+  seal.
+
 ## B2a — the per-body cost test measures the recorder, not the runner
 
 The registry's "macOS wall-clock cost test" (`TASKS.md`, series 1), failed

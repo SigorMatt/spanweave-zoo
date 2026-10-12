@@ -363,8 +363,9 @@ for JSON, for gzip, for a truncated body and for a body no receiver would
 accept. The sink is not a receiver and its `200` means "recorded", never
 "understood".
 
-A POST that reaches `zoo capture`'s sinks after their journals have closed
-(§5.5) is not recorded, so it is **not answered**: the connection is closed
+A POST that reaches a sink after its journals have closed (§5.5) — `zoo
+sink`'s or either of `zoo capture`'s — is not recorded, so it is **not
+answered**: the connection is closed
 with no status, since a `200` there would say "recorded" of a body the
 capture does not hold.
 
@@ -472,7 +473,27 @@ either killed the sink before its manifest was assembled — bodies on disk and
 no `ended_at`, a capture `zoo verify` rightly fails. Each ends the serving loop
 the way Ctrl-C does: the handler only asks the server to shut down, the loop
 returns, the listening socket is closed, and the manifest is assembled and
-sealed (§5.5) before `zoo sink` exits 0.
+sealed (§5.5) before `zoo sink` exits.
+
+It **seals the way `zoo capture` does** (B3a): close, then seal, with no
+exception for the sink alone. Once the loop has returned and the listening
+socket is closed, every POST the sink is still handling is waited for, for at
+most the bound `zoo capture` gives its sinks (10 seconds, §4.6); then the
+recorder **closes its journals**, and only then is the manifest assembled.
+A POST still being handled at the close — a client whose body was still
+arriving past the bound — is one `problems` entry naming the body it had
+recorded or `a POST not yet recorded` (§5.5), printed after the stop line as
+
+```text
+zoo sink: stopped. <n> body/bodies.
+  ! <the body, or a POST not yet recorded>: still being handled when the journals closed; what its handler had not yet written is not in this capture
+```
+
+and whatever that handler does afterwards is written nowhere and answered
+nothing (§3.3). `zoo sink` exits **0** when the sealed manifest records no
+problem and **1** when it records one — that one, or a journal line the
+assembly could not read (§5.5) — printing each on a `!` line, as `zoo capture`
+does: a capture `zoo verify` will fail (§5.6) does not end in a quiet 0.
 
 ## 4. The Collector, and the tee
 
@@ -1341,7 +1362,7 @@ exactly one home for a digest (§3.5).
 | each forward, as it completes (§4.5) | `forwards.jsonl` | one line |
 | the Collector child is seen to have exited (§4.6) | `MANIFEST.json` | one `problems` entry |
 | the run directory is made, before the manifest is labelled (§4.2) | `collector.log` | the Collector's output so far, and then each line as it is written |
-| `zoo capture` stops, after both sinks and the Collector have (§4.6) | `MANIFEST.json` | one `problems` entry per POST still being handled when the journals close (below); then `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
+| `zoo capture` stops, after both sinks and the Collector have (§4.6); `zoo sink` stops (§3.7) | `MANIFEST.json` | one `problems` entry per POST still being handled when the journals close (below); then `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
 
 The declaration is written **first** so that a run stopped the hard way still
 says what it was. The bodies go to a journal rather than into the document, so
@@ -1364,12 +1385,14 @@ way when it stops, so its captures are sealed too.
 run left them, so nothing may be written into the run directory once the
 assembly has read them. `zoo capture` therefore **closes both recorders'
 journals** after the last bounded wait of its shutdown (§4.6) and before it
-assembles: from then on a recorder refuses every write — a body that arrives
+assembles, and `zoo sink` closes its one recorder's the same way, after its
+own bounded wait (§3.7; B3a): from then on a recorder refuses every write — a body that arrives
 on a connection still open is recorded nowhere and answered nothing, the
 connection closed, because any status would say it was received into a
 capture that does not hold it; a forward that completes is journalled nowhere
 and is in no list. A POST still being handled at the close — a forward the
-Collector held past every bound — is one `problems` entry, written before the
+Collector held past every bound, or under `zoo sink` a body still arriving
+past the bound — is one `problems` entry, written before the
 assembly, naming the body it had recorded (`raw/0001.body: still being handled
 when the journals closed; …`), or `a POST not yet recorded` when it had
 recorded none: what that handler had yet to write is not in the capture, and

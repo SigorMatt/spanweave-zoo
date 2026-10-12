@@ -261,7 +261,12 @@ def verify(root: Path, *, named: bool = False) -> int:
 
 
 def run_sink(host: str, port: int, out: Path) -> int:
-    """Serve until interrupted, recording every POST. `SPEC.md` §3."""
+    """Serve until interrupted, recording every POST. `SPEC.md` §3.
+
+    Exits 0 once the capture is sealed, and 1 when the sealed manifest
+    records a problem -- a POST still being handled when the journals closed,
+    or a journal line the assembly could not read (`SPEC.md` §3.7, §5.5).
+    """
     try:
         recorder = sink.Recorder(out, now=_system_clock, after_record=_announce)
     except sink.CaptureExists as refused:
@@ -274,21 +279,37 @@ def run_sink(host: str, port: int, out: Path) -> int:
     print(f"zoo sink: bodies to {recorder.raw}/, anything else to {recorder.rejected}/")
     print(SINK_BANNER, flush=True)
     previous = _shut_down_on_signal(server)
+    problems: list[str] = []
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         _restore_signals(previous)
+        # Close-then-seal, as `zoo capture` does it (`SPEC.md` §3.7, §5.5;
+        # B3a): the listener is closed so nothing new is accepted, every POST
+        # already being handled is waited for -- for at most the same bound
+        # `zoo capture` gives its sinks (§4.6) -- and then the journals are
+        # closed, so a handler that outlived the wait writes nothing into a
+        # capture whose manifest is about to be sealed. Each one still running
+        # is a `problems` entry, written before the assembly.
         server.server_close()
+        recorder.settle(capture.FLUSH_WAIT)
+        for problem in recorder.close():
+            problems.append(problem)
+            manifest.append_problem(recorder.run, problem)
         # The run is over, so the manifest is assembled from the journal
         # (`SPEC.md` §5.5). `zoo sink` declares no `kind` and carries no
         # project manifest -- it is the sink alone, with nothing behind it --
         # but what it did record is covered and `ended_at` says the capture is
         # complete, which is what `zoo verify` asks of it.
-        manifest.finish(recorder.run, ended_at=_system_clock())
+        problems += manifest.finish(recorder.run, ended_at=_system_clock())
     print(f"\nzoo sink: stopped. {manifest.body_count(recorder.run)} body/bodies.")
-    return 0
+    for problem in problems:
+        print(f"  ! {problem}")
+    # A run that recorded a problem the capture could not fix exits non-zero
+    # saying so, as `zoo capture` does (`SPEC.md` §5.6).
+    return 1 if problems else 0
 
 
 class StoppedBeforeReady(Exception):
