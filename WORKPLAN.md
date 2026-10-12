@@ -8,8 +8,8 @@ next series' probes. One batch = one sub-agent = one commit = one concern.
 This file plus git is the only state; any session can resume cold from it.
 
 Last updated: 2026-10-12 (runs 1, 2 and 2b complete; Z4 captured; run 3:
-A3g done, A5 decided — option 1, `agentgolden` pinned to the `audit` extra;
-A5 next.)
+A3g done, A5 done — the audit of Z4's two captures is committed; A6
+next.)
 
 ---
 
@@ -167,8 +167,8 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | A4a | **Replay sends the captured head.** Review A4. Raw head bytes over a socket, `Host` substituted, body appended, response read; `--json` likewise with the json file's head reconstructed as the Collector sent it. Test red on the parent: replaying into a fresh sink yields `.headers.raw` byte-identical except the `Host` line (the four differences the review lists are gone); bodies byte-identical as before. Mutation: a replay through `http.client` fails the head-identity test. | done (29c9d5c) | 6 |
 | A0c | **The README survives its own rehearsal.** Review §1.5. The seven differences closed: Ctrl-C now true (A3e); `make verify`/`make check` green after a clean run; the Collector's lines out of the terminal (A3e); the body count (A3e); the digest wording in step 2; the log-to-file variant writes outside the checkout and outside the run directory (`OPEN_QUESTIONS.md` §4); the note that a pet project's `make run` rewrites its own `MANIFEST.json`, which the operator does not commit from the pet's checkout. A reviewer runs the README's commands again after this batch. Docs, plus the `zoo verify` closing-line wording (review N-1); say so in the body. | done (c48e093) | 4 |
 | A3g | **The run-2b review's `next batch` items, closed.** Read `patches/REVIEW-2026-10-11.md` and close every `next batch` item as the file states it, one commit, tests first, mutation shown: `request_line` in `headers.json` and the LF-only head as one `unparsed` entry (§3); SIGHUP stops the Collector as SIGINT does; SPEC §4.2 lists every terminal line; a test holds the README's log redirect and its `grep` to the same file; README step 4 names `OPENAI_API_KEY`; the seal's claim in SPEC narrowed (§3); the sink forwards the raw head, not the stdlib's parse, to the Collector; the CRLF-split test gaps; replay counts only bodies it sent; the chunked-replay wording; the run-2b patch set written under `patches/`. Items the file lists that this row does not name are closed too. The committed fixture capture is regenerated only if its json changes under the ratified rule, with the explanation in the body. | done (487bbc1) | 8 |
-| A5 | **The audit: every capture through spanweave-live and spanweave, and what broke.** `zoo audit captures/<project>/<run-id>` (SPEC §7; the one module that imports both): (1) `zoo replay --raw` into `spanweave-live serve` and record every response status and every receiver event — a 415 on protobuf is a finding, not an error; (2) `zoo replay --json` into `serve` with a completion policy of `Cap(0)`-at-end (replay then signal end of input), collect each trace's final graph and every event; (3) for each trace, the records the receiver fed, in order, through `spanweave.build` — the live graph must equal the batch graph byte for byte (prefix consistency on a stranger's trace); (4) `spanweave inspect` on each graph: diagnostics by code, unmapped attributes by size, unknown kinds; (5) `agentgolden`'s `Signature` computed on each graph as a smoke, no rules evaluated. Output `audit/<project>-<run-id>.md`: a table per step, every diagnostic code with its count, every event, every divergence — each as a reproduction with the capture path and the command. **Findings are never fixed here**: each names the repo that owns it. The `real` capture is Z4's, taken by the operator after run 2 with the commands README names. Decided 2026-10-12 (§3): the `audit` extra pins `agentgolden@aa1847f2` as its first commit; `agentgolden` joins the gate's analyser names; the report header records all three shas. | todo | 15 |
-| A6 | **The series closes.** `TASKS.md` registry A0–A6 with shas; §3 and §4 folded; `reviews/` with every review byte-for-byte and sha256; `audit/` findings consolidated into `PROBES.md`: the next series' probe list for spanweave and spanweave-live, each with its capture and command; WORKPLAN.md deleted; PR `zoo` → `main`. No `plan:` commit follows. | awaiting A5 | 6 |
+| A5 | **The audit: every capture through spanweave-live and spanweave, and what broke.** `zoo audit captures/<project>/<run-id>` (SPEC §7; the one module that imports both): (1) `zoo replay --raw` into `spanweave-live serve` and record every response status and every receiver event — a 415 on protobuf is a finding, not an error; (2) `zoo replay --json` into `serve` with a completion policy of `Cap(0)`-at-end (replay then signal end of input), collect each trace's final graph and every event; (3) for each trace, the records the receiver fed, in order, through `spanweave.build` — the live graph must equal the batch graph byte for byte (prefix consistency on a stranger's trace); (4) `spanweave inspect` on each graph: diagnostics by code, unmapped attributes by size, unknown kinds; (5) `agentgolden`'s `Signature` computed on each graph as a smoke, no rules evaluated. Output `audit/<project>-<run-id>.md`: a table per step, every diagnostic code with its count, every event, every divergence — each as a reproduction with the capture path and the command. **Findings are never fixed here**: each names the repo that owns it. The `real` capture is Z4's, taken by the operator after run 2 with the commands README names. Decided 2026-10-12 (§3): the `audit` extra pins `agentgolden@aa1847f2` as its first commit; `agentgolden` joins the gate's analyser names; the report header records all three shas. | done (f60f69c, 701fc80) | 15 |
+| A6 | **The series closes.** `TASKS.md` registry A0–A6 with shas; §3 and §4 folded; `reviews/` with every review byte-for-byte and sha256; `audit/` findings consolidated into `PROBES.md`: the next series' probe list for spanweave and spanweave-live, each with its capture and command; WORKPLAN.md deleted; PR `zoo` → `main`. No `plan:` commit follows. | todo | 6 |
 
 ## 2. Execution order
 
@@ -580,6 +580,28 @@ because a batch never edits this file:
   with the gate extended to the third name; the macOS wall-clock test
   ratified as re-runnable for this series and registered for the next. A5 is
   dispatched whole; A6 follows.
+- 2026-10-12 A5 (f60f69c, 701fc80): `zoo audit` replays each capture
+  into `spanweave-live serve`, rebuilds every written trace through
+  `spanweave.build`, inspects it and takes agentgolden's `Signature`;
+  `audit/` holds the two Z4 reports. Findings, identical on `real` and
+  `recorded`: every protobuf body is a 415 (spanweave-live); Z4's root span
+  `concierge.conversation` is claimed by no adapter (spanweave), so `serve`
+  routes it to a no-trace builder that is never written and no event names
+  (spanweave-live), and the four chat spans come out `orphan_parent`. Live
+  equals batch byte for byte on every written trace; the signature ran
+  clean. f60f69c failed CI's `collector` leg only: the audit test module's
+  collection-time `importorskip` surfaced as a skip in the
+  `needs_collector` selection and the guard refused it; 701fc80 skips per
+  item instead and a test holds it; all seven legs green at 701fc80. New
+  commit on top, no force-push. For the scoped review of the close: (1) CI
+  gained a seventh leg, `audit` (installs the extra, `make audit-check`),
+  which the row did not name — without it the 20 extra-only tests only
+  ever skip; (2) SPEC §7.4's owner table is the batch's reading, notably
+  that the unclaimed root counts against both spanweave and
+  spanweave-live; (3) the reports differ between runs in the `listening`
+  port and the `completed` clock readings, stated in their method
+  section; (4) CLAUDE.md rules 6 and 8 and §0.6 still name only spanweave
+  and spanweave_live — the third name decided in §3 is not yet in either.
 
 ## 5. Origins
 
