@@ -8,7 +8,7 @@ captures land, extending `PROBES.md` until all six are in. One batch = one
 sub-agent = one commit = one concern. This file plus git is the only state;
 any session can resume cold from it.
 
-Last updated: 2026-10-12 (series opened; nothing run.)
+Last updated: 2026-10-12 (run 1 in progress: B0 done.)
 
 ---
 
@@ -150,7 +150,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 
 | ID | Batch | Status | Calls |
 |---|---|---|---|
-| B0 | **The two reviews of the close, archived and dispositioned.** Fetch the Qodo comment on PR #1 (`gh api repos/SigorMatt/spanweave-zoo/issues/comments/6127903067 --jq .body`) and keep it byte for byte as `reviews/QODO-2026-10-12.md`, its sha256 appended to `reviews/SHA256SUMS` (26 files, `sha256sum -c` green). `TASKS.md`: a "Series 2" heading with the twelve Qodo items Q1–Q12 and the close review's two carried threads (the port race; the PR wording), each pointing at the batch below that closes it. Docs only; no code. | todo | 3 |
+| B0 | **The two reviews of the close, archived and dispositioned.** Fetch the Qodo comment on PR #1 (`gh api repos/SigorMatt/spanweave-zoo/issues/comments/6127903067 --jq .body`) and keep it byte for byte as `reviews/QODO-2026-10-12.md`, its sha256 appended to `reviews/SHA256SUMS` (26 files, `sha256sum -c` green). `TASKS.md`: a "Series 2" heading with the twelve Qodo items Q1–Q12 and the close review's two carried threads (the port race; the PR wording), each pointing at the batch below that closes it. Docs only; no code. | done (d0debab) | 3 |
 | B1 | **The port hand-off cannot lose to a stranger.** Close-review thread. `zoo capture` picks the Collector's port, writes it into the config and launches the child; a bind that fails with "address in use" between the pick and the bind is today a refusal (SPEC §4.6). Make it a **bounded retry**: on a Collector exit whose log shows the bind failure, pick again, up to N (SPEC names N and says the refusal after N names every port tried); readiness unchanged. Test red on the parent: a stand-in Collector that fails its first bind and succeeds its second reaches readiness; the mutation "no retry" fails it. `test_the_collector_killed_by_hand_mid_capture_is_a_problem` stops depending on the pick. | todo | 6 |
 | B2 | **Signals cover the whole life of a capture, and of the sink.** Q1, Q6, Q8. (a) `run_capture` installs the stop handlers **before** `running.start()`, so SIGTERM/SIGHUP during readiness (up to 52.5 s) runs the stop path and the Collector, in its own session, does not outlive the parent; a refusal still writes nothing. (b) `Capture.start`'s tail — `_now()`, `manifest.label`, `serve()`, the log lines — inside the same `try/except BaseException: self.stop(); raise` as the steps before it. (c) `run_sink` installs the same handlers so SIGTERM/SIGHUP end `serve_forever` normally and `manifest.finish` runs. Three tests red on the parent, one per letter: SIGTERM to the process while the stand-in Collector is still becoming ready → no Collector process remains and no run directory exists; a `manifest.label` that raises → the Collector is stopped; SIGTERM to a standalone sink → a sealed manifest. SPEC §4.6 and §3 say so. | todo | 8 |
 | B3 | **Nothing writes to a capture after its seal.** Q2, Q7. (a) `Capture.stop` seals only once every POST handler has returned: after the Collector is stopped (which fails any forward still waiting), settle again with a bound; a handler still running at that bound is recorded as a `problems` entry naming the body, and the journals are **closed** — an append after closing is refused by the recorder and recorded nowhere, so the sealed manifest's hashes hold. (b) A journal that does not decode as UTF-8 is a `problems` entry, and `finish` still writes `ended_at` and the seal. Tests red on the parent: a forward whose completion is held past the flush bound (injected) completes after the seal and `zoo verify` is **still green**; a journal with an invalid byte yields a sealed manifest with the problem listed. SPEC §5.5/§5.6 say what the seal covers and when writing ends. | todo | 7 |
@@ -181,6 +181,10 @@ to `main` at the series open.
 - 2026-10-12: series 2 opened on `zoo` from `main` `25b2ef2`. Pet projects
   Z3 and Z5 are being built in parallel; their captures arrive as operator
   commits on `zoo` and instantiate B7 rows.
+- 2026-10-12 B0: `gh api --jq .body` appends a newline the raw body lacks;
+  the archive keeps the raw body (38083 bytes). `reviews/SHA256SUMS` gained
+  its 26th line at the end, so it is no longer in filename order — nothing
+  checks the order. The PR-wording thread is mapped to B8.
 
 ## 5. Origins
 
