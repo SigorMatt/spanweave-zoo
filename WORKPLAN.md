@@ -7,10 +7,8 @@ that runs spanweave and spanweave-live over every capture and writes the
 next series' probes. One batch = one sub-agent = one commit = one concern.
 This file plus git is the only state; any session can resume cold from it.
 
-Last updated: 2026-10-11 (runs 1, 2 and 2b complete: A0–A4, A3a–A3f,
-A4a, A0a–A0c done; the run-2b scoped review decided. Next: the operator
-captures Z4 — `real` and `recorded` — and commits them. Run 3 = A3g → A5
-→ A6.)
+Last updated: 2026-10-12 (runs 1, 2 and 2b complete; Z4 captured; run 3
+under way: A3g done. Next: A5, then A6.)
 
 ---
 
@@ -167,7 +165,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | A3f | **The manifest is sealed, and the parse cannot invent.** Review A3b-1, A3c. `seal` as §3 defines; `zoo verify` recomputes it; `kind` flipped, a `problems` entry removed, a file entry edited — each fails verify. `NNNN.headers.json` derived from `.headers.raw` by the strict CRLF split; the bare-CR-plus-header-shaped-text case (`otel\rX-Injected: yes`) yields no `X-Injected` key. Tests red on the parent for each; the committed fixture capture regenerated with a seal and the explanation in the body. Mutation: a verify that skips the seal passes the flipped-`kind` test's inverse. | done (46b2c15) | 8 |
 | A4a | **Replay sends the captured head.** Review A4. Raw head bytes over a socket, `Host` substituted, body appended, response read; `--json` likewise with the json file's head reconstructed as the Collector sent it. Test red on the parent: replaying into a fresh sink yields `.headers.raw` byte-identical except the `Host` line (the four differences the review lists are gone); bodies byte-identical as before. Mutation: a replay through `http.client` fails the head-identity test. | done (29c9d5c) | 6 |
 | A0c | **The README survives its own rehearsal.** Review §1.5. The seven differences closed: Ctrl-C now true (A3e); `make verify`/`make check` green after a clean run; the Collector's lines out of the terminal (A3e); the body count (A3e); the digest wording in step 2; the log-to-file variant writes outside the checkout and outside the run directory (`OPEN_QUESTIONS.md` §4); the note that a pet project's `make run` rewrites its own `MANIFEST.json`, which the operator does not commit from the pet's checkout. A reviewer runs the README's commands again after this batch. Docs, plus the `zoo verify` closing-line wording (review N-1); say so in the body. | done (c48e093) | 4 |
-| A3g | **The run-2b review's `next batch` items, closed.** Read `patches/REVIEW-2026-10-11.md` and close every `next batch` item as the file states it, one commit, tests first, mutation shown: `request_line` in `headers.json` and the LF-only head as one `unparsed` entry (§3); SIGHUP stops the Collector as SIGINT does; SPEC §4.2 lists every terminal line; a test holds the README's log redirect and its `grep` to the same file; README step 4 names `OPENAI_API_KEY`; the seal's claim in SPEC narrowed (§3); the sink forwards the raw head, not the stdlib's parse, to the Collector; the CRLF-split test gaps; replay counts only bodies it sent; the chunked-replay wording; the run-2b patch set written under `patches/`. Items the file lists that this row does not name are closed too. The committed fixture capture is regenerated only if its json changes under the ratified rule, with the explanation in the body. | todo | 8 |
+| A3g | **The run-2b review's `next batch` items, closed.** Read `patches/REVIEW-2026-10-11.md` and close every `next batch` item as the file states it, one commit, tests first, mutation shown: `request_line` in `headers.json` and the LF-only head as one `unparsed` entry (§3); SIGHUP stops the Collector as SIGINT does; SPEC §4.2 lists every terminal line; a test holds the README's log redirect and its `grep` to the same file; README step 4 names `OPENAI_API_KEY`; the seal's claim in SPEC narrowed (§3); the sink forwards the raw head, not the stdlib's parse, to the Collector; the CRLF-split test gaps; replay counts only bodies it sent; the chunked-replay wording; the run-2b patch set written under `patches/`. Items the file lists that this row does not name are closed too. The committed fixture capture is regenerated only if its json changes under the ratified rule, with the explanation in the body. | done (487bbc1) | 8 |
 | A5 | **The audit: every capture through spanweave-live and spanweave, and what broke.** `zoo audit captures/<project>/<run-id>` (SPEC §7; the one module that imports both): (1) `zoo replay --raw` into `spanweave-live serve` and record every response status and every receiver event — a 415 on protobuf is a finding, not an error; (2) `zoo replay --json` into `serve` with a completion policy of `Cap(0)`-at-end (replay then signal end of input), collect each trace's final graph and every event; (3) for each trace, the records the receiver fed, in order, through `spanweave.build` — the live graph must equal the batch graph byte for byte (prefix consistency on a stranger's trace); (4) `spanweave inspect` on each graph: diagnostics by code, unmapped attributes by size, unknown kinds; (5) `agentgolden`'s `Signature` computed on each graph as a smoke, no rules evaluated. Output `audit/<project>-<run-id>.md`: a table per step, every diagnostic code with its count, every event, every divergence — each as a reproduction with the capture path and the command. **Findings are never fixed here**: each names the repo that owns it. The `real` capture is Z4's, taken by the operator after run 2 with the commands README names. | awaiting captures (A4 done and at least one `real` capture present) | 15 |
 | A6 | **The series closes.** `TASKS.md` registry A0–A6 with shas; §3 and §4 folded; `reviews/` with every review byte-for-byte and sha256; `audit/` findings consolidated into `PROBES.md`: the next series' probe list for spanweave and spanweave-live, each with its capture and command; WORKPLAN.md deleted; PR `zoo` → `main`. No `plan:` commit follows. | awaiting A5 | 6 |
 
@@ -543,6 +541,23 @@ because a batch never edits this file:
   with the real Z4 project was green end to end. The header-derivation rule
   is ratified so Z4's sealed json carries a maintainer's rule, not a
   batch's; the request-line amendment is A3g's. Z4's captures come next.
+- 2026-10-12: Z4 captured by the operator (`real` and `recorded`,
+  47cb06c); run 3 opened.
+- 2026-10-12 A3g (487bbc1): every `next batch` item of the run-2b review
+  closed; 361 passed locally, `collector-check` ran 4 real-Collector tests.
+  Readings taken where SPEC was silent, for the next review: a head with
+  no CRLF carries no `request_line`/`method`/`path` (`headers: []`); the
+  `forward` seam is `(head, body)`; the README's readiness `timeout` is
+  60 s (the zoo's own wait can reach 52.5 s); `Trailer` joined SPEC's
+  hop-by-hop list to match the code. The fixture was regenerated through
+  the real tee (its json gains `request_line`; bodies byte-identical);
+  Z4's sealed captures keep their json and SPEC §2.3 says they predate
+  `request_line`. Stale "captures/ is empty" wording removed. Patch set
+  `patches/0023`–`0035` (run 2b). CI: the macOS leg failed once on
+  `test_sixteen_hundred_bodies_cost_the_same_each` (675 → 2,168 µs/body
+  on the runner) and passed on a re-run of that job alone with no code
+  change — a wall-clock ratio test on a shared runner; registered as a
+  thread for A6, not acted on.
 
 ## 5. Origins
 
