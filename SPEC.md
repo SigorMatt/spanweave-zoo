@@ -14,10 +14,13 @@ directions; A3a: a capture exists only once it is ready; A3b: the manifest is
 assembled once, at the end, from the run's journals, and covers every file in
 the capture; A3c: the octets of each request's head are the record, with the
 zoo's CRLF split of them beside them -- see §2.3; A3f: the manifest is
-sealed -- see §5 -- and that split replaced the stdlib's parse); §6 is
-specified and implemented (A4: `zoo replay`, which re-sends a capture's bytes
-and its captured head octets to another receiver and adds nothing). §7 is a heading naming what A5 will fill;
-nothing in it is implemented today.
+sealed -- see §5 -- and that split replaced the stdlib's parse; A3g: the
+split records the request line whole, the tee forwards the recorded head
+octets rather than the stdlib's parse, and `SIGHUP` ends a capture as Ctrl-C
+does); §6 is specified and implemented (A4: `zoo replay`, which re-sends a
+capture's bytes and its captured head octets to another receiver and adds
+nothing). §7 is a heading naming what A5 will fill; nothing in it is
+implemented today.
 
 ---
 
@@ -158,8 +161,9 @@ matters:
 
 It is **not** the stdlib's parse (A3f). Python's `http.server` parses the head
 to handle the request — its `Content-Length` frames the body, its
-`Content-Type` is echoed (§3.3), its headers are what a forward sends on
-(§4.3) — and that parse is still what the sink *handled* the request with. It
+`Content-Type` is echoed (§3.3), its path chooses the directory (§3.4) — and
+that parse is still what the sink *handled* the request with. Since A3g it is
+nothing more: the tee forwards the recorded octets, not the parse (§4.3). It
 is not what the record says the request carried, because it can say more than
 the request did. A **bare CR inside a header value** is the case: HTTP forbids
 it, real clients emit it, and `email`'s header parser splits the line on it.
@@ -171,11 +175,15 @@ the client did not send is not a record (§1).
 **The split.** The octets of `NNNN.headers.raw` are decoded as Latin-1 (one
 character per octet, so nothing is replaced or lost) and split on **CRLF and on
 nothing else**. A bare CR, or a bare LF, is inside the line it arrived in and
-therefore inside the value.
+therefore inside the value. This rule was ratified by the maintainer on
+2026-10-11 (`WORKPLAN.md` §3, "header rule"), with the request-line amendment
+A3g implements.
 
-- The **first line** is the request line. `method` is what precedes its first
-  space; `path` is what lies between that space and the next one (or the end
-  of the line), verbatim, query string included.
+- The **first line** is the request line, recorded **verbatim** under
+  `request_line`, so nothing after the path — the HTTP version, or anything
+  else — is dropped. `method` is what precedes its first space; `path` is what
+  lies between that space and the next one (or the end of the line),
+  verbatim, query string included.
 - Every **later non-empty line** is a header if what precedes its first colon
   is a non-empty field-name token (RFC 9110 §5.6.2: letters, digits and
   ``!#$%&'*+-.^_`|~``). Its pair is `[name, value]`: the name as sent, the
@@ -187,13 +195,24 @@ therefore inside the value.
   no header and is not joined to one. It is listed verbatim, in order, under
   `unparsed`, which is **absent** when there is none.
 - **Empty lines** are the block's terminator and carry nothing.
+- A head that holds **no CRLF at all** — every line of it ended by a bare LF,
+  which the stdlib's reader accepts — is one line on this split, and the
+  split finds no request line in it. Its text is the one `unparsed` entry,
+  verbatim, and `request_line`, `method` and `path` are **absent**; `headers`
+  is empty. Reading a method out of it would be splitting on LF, and listing
+  nothing would omit the whole block without saying so — which is what this
+  split did before A3g.
 
 The split is a pure function of the octets: the same `NNNN.headers.raw` gives
-the same `headers`, `method`, `path` and `unparsed` on any machine.
+the same `headers`, `request_line`, `method`, `path` and `unparsed` on any
+machine. Because `NNNN.headers.json` is a derivation and the octets are the
+record, a later rule may re-derive it from `NNNN.headers.raw` without touching
+a capture; a capture taken under an earlier rule keeps the json it was taken
+with (Z4's two captures of 2026-10-12 carry no `request_line`).
 
-`NNNN.headers.json` is JSON with `sort_keys=True`: the method, the path, every
-header the split produced, `unparsed` when there is any, the body length in
-bytes, and the receipt time. The last two are the only things in it the octets
+`NNNN.headers.json` is JSON with `sort_keys=True`: the request line, the
+method, the path, every header the split produced, `unparsed` when there is
+any, the body length in bytes, and the receipt time. The last two are the only things in it the octets
 of the head do not carry. A1 (§3.2) wrote these key names and A3 kept them.
 The manifest carries two of these values across — `Content-Type` and
 `Content-Encoding` — so that a reader of one `bodies` entry knows what the
@@ -310,15 +329,16 @@ A `POST` to `/v1/traces` — that exact path, no other — is recorded as the ne
                 ["User-Agent", "OTel-OTLP-Exporter-Python/1.37.0"]],
     "method": "POST",
     "path": "/v1/traces",
-    "received_at": "2026-10-09T12:00:01.500000+00:00"
+    "received_at": "2026-10-09T12:00:01.500000+00:00",
+    "request_line": "POST /v1/traces HTTP/1.1"
   }
   ```
 
   `headers` is a **list of `[name, value]` pairs in the order received**, with
   names as sent and values as sent less the whitespace around them (§2.3),
   because a header may legally repeat and a JSON object would silently keep
-  one of them. `path` is the request target
-  verbatim, query string included. `bytes` is the length of `NNNN.body` on
+  one of them. `request_line` is the request line whole (§2.3, A3g); `path` is
+  the request target verbatim, query string included. `bytes` is the length of `NNNN.body` on
   disk. `received_at` comes from the injected `now` (§3.6) and is the only
   clock the record has. (§2.3: A1 wrote these key names and A3 kept them;
   §5.4 carries two of these values into the manifest and changes nothing here.)
@@ -548,10 +568,52 @@ the lines from before that directory existed included, because the zoo keeps
 them until it does. It is a file in the run directory like any other, so it is
 listed in `files` with a digest of its own and `zoo verify` re-hashes it
 (§5.6). Nothing of it is echoed: the operator's terminal shows the zoo's own
-lines — the readiness line, one line per recorded body, the summary — and no
-Collector line. A refusal before the run directory exists quotes the
-Collector's last lines in the refusal instead (§4.6), because there is no
-directory to put a log in. `collector.log` is opened to be created, never to
+lines and no Collector line. A refusal before the run directory exists quotes
+the Collector's last lines in the refusal instead (§4.6), because there is no
+directory to put a log in.
+
+The zoo's own lines are these, and there are no others. Each `<...>` stands
+for a value; everything else is printed as it stands here:
+
+```text
+zoo capture: the raw bytes are the record. Ctrl-C to stop.
+zoo capture: recording POST /v1/traces on http://<host>:<port> -> <run>/raw/
+zoo capture: collector <version> re-encoding to JSON into <run>/json/, via http://<host>:<port>
+  <file>  <bytes> bytes  sha256:<the digest's first 12 hex digits>
+  ! <file> recorded, NOT forwarded: <the error>
+  ! <file> forwarded, collector said <status>
+  ! collector exited: <code> -- the raw bytes are still being recorded, json/ is not (SPEC.md section 4.6)
+  ! a forward was still waiting on the Collector after <seconds>s; stopping it anyway
+  ! the Collector did not stop on SIGTERM and was sent SIGKILL: its last batch may not have reached json/
+zoo capture: stopping
+zoo capture: <n> body/bodies in raw/<, n in each other directory>, under <run>/, MANIFEST.json written: kind=<kind><what went wrong>
+zoo capture: refusing to start: <why>
+```
+
+- The **readiness line** is printed once, first, and only once the run
+  directory exists (§4.6); the **two lines after it** name the raw sink's
+  port and directory and the Collector's version, the json sink's directory
+  and its port.
+- **One line per recorded body**, on either side, as it lands (§3.6's
+  `after_record`): its file relative to the run directory, its length and the
+  start of its digest. A single export prints two, one in `raw/` and one in
+  `json/`.
+- The **`!` lines** are the run's failures as they happen: a forward that did
+  not happen or that the Collector answered with anything but a 2xx (§4.4), the
+  Collector exiting on its own (§4.6), and the two bounded waits of the
+  shutdown running out (§4.6).
+- **`zoo capture: stopping`** is printed when the run is asked to end, after an
+  empty line, so that it does not share a line with the `^C` a terminal
+  echoes.
+- The **summary** counts bodies by the directory they are in (§4.6), and goes
+  on, when they happened, with `, <n> forward(s) FAILED -- json/ is
+  incomplete and MANIFEST.json says which (SPEC.md section 4.4)` and one `,
+  PROBLEM: <problem>` per problem (§4.5).
+- **`refusing to start`** is the one line on stderr: the refusal before
+  anything exists (§4.6, §5.1), naming the port or the cause.
+
+`tests/test_shutdown.py` holds the list both ways: every line the code prints
+in the runs it drives is one of these, and each of these is one it printed. `collector.log` is opened to be created, never to
 overwrite or append: one already in the run directory is refused, like a body
 already there (§3.1).
 
@@ -568,14 +630,39 @@ The raw sink forwards every body it **accepts** (§3.2 — a POST to
   `raw/NNNN.body`. Still gzipped if it arrived gzipped, still protobuf if it
   arrived as protobuf. The sink does not decompress, decode, re-encode or
   re-frame it to forward it, exactly as it does not to record it;
-- the headers are **every header as received, in order, repeats included**,
-  with two exceptions that name the connection rather than the payload:
-  `Host` (which names the destination, and the destination has changed) and
-  the hop-by-hop headers of RFC 9110 §7.6.1 — `Connection`, `Keep-Alive`,
-  `Transfer-Encoding`, `TE`, `Upgrade`, `Proxy-Authorization`,
-  `Proxy-Authenticate`. `Content-Type`, `Content-Encoding`, `Content-Length`
-  and `User-Agent` go through untouched, because they are what the Collector
-  needs in order to read the bytes the exporter actually sent.
+- the head is **the recorded head**: the octets of `raw/NNNN.headers.raw`
+  (§2.3) — the request line, every header line in the order sent, repeats,
+  spacing and line endings as they arrived — written onto the socket by the
+  zoo, as the replay writes its head (§6.2), with two changes that name the
+  connection rather than the payload, each a whole line of §2.3's split:
+  - the **`Host` line** is substituted by §6.2's rule — the name as sent,
+    `: `, and the Collector's `host:port` — because the destination has
+    changed;
+  - the **hop-by-hop header lines** of RFC 9110 §7.6.1 — `Connection`,
+    `Keep-Alive`, `Transfer-Encoding`, `TE`, `Trailer`, `Upgrade`,
+    `Proxy-Authorization`, `Proxy-Authenticate`, matched by field name in any
+    case — are dropped with their CRLF, because they describe a connection the
+    forward is not.
+
+  `Content-Type`, `Content-Encoding`, `Content-Length` and `User-Agent` go
+  through untouched, because they are what the Collector needs in order to
+  read the bytes the exporter actually sent. Every other octet goes as it
+  came: a line §2.3's split lists under `unparsed` is not a header line and
+  is neither dropped nor changed; a head that carried no `Host` gets none; a
+  `Host:` or a hop-by-hop name after a bare LF is inside another line and is
+  not touched; and a head with no CRLF at all is one line and goes unchanged.
+
+**The head is the record, not the stdlib's parse** (A3g; the run-2b review,
+N-7). Until A3g the forward sent the headers `http.server` parsed, through
+`http.client` — and a bare CR made that parse assert a header no client sent
+(§2.3): `User-Agent: otel\rContent-Encoding: gzip` reached the Collector as a
+`Content-Encoding: gzip` of its own, the Collector answered `400` for a body
+the record says declared no encoding, and the forward's outcome was a fact
+about a request nobody made. The forward now sends what the record says
+arrived, so whatever the Collector answers is an answer to that. A head HTTP
+forbids goes as it arrived, as it does on replay (§6.2): a bare CR inside a
+value is the client's, and the Collector's answer to it is a fact about the
+Collector.
 
 **The body is on disk before the forward is attempted.** That order is the
 whole point: the record is made first and the convenience second, so there is
@@ -807,9 +894,17 @@ rather than hidden: a `zoo capture` killed with `SIGKILL` cannot stop its
 Collector, which is then left running, holding its ports, until it is stopped by
 hand.
 
-**`SIGINT` and `SIGTERM` both end a run**, through a handler that only asks it
-to stop; the shutdown itself happens on the main thread, which is where the
-Collector gets stopped rather than orphaned holding its port. A Ctrl-C during
+**`SIGINT`, `SIGTERM` and `SIGHUP` all end a run**, through a handler that
+only asks it to stop; the shutdown itself happens on the main thread, which is
+where the Collector gets stopped rather than orphaned holding its port.
+`SIGHUP` is the terminal going away — its window closed, its ssh session
+dropped — and the kernel sends it to the foreground process group, which the
+Collector, in its own session, is not in. Left to its default action it killed
+`zoo capture` alone: the manifest was never completed and the Collector was
+left running, holding its port (run-2b review, N-2). It is handled as Ctrl-C
+is, and a line written to the terminal that hung up — which fails with `EIO`
+rather than `EPIPE` — is the closed stdout above by another errno: the run is
+already ending, and the line goes nowhere. A Ctrl-C during
 the readiness wait, before the handler is installed, still stops the child the
 launcher started before it propagates. This is installed
 rather than relied upon, and the caller waits in short hops rather than once
@@ -872,7 +967,7 @@ columns line up — that would be improving the capture.
 
 | Seam | What it is | Why |
 |---|---|---|
-| `forward` | called with the method, path, headers and body once the body is on disk; returns the forwarded request's HTTP status or raises | one of the package's two outbound sockets, with §6.2's `send`. A test drives the tee with a forward that records what it was handed, so the tee's mechanics need no Collector |
+| `forward` | called with the request's recorded head octets (`NNNN.headers.raw`, §2.3) and its body once both are on disk; returns the forwarded request's HTTP status or raises | one of the package's two outbound sockets, with §6.2's `send`. A test drives the tee with a forward that records what it was handed, so the tee's mechanics need no Collector |
 | `launch` | called with the resolved config, environment and ports; returns a handle that can be stopped — saying whether it took a `SIGKILL` — **asked whether the child is still there**, and told where to keep the child's log once the run directory exists | starting a process is touching the world. A test passes a launcher that starts nothing, reports the pinned version, and can say the child exited — which is how §4.6's mid-run failure is driven without killing anything |
 | `sleep` | the readiness wait between looks, a bounded number of them | no module under `spanweave_zoo/` reads a clock or sleeps on its own (`CLAUDE.md`); `cli.py` passes the one real `sleep`, as it passes the one real `now` |
 | `after_forward` | called with each forward's outcome once it is in the manifest | one printed line per forward, and the way a test observes a forward without polling a file |
@@ -1006,13 +1101,19 @@ and no seal, and changing any value — `kind`, a `problems` line, an entry of
 `bodies`, `files` or `forwards`, `project_manifest`, a timestamp — changes the
 seal it should carry. `zoo verify` recomputes it (§5.6).
 
-The seal is what makes the manifest's own claims checkable. The file digests
-cover every other file, but nothing covered the manifest: `kind` flipped
-between the two values the spec names, a `problems` line deleted, or a `files`
-entry rewritten together with the file it describes all left every digest
-agreeing. A seal cannot be added to a capture after it is taken, because
-adding one would be the zoo vouching for a document it did not write at the
-time (§5.6, the committed fixture).
+The seal is what makes an edit to the manifest's own claims show. The file
+digests cover every other file, but nothing covered the manifest: `kind`
+flipped between the two values the spec names, a `problems` line deleted, or a
+`files` entry rewritten together with the file it describes all left every
+digest agreeing.
+
+**What the seal is, and no more** (the decision of 2026-10-11, "the seal"). It
+catches accidental and incidental edits — a hand edit, a tool that rewrote a
+field, a merge that kept the wrong side — because any of them leaves a seal
+that no longer matches. It is **not authentication**: it is a digest anyone
+can compute, so a manifest edited and then **resealed by hand verifies**, and
+`tests/test_manifest.py` holds that limit so this text cannot drift back into
+promising more. Nothing here proves who wrote a manifest, or when.
 
 Nothing else. The manifest has no field for how many spans a capture holds, how
 long an export was, which project the bytes came from beyond what the project's
@@ -1198,8 +1299,8 @@ that a capture is there, and a typo must not read as a clean bill of health.
 The **default** root is the one exception and the only place emptiness passes:
 with no `[path]` at all, a `captures/` that is absent or holds no run is
 nothing to re-hash and exits **0**. That is a repository that has recorded no
-captures yet, which is this one, and is why `make verify` also names a capture
-it can actually read (below).
+captures yet, which this one was until Z4's, and is why `make verify` also
+names a capture it can actually read (below).
 
 For every run it finds, `zoo verify` reads `MANIFEST.json` and then checks
 **both directions**:
@@ -1272,22 +1373,27 @@ completed is not one `verify` can pass.
 `tests/fixtures/capture/`**, and `make check` depends on it: the immutability
 claim is worth making only because something checks it on every run. A tree
 with no captures at all is nothing to re-hash and exits zero — which is what
-`captures/` is in this repository, and a gate that re-hashes nothing on every
-CI leg is a line in a log rather than a check. So one real capture is committed
+`captures/` was in this repository until Z4's first captures were committed,
+and is what it is in any checkout without them — and a gate that re-hashes
+nothing on every CI leg is a line in a log rather than a check. So one real
+capture is committed
 under `tests/fixtures/capture/`: a single OTLP protobuf body through the real
 tee — the hand-built export of `tests/otlp.py` into the raw sink, the stock
 Collector behind it, its JSON re-encoding into the json sink — with both
 headers files on each side, both journals and the manifest the run assembled,
 and the Collector's `collector.log`, on a clock the run chose. It is a capture,
 so it is never edited (`CLAUDE.md`, "Halt points"); and it is deliberately not
-under `captures/`, which is where the zoo's own recorded runs go. It was
-**regenerated once**, by A3f, as the decision of 2026-10-11 ("the seal")
-required: a seal cannot be added to a capture after it is taken, so the
-unsealed fixture A3d took could only be replaced by a new capture through the
-same tee, never sealed in place. The replacement is a new run and was never
-an edit of the old one; its two bodies are byte-identical to the old one's. A fixture that went
-missing makes `make verify` exit 2 by the rule above, rather than quietly
-checking nothing again.
+under `captures/`, which is where the zoo's own recorded runs go. It has been
+**regenerated twice**, each time as a new run through the same tee and never
+as an edit of the one before, its two bodies byte-identical every time: by
+A3f, because the decision of 2026-10-11 ("the seal") gave every capture a seal
+and a capture is sealed when it is taken or not at all; and by A3g, because
+the ratified header rule (§2.3) gave its `headers.json` files a `request_line`
+they did not have, and a fixture whose json is not the split of its own octets
+would hold `tests/test_fixture_capture.py` to a rule that is no longer the
+rule. The zoo's own captures under `captures/` are never regenerated for a
+new rule (§2.3). A fixture that went missing makes `make verify` exit 2 by the
+rule above, rather than quietly checking nothing again.
 
 ### 5.7 What the manifest is not
 
@@ -1312,11 +1418,13 @@ zoo replay captures/z4/2026-10-10T09-00-00Z --to http://127.0.0.1:8080 --json --
 Re-send each recorded body to another receiver with its captured head, in
 receipt order, **adding nothing** (`CLAUDE.md` §0.6 rule 5). It writes the
 captured head octets onto a socket itself, with only the `Host` line
-substituted, and then the body (§6.2). It is **not** the tee's forward (§4.3):
-that one hands the pieces of a head to `http.client`, which writes a head of
-its own from them — and a replay is a claim about the head, where a forward to
-the Collector is only a way to get a body re-encoded (the decision of
-2026-10-11, "replay").
+substituted, and then the body (§6.2). It goes through neither `http.client` nor the
+stdlib's parse — `http.client` writes a head of its own from the pieces it is
+handed, and a replay is a claim about the head (the decision of 2026-10-11,
+"replay"). Since A3g the tee's forward (§4.3) sends the recorded octets by the
+same rule, and differs from a replay in one thing: it drops the hop-by-hop
+lines, because a forward to the Collector is a way to get a body re-encoded
+and not a claim about the exporter's connection.
 
 The replayer is what makes a capture usable by a receiver that was not there
 when it was recorded — the audit (§7) is its first caller, and it sends the
@@ -1399,9 +1507,12 @@ A head **HTTP forbids** goes out as it arrived. A bare CR inside a value is
 the case: it arrived on a socket, so it goes out on one, and the receiver's
 answer to it is a fact about the receiver. The same holds for a head whose
 framing the recorded body does not match — a `Transfer-Encoding: chunked`
-POST is recorded with a zero-byte body (§3.7), and replayed it leaves the
-receiver waiting for chunks; the timeout that follows is the answer, and it
-counts as not sent (§6.4).
+POST is recorded with a zero-byte body (§3.7). What happens next is the
+receiver's: one that reads the framing waits for chunks that never come — the
+stock Collector does — and the timeout that follows counts as not sent
+(§6.4); one that does not, a `zoo sink` among them, reads no body and answers
+`200`, recording a zero-byte body again. Either is a fact about the receiver,
+and the replay sends the same octets to both.
 
 **`--json`.** `json/NNNN.json` is a body the Collector POSTed to the json
 sink, and that sink recorded the Collector's head beside it as
@@ -1477,9 +1588,20 @@ finding and not an error (`CLAUDE.md` §0.6 rule 7).
 | **1** | any answer was not a 2xx, or any body could not be sent at all — a head that is missing, empty or unterminated (§6.2), a body file the manifest lists that is not on disk, a connection that failed or an answer that never came |
 | **2** | nothing was sent: the path is not a capture, its manifest is unreadable, or it holds no body in the chosen directory |
 
-The summary line says how many were sent and how many did not answer 2xx, and
-the problems are printed again under it, because a replay of a long capture
-scrolls and the last line is the one that is read.
+The summary line says how many were sent, how many of those did not answer
+2xx, and how many were not sent at all, and the problems are printed again
+under it, because a replay of a long capture scrolls and the last line is the
+one that is read:
+
+```
+zoo replay: <n> sent, <n> that did not answer 2xx, <n> not sent
+```
+
+**Sent means answered**: a body is counted as sent when a receiver answered it
+with a status. A head that could not be read, a body file that is missing, a
+connection refused and an answer that never came are each *not sent* — before
+A3g they were counted as sent and as not answering 2xx, so a replay into a
+port with nothing on it said every body had been sent (run-2b review, N-10).
 
 ### 6.5 What the replayer is not
 

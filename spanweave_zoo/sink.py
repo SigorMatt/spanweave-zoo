@@ -45,15 +45,20 @@ nothing else (`split_head`), so a bare CR or LF stays inside the value it
 arrived in. The stdlib's parse had done worse than truncate: a value of
 `otel\\rX-Injected: yes` came out of it as two headers, one of which no client
 sent. The stdlib's parse is still what the sink *handled* the request with --
-its `Content-Length`, the content type it echoes, the headers it forwards --
-and it is no longer what the record says the request carried.
+its `Content-Length`, the content type it echoes, the path that chose the
+directory -- and it is no longer what the record says the request carried.
+
+A3g took the parse out of the forward too (`SPEC.md` §4.3): the tee hands the
+Collector the recorded octets, with only the `Host` line and the hop-by-hop
+lines changed, so `otel\\rContent-Encoding: gzip` cannot reach it as a header
+the record says the request never sent.
 
 A2 added one more seam and no new taste (`SPEC.md` §4.3): `forward`, which the
 recorder calls with the body **once the body is on disk**, so the Collector can
 re-encode the same bytes to JSON beside the record. The order is the point --
 the record is made first and the convenience second -- and a forward that fails
 is written into the manifest rather than swallowed (§4.4). The forward is still
-not a decode: it hands on the bytes and the headers it was given.
+not a decode: it hands on the bytes and the head octets that were recorded.
 """
 
 from __future__ import annotations
@@ -61,7 +66,7 @@ from __future__ import annotations
 import io
 import socketserver
 import threading
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -134,9 +139,10 @@ def split_head(head: bytes) -> dict[str, object]:
     a bare LF is inside the line it arrived in, and so inside the value: the
     record cannot be made to assert a header the client did not send.
 
-    - The first line is the request line: `method` is what precedes its first
-      space, `path` what lies between that space and the next (or the line's
-      end).
+    - The first line is the request line, recorded whole as `request_line`,
+      so nothing after the path is dropped: `method` is what precedes its
+      first space, `path` what lies between that space and the next (or the
+      line's end).
     - Every later line that is not empty is a header if what precedes its
       first colon is a field-name token; the `[name, value]` pair has the name
       as sent and the value with surrounding spaces and tabs removed, in the
@@ -146,9 +152,23 @@ def split_head(head: bytes) -> dict[str, object]:
       which is absent when there are none.
     - The empty lines are the block's terminator and carry nothing.
 
+    A head with **no CRLF at all** -- every line of it ended by a bare LF,
+    which the stdlib's reader accepts -- is one line on this split and holds
+    no request line the split can find. It is listed whole, verbatim, as the
+    one `unparsed` entry, and `request_line`, `method` and `path` are absent:
+    a json that read them out of it would be parsing on LF, and one that
+    listed nothing would omit the whole block without saying so (the decision
+    of 2026-10-11, "header rule").
+
     Pure: the same octets give the same document on any machine.
     """
-    lines = head.decode("latin-1").split("\r\n")
+    text = head.decode("latin-1")
+    if "\r\n" not in text:
+        unsplit: dict[str, object] = {"headers": []}
+        if text:
+            unsplit["unparsed"] = [text]
+        return unsplit
+    lines = text.split("\r\n")
     method, _, rest = lines[0].partition(" ")
     path = rest.split(" ", 1)[0]
     headers: list[list[str]] = []
@@ -165,15 +185,16 @@ def split_head(head: bytes) -> dict[str, object]:
         "headers": headers,
         "method": method,
         "path": path,
+        "request_line": lines[0],
     }
     if unparsed:
         document["unparsed"] = unparsed
     return document
 
 
-# (method, path, headers as received, body) -> the forwarded request's status.
+# (the head's octets as recorded, the body) -> the forwarded request's status.
 # Raises on a forward that did not happen. `SPEC.md` §4.8.
-Forward = Callable[[str, str, Sequence[tuple[str, str]], bytes], int]
+Forward = Callable[[bytes, bytes], int]
 
 
 class CaptureExists(Exception):
@@ -296,9 +317,6 @@ class Recorder:
     def record(
         self,
         *,
-        method: str,
-        path: str,
-        headers: Sequence[tuple[str, str]],
         head: bytes,
         body: bytes,
         accepted: bool,
@@ -306,15 +324,12 @@ class Recorder:
         """Write one request to disk and return its manifest entry.
 
         `head` is the request line and the header block as the octets arrived
-        (`SPEC.md` §2.3), and `headers` is the stdlib's parse of those same
-        octets. The octets are written, and `NNNN.headers.json` is derived
-        from them by `split_head` -- never from `headers`, which a bare CR
-        can make assert a header nobody sent. `method`, `path` and `headers`
-        are what the sink *handled* the request with: the path chose the
-        directory, and the parse is what a forward sends on. `head` is a
-        required argument because every recorded request has one, and a
-        recorder that could be handed the parse without the octets is a
-        recorder that can write a capture missing its own record.
+        (`SPEC.md` §2.3). The octets are written, `NNNN.headers.json` is
+        derived from them by `split_head`, and a forward is handed them too
+        (`SPEC.md` §4.3) -- never the stdlib's parse, which a bare CR can make
+        assert a header nobody sent. `accepted` is the one thing the parse
+        decided: the path chose the directory. The recorder is not handed the
+        parse at all, so nothing it writes or sends can come from it.
         """
         if self._before_record is not None:
             self._before_record(body)
@@ -348,17 +363,10 @@ class Recorder:
         if self._after_record is not None:
             self._after_record(entry)
         if accepted:
-            self._tee(method, path, headers, body, entry)
+            self._tee(head, body, entry)
         return entry
 
-    def _tee(
-        self,
-        method: str,
-        path: str,
-        headers: Sequence[tuple[str, str]],
-        body: bytes,
-        entry: manifest.BodyEntry,
-    ) -> None:
+    def _tee(self, head: bytes, body: bytes, entry: manifest.BodyEntry) -> None:
         """Hand the recorded bytes to the Collector (`SPEC.md` §4.3).
 
         Called **after** the body, its headers and its digest are on disk, and
@@ -374,7 +382,7 @@ class Recorder:
         if self._forward is None:
             return
         try:
-            status = self._forward(method, path, headers, body)
+            status = self._forward(head, body)
         except Exception as failure:
             outcome = manifest.ForwardEntry(
                 file=entry.file,
@@ -496,9 +504,6 @@ class _Handler(BaseHTTPRequestHandler):
             body = self._read_body()
             accepted = recorder.accepts(self.path)
             recorder.record(
-                method=self.command,
-                path=self.path,
-                headers=list(self.headers.items()),
                 head=self._head,
                 body=body,
                 accepted=accepted,

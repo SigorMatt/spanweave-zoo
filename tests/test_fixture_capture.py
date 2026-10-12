@@ -1,9 +1,9 @@
 """The committed capture, and the gate that reads it (`SPEC.md` §5.6).
 
-`make verify` is the gate behind the immutability claim, and until now it had
-nothing to check: `captures/` is empty in this repository, so every CI run
-re-hashed zero bytes and said so. A gate that passes over nothing is not a
-gate -- it is a line in a log.
+`make verify` is the gate behind the immutability claim, and until A3d it had
+nothing to check: `captures/` was empty in this repository (until Z4's were
+committed), so every CI run re-hashed zero bytes and said so. A gate that
+passes over nothing is not a gate -- it is a line in a log.
 
 So one real capture is committed under `tests/fixtures/capture/`: one OTLP
 protobuf body through the real tee (`tests/otlp.py`'s hand-built export into
@@ -145,3 +145,6 @@ def test_each_headers_json_is_the_crlf_split_of_its_headers_raw():
         assert parsed["headers"] == expected
         method, path = lines[0].split(" ")[:2]
         assert (parsed["method"], parsed["path"]) == (method, path)
+        # The request line whole, HTTP version and all (the decision of
+        # 2026-10-11, "header rule"; A3g regenerated this capture for it).
+        assert parsed["request_line"] == lines[0]

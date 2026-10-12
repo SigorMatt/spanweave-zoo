@@ -12,16 +12,22 @@ It is byte-identical on purpose, and that is a stronger claim than it looks:
 - the body goes out as it came in. Still gzipped if it arrived gzipped, still
   protobuf if it arrived as protobuf. Nothing here decompresses, decodes,
   re-encodes or re-frames, exactly as nothing in the sink does;
-- every header goes out as it came in, **in order, repeats included**, which is
-  why this uses `putrequest` / `putheader` rather than `request(headers=dict)`:
-  a dict would silently keep one of two repeated headers, and the headers are
-  part of the record (`SPEC.md` §2.3).
+- the head goes out as it was **recorded** -- the octets of `NNNN.headers.raw`
+  (`SPEC.md` §2.3), request line, order, repeats, spacing and line endings
+  as they arrived -- and is written onto the socket here rather than handed to
+  `http.client` in pieces. Before A3g the forward sent the stdlib's parse of
+  the head through `http.client`, and a bare CR in a value made that parse
+  assert a header no client sent: `otel\\rContent-Encoding: gzip` reached the
+  Collector as a `Content-Encoding` the record says the request never
+  carried (run-2b review, N-7).
 
-The two exceptions name the connection rather than the payload: `Host`, because
-the destination has changed, and the hop-by-hop headers of RFC 9110 §7.6.1,
-because they describe a connection this is not. `Content-Type`,
-`Content-Encoding`, `Content-Length` and `User-Agent` go through untouched --
-they are what the Collector needs in order to read what the exporter sent.
+The two exceptions name the connection rather than the payload, and each is a
+whole line of §2.3's split (`collector_head`): the `Host` line, substituted,
+because the destination has changed, and the hop-by-hop header lines of RFC
+9110 §7.6.1, dropped, because they describe a connection this is not.
+`Content-Type`, `Content-Encoding`, `Content-Length` and `User-Agent` go
+through untouched -- they are what the Collector needs in order to read what
+the exporter sent.
 
 Nothing here parses a body, and nothing here looks at the Collector's answer
 beyond its status: a forward's outcome belongs in the manifest (`SPEC.md`
@@ -32,7 +38,8 @@ from __future__ import annotations
 
 import http.client
 import socket
-from collections.abc import Sequence
+
+from spanweave_zoo import sink
 
 # RFC 9110 §7.6.1. A hop-by-hop header describes the connection it arrived on,
 # and the forward is a different connection: passing them on would be passing
@@ -50,23 +57,51 @@ HOP_BY_HOP = frozenset(
     }
 )
 
-# Plus `Host`, which names the destination -- and the destination has changed.
-NOT_FORWARDED = HOP_BY_HOP | {"host"}
-
 DEFAULT_TIMEOUT = 5.0
 
 
-def forwardable(
-    headers: Sequence[tuple[str, str]],
-) -> list[tuple[str, str]]:
-    """Every header as received, in order, minus the ones about the connection.
+def rewrite_head(
+    octets: bytes, host: str, *, drop: frozenset[str] = frozenset()
+) -> bytes:
+    """The head with its `Host` lines naming `host`, and the `drop` lines gone.
 
-    Repeats survive, because a header may legally repeat and the capture kept
-    both (`SPEC.md` §2.3). Names and values are untouched.
+    The lines are `SPEC.md` §2.3's -- the octets split on CRLF and on nothing
+    else -- and a header line is a line after the request line, before the
+    empty line, whose field name (`sink.field_name`) is a token. A `Host`
+    line, in any case, becomes the name as sent, a colon, one space and
+    `host`; its CRLF stays. A header line whose name, in any case, is in
+    `drop` is removed with its CRLF. Every other octet is as it was: a head
+    that carried no `Host` gets none, a `Host:` after a bare LF is inside
+    another line and is not touched, and a head with no CRLF at all is one
+    line and comes back unchanged. One rule for the replay (`SPEC.md` §6.2,
+    nothing dropped) and the tee's forward (§4.3, the hop-by-hop lines
+    dropped), so the two cannot disagree about what a line is.
     """
-    return [
-        (name, value) for name, value in headers if name.lower() not in NOT_FORWARDED
-    ]
+    lines = octets.split(b"\r\n")
+    kept = lines[:1]
+    for index in range(1, len(lines)):
+        line = lines[index]
+        if not line:
+            kept.extend(lines[index:])
+            break
+        name = sink.field_name(line.decode("latin-1"))
+        if name is not None:
+            folded = name.lower()
+            if folded in drop:
+                continue
+            if folded == "host":
+                line = name.encode("latin-1") + b": " + host.encode("latin-1")
+        kept.append(line)
+    return b"\r\n".join(kept)
+
+
+def collector_head(octets: bytes, host: str) -> bytes:
+    """What the tee sends the Collector for a recorded head (`SPEC.md` §4.3).
+
+    The recorded octets with the `Host` line naming the Collector and the
+    hop-by-hop header lines dropped; nothing else changed.
+    """
+    return rewrite_head(octets, host, drop=HOP_BY_HOP)
 
 
 class HttpForward:
@@ -94,32 +129,15 @@ class HttpForward:
     def endpoint(self) -> str:
         return f"http://{self.host}:{self.port}"
 
-    def __call__(
-        self,
-        method: str,
-        path: str,
-        headers: Sequence[tuple[str, str]],
-        body: bytes,
-    ) -> int:
-        connection = http.client.HTTPConnection(
-            self.host, self.port, timeout=self.timeout
+    def __call__(self, head: bytes, body: bytes) -> int:
+        """Send `head` as `collector_head` makes it, then `body`; the status."""
+        return send_head(
+            self.host,
+            self.port,
+            collector_head(head, f"{self.host}:{self.port}"),
+            body,
+            timeout=self.timeout,
         )
-        try:
-            # `skip_host` and `skip_accept_encoding`: `http.client` would
-            # otherwise add a `Host` and an `Accept-Encoding: identity` of its
-            # own, and this forward sends the exporter's headers, not ours.
-            connection.putrequest(
-                method, path, skip_host=True, skip_accept_encoding=True
-            )
-            connection.putheader("Host", f"{self.host}:{self.port}")
-            for name, value in forwardable(headers):
-                connection.putheader(name, value)
-            connection.endheaders(body)
-            response = connection.getresponse()
-            response.read()
-            return response.status
-        finally:
-            connection.close()
 
 
 def send_head(
@@ -132,16 +150,17 @@ def send_head(
 ) -> int:
     """Put `head` and then `body` on one connection, and return the status.
 
-    The replay's `send` (`SPEC.md` §6.2): the octets go out as they are handed
-    over, so nothing here re-forms a request line, re-orders, re-spaces or
-    re-terminates a header, adds one or drops one -- which is what
-    `http.client` does to every head it writes, and why the replay does not
-    write through it. The caller has already substituted the `Host` line.
+    The replay's `send` (`SPEC.md` §6.2) and the tee's forward (§4.3): the
+    octets go out as they are handed over, so nothing here re-forms a request
+    line, re-orders, re-spaces or re-terminates a header, adds one or drops
+    one -- which is what `http.client` does to every head it writes, and why
+    neither writes through it. The caller has already rewritten the head
+    (`rewrite_head`).
 
     The answer is read by the stdlib's response parser, which frames it (a
     `Content-Length`, chunks, or the connection's close) so the connection
     ends cleanly; nothing but its status is kept (`SPEC.md` §6.5). Raises
-    whatever the socket raises, as `HttpForward` does.
+    whatever the socket raises; `HttpForward`'s caller records it.
     """
     with socket.create_connection((host, port), timeout=timeout) as connection:
         connection.sendall(head + body)

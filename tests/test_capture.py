@@ -12,6 +12,7 @@ against its own copy of the version would pass the day the two disagreed.
 
 from __future__ import annotations
 
+import errno
 import http.client
 import json
 import signal
@@ -132,11 +133,9 @@ class Straight:
     def __init__(self) -> None:
         self.capture: capture.Capture | None = None
 
-    def __call__(self, method, path, headers, body):
+    def __call__(self, head, body):
         assert self.capture is not None and self.capture.json is not None
-        return forward.HttpForward("127.0.0.1", self.capture.json.port)(
-            method, path, headers, body
-        )
+        return forward.HttpForward("127.0.0.1", self.capture.json.port)(head, body)
 
 
 def project_manifest_file(tmp_path: Path, document: object = None) -> Path:
@@ -356,7 +355,7 @@ def test_a_failed_forward_leaves_the_capture_intact_and_exits_non_zero(tmp_path)
     # the Collector is a separate process and may simply not be there.
     run = tmp_path / "captures" / "z4" / "run-1"
 
-    def refusing(method, path, headers, body):
+    def refusing(head, body):
         raise ConnectionRefusedError(111, "Connection refused")
 
     started, _ = running_capture(run, forwarder=refusing)
@@ -516,12 +515,14 @@ def test_a_signal_ends_the_run_rather_than_leaving_the_collector_behind(tmp_path
     assert launcher.running.stopped == 1, "the Collector was left running"
 
 
-def test_both_stop_signals_are_handled(tmp_path):
+def test_every_stop_signal_is_handled(tmp_path):
+    # Ctrl-C, a supervisor's SIGTERM, and -- A3g, run-2b review N-2 -- the
+    # SIGHUP of a terminal that went away (`SPEC.md` §4.6).
     run = tmp_path / "captures" / "z4" / "run-1"
     started, _ = running_capture(run)
     previous = cli._stop_on_signal(started)
     try:
-        assert set(previous) == {signal.SIGINT, signal.SIGTERM}
+        assert set(previous) == {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
         for number in previous:
             assert signal.getsignal(number) not in (
                 signal.SIG_DFL,
@@ -843,7 +844,7 @@ def stub_capture(
         run,
         now=Clock(),
         launcher=launcher,
-        forward=lambda method, path, headers, body: 200,
+        forward=lambda head, body: 200,
         pin=pinned,
         kind="recorded",
         project_manifest=project_manifest_file(tmp_path),
@@ -1125,5 +1126,52 @@ def test_a_closed_stdout_ends_the_run_and_leaves_the_manifest_complete(tmp_path)
     assert document[manifest.ENDED_AT] > document[manifest.STARTED_AT]
     assert manifest.FILES in document
     assert started.problems == []
+    assert cli._exit_status(started) == 0
+    assert cli.verify(tmp_path / "captures") == 0
+
+
+class HungUp:
+    """A terminal that has gone: the session's tty was closed under the run.
+
+    A write to a tty whose terminal hung up fails with `EIO`, not with
+    `EPIPE`: the shell's window was closed or the ssh session dropped, and
+    the same `SIGHUP` that ended the run arrives with it (`SPEC.md` §4.6).
+    """
+
+    def __init__(self) -> None:
+        self.writes = 0
+
+    def write(self, text: str) -> int:
+        self.writes += 1
+        raise OSError(errno.EIO, "Input/output error")
+
+    def flush(self) -> None:
+        pass
+
+
+def test_a_hung_up_terminal_ends_the_run_as_a_closed_pipe_does(tmp_path):
+    # A3g; run-2b review N-2. After a hang-up the next line raises `EIO`, and
+    # before A3g that escaped `Progress` -- on the main thread, out of the
+    # `finally` that stops the Collector, which was then left running. It is
+    # now the same event as a closed pipe: the run is asked to stop, later
+    # lines go nowhere, and the manifest is completed.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    terminal = HungUp()
+    progress = cli.Progress(terminal)
+    started, launcher = running_capture(
+        run,
+        log=progress,
+        wire=lambda running: setattr(progress, "on_broken", running.request_stop),
+    )
+    try:
+        assert progress.broken
+        assert terminal.writes == 1, "it kept writing to a terminal that is gone"
+        started.serve_forever(poll_interval=0.01)
+        progress("\nzoo capture: stopping")
+    finally:
+        started.stop()
+
+    assert launcher.running.stopped == 1, "the Collector was not stopped"
+    assert manifest.ENDED_AT in manifest.read(run)
     assert cli._exit_status(started) == 0
     assert cli.verify(tmp_path / "captures") == 0

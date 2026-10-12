@@ -3,6 +3,53 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A3g — the run-2b review's `next batch` items, closed
+
+Run-2b review (`patches/REVIEW-2026-10-11.md`) N-2 to N-12; the decisions of
+2026-10-11 ("header rule", "the seal"). N-1 was the plan's own, made by the
+orchestrator before this batch.
+
+- **`headers.json` records the request line whole** (`SPEC.md` §2.3, §3.2):
+  `request_line`, verbatim, beside `method` and `path`, so the HTTP version
+  and anything after it are no longer dropped (N-8). A head with **no CRLF at
+  all** is one `unparsed` entry, verbatim, with no `request_line`, `method`
+  or `path`; it used to read as an empty, fully parsed head.
+- **The tee forwards the recorded head, not the stdlib's parse** (`SPEC.md`
+  §4.3, §4.8; N-7). The `forward` seam is now `(head octets, body)`; the
+  Collector is sent `NNNN.headers.raw` with the `Host` line substituted and
+  the hop-by-hop lines dropped, by the replay's own line rule
+  (`forward.rewrite_head`). A CR-injected `Content-Encoding: gzip` no longer
+  reaches the Collector as a header. `Recorder.record` takes the head, the
+  body and whether the path was accepted, and nothing of the stdlib's parse.
+- **`SIGHUP` ends a capture as Ctrl-C does** (`SPEC.md` §4.6; N-2): closing
+  the terminal or dropping ssh completes the manifest and stops the Collector,
+  which used to be left running. A write to a hung-up terminal (`EIO`) is
+  handled as a closed pipe.
+- **`SPEC.md` §4.2 lists every line `zoo capture` prints** (N-3), and a test
+  holds the list both ways, the summary included. README step 5 names
+  `zoo capture: stopping`.
+- **README**: a test holds the log-to-file variant's redirect, its `grep`, its
+  run id and its `timeout` together (N-4); the `timeout` is now 60 s, not
+  less than the zoo's own readiness wait (52.5 s). Step 4 says `make
+  run-real` needs `OPENAI_API_KEY` in that terminal (N-5).
+- **The seal's claim narrowed** (`SPEC.md` §5; N-6): it catches accidental
+  and incidental edits and is not authentication; a test shows a manifest
+  resealed by hand verifies.
+- **`zoo replay`'s summary counts only what was sent** (`SPEC.md` §6.4;
+  N-10): `<n> sent, <n> that did not answer 2xx, <n> not sent`, where sent
+  means a receiver answered.
+- `SPEC.md` §6.2's chunked replay no longer says it "will time out": that is
+  a framing-aware receiver's answer, and a `zoo sink` answers `200` (N-11).
+- Test gaps on the CRLF split closed (N-9): a CR or LF at a value's edge
+  stays, a non-token name is no header, and a seal present but not a string
+  fails verify.
+- **The committed fixture capture was regenerated** as a new run through the
+  real tee, because its `headers.json` files lacked `request_line` under the
+  ratified rule; both bodies are byte-identical to the last two fixtures'.
+  Z4's captures of 2026-10-12 are untouched and keep the json they were
+  taken with.
+- The run-2b patch set was written under `patches/` (N-12; untracked).
+
 ## A0c — the README survives its own rehearsal
 
 Run-2 review §1.5; `OPEN_QUESTIONS.md` §4 (option 2). Docs only, except the

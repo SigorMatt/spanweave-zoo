@@ -624,6 +624,52 @@ def test_a_non_2xx_does_not_stop_the_rest_and_exits_non_zero(tmp_path, capsys):
     assert "1 that did not answer 2xx" in printed
 
 
+def test_the_summary_counts_only_the_bodies_that_were_sent(tmp_path, capsys):
+    # A3g; run-2b review N-10 (run 2's N-7). With nothing listening, no body
+    # is sent -- every connection is refused -- and the summary said "2 sent,
+    # 2 that did not answer 2xx". A body that never reached a receiver was
+    # not sent, and a reader of the last line must not be told it was.
+    source = crafted(
+        tmp_path / "source",
+        [
+            (lambda port: head_octets(port, b"one"), b"one"),
+            (lambda port: head_octets(port, b"two"), b"two"),
+        ],
+        Clock("2026-10-09T12:00:00+00:00"),
+    )
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    status = cli.main(["replay", str(source), "--to", f"http://127.0.0.1:{closed}"])
+    assert status == 1
+    summary = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("zoo replay: ") and "sent" in line
+    ]
+    assert summary == ["zoo replay: 0 sent, 0 that did not answer 2xx, 2 not sent"], (
+        summary
+    )
+
+
+def test_the_summary_tells_a_refusal_from_a_body_never_sent(tmp_path, capsys):
+    # One body answered 415, one whose head is missing and so never left.
+    source = crafted(
+        tmp_path / "source",
+        [
+            (lambda port: head_octets(port, b"one"), b"one"),
+            (lambda port: head_octets(port, b"two"), b"two"),
+        ],
+        Clock("2026-10-09T12:00:00+00:00"),
+    )
+    (source / "raw" / "0002.headers.raw").unlink()
+    with scripted(415) as (_, port):
+        status = cli.main(["replay", str(source), "--to", f"http://127.0.0.1:{port}"])
+    assert status == 1
+    out = capsys.readouterr().out
+    assert "zoo replay: 1 sent, 1 that did not answer 2xx, 1 not sent" in out
+
+
 def test_a_head_http_forbids_goes_out_as_it_arrived_and_is_not_tidied(tmp_path):
     """The capture's octets, bare CR and all: `SPEC.md` §6.2.
 

@@ -271,6 +271,7 @@ def test_headers_json_is_the_crlf_split_of_headers_raw(tmp_path):
     with running(raw) as (_, port):
         send_octets(port, HEAD, b"hello")
     recorded = headers_of(raw)
+    assert recorded["request_line"] == "POST /v1/traces HTTP/1.1"
     assert recorded["method"] == "POST"
     assert recorded["path"] == "/v1/traces"
     assert recorded["headers"] == [
@@ -296,6 +297,79 @@ def test_a_line_that_is_not_a_header_is_listed_and_not_folded(tmp_path):
     assert ["X-Folded", "a"] in recorded["headers"]
     assert recorded["unparsed"] == ["  b", "no colon here"]
     assert all(name != "no colon here" for name, _ in recorded["headers"])
+
+
+def test_the_request_line_is_recorded_whole(tmp_path):
+    # A3g; run-2b review N-8 (F-c1) and the decision of 2026-10-11, "header
+    # rule": the request line is recorded verbatim under `request_line`, so
+    # nothing after the path -- the HTTP version, or anything else -- is
+    # dropped without being listed. `method` and `path` stay beside it.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    head = HEAD.replace(b"HTTP/1.1", b"HTTP/1.0", 1)
+    with running(raw) as (_, port):
+        send_octets(port, head, b"hello")
+    recorded = headers_of(raw)
+    assert recorded["request_line"] == "POST /v1/traces HTTP/1.0"
+    assert (recorded["method"], recorded["path"]) == ("POST", "/v1/traces")
+    # A request line with more after the version than HTTP allows: the
+    # stdlib refuses it before a body is read, so the split is held directly.
+    odd = sink.split_head(b"POST /v1/traces HTTP/1.1 and more\r\nHost: h\r\n\r\n")
+    assert odd["request_line"] == "POST /v1/traces HTTP/1.1 and more"
+    assert (odd["method"], odd["path"]) == ("POST", "/v1/traces")
+
+
+# Every line of this head ends in a bare LF and none in CRLF. The stdlib's
+# reader accepts it; the CRLF split finds no line ending at all in it.
+LF_ONLY_HEAD = (
+    b"POST /v1/traces HTTP/1.1\n"
+    b"Host: 127.0.0.1\n"
+    b"Content-Type: application/x-protobuf\n"
+    b"Content-Length: 5\n"
+    b"Connection: close\n"
+    b"\n"
+)
+
+
+def test_an_lf_only_head_is_one_unparsed_entry_and_nothing_else(tmp_path):
+    # A3g; run-2b review N-8: before, this head gave `headers: []`, no
+    # `unparsed`, and a `method` and `path` read out of the first line -- the
+    # json omitted the whole header block without saying so. Under the
+    # ratified rule it is one `unparsed` entry, verbatim, and no field claims
+    # a request line, a method or a path the split never found.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    with running(raw) as (_, port):
+        answer = send_octets(port, LF_ONLY_HEAD, b"hello")
+    assert answer.startswith(b"HTTP/1.1 200"), answer
+    assert head_of(raw) == LF_ONLY_HEAD
+    recorded = headers_of(raw)
+    assert recorded["unparsed"] == [LF_ONLY_HEAD.decode("latin-1")]
+    assert recorded["headers"] == []
+    for key in ("request_line", "method", "path"):
+        assert key not in recorded, f"{key} claimed from a head with no CRLF"
+    assert (recorded["bytes"], recorded["received_at"]) == (
+        5,
+        "2026-10-09T12:00:01+00:00",
+    )
+
+
+def test_a_cr_or_lf_at_the_edge_of_a_value_stays_in_the_value():
+    # A3g; run-2b review N-9 (F-c2, M4): only spaces and tabs are trimmed. A
+    # bare CR before the CRLF, or a bare LF at either end, is the client's.
+    split = sink.split_head(
+        b"POST /v1/traces HTTP/1.1\r\nX-T: a\r\r\nX-U: \nb\n\r\nX-V: \t c \t\r\n\r\n"
+    )
+    assert split["headers"] == [["X-T", "a\r"], ["X-U", "\nb\n"], ["X-V", "c"]]
+
+
+def test_a_name_that_is_not_a_token_makes_the_line_no_header():
+    # A3g; run-2b review N-9 (F-c2, M5): `Name : v` (a space before the
+    # colon), a name with a separator in it, and an empty name are not
+    # `token: value`, so each is listed under `unparsed` and none is a header.
+    split = sink.split_head(
+        b"POST /v1/traces HTTP/1.1\r\nName : v\r\nX(y): z\r\n: v\r\nOk: yes\r\n\r\n"
+    )
+    assert split["headers"] == [["Ok", "yes"]]
+    assert split["unparsed"] == ["Name : v", "X(y): z", ": v"]
 
 
 def test_each_request_on_one_connection_gets_its_own_head(tmp_path):

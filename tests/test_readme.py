@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from spanweave_zoo import capture, cli
+from spanweave_zoo import capture, cli, collector
 
 REPO = Path(__file__).resolve().parent.parent
 README = REPO / "README.md"
@@ -281,3 +281,81 @@ def test_the_readme_states_the_contract_version_the_contract_states():
     assert declared is not None, "EXPORT-CONTRACT.md no longer declares a version"
     readme = README.read_text(encoding="utf-8")
     assert f"**contract version {declared.group(1)}**" in readme
+
+
+def operator_section() -> str:
+    text = README.read_text(encoding="utf-8")
+    start = text.index("## Running a pet project's real run")
+    return text[start : text.index("\n## ", start + 1)]
+
+
+def test_the_log_variant_waits_on_the_file_it_redirects_to():
+    """The supervisor's wait reads the log the capture writes, for this run.
+
+    A3g; run-2b review N-4 (run 2's N-9). Step 3's log-to-file variant is two
+    commands: `zoo capture ... > <log>` and a `timeout ... grep ... <log>`
+    loop. Nothing held the two names together, so a README edit that renamed
+    one waited thirty seconds on a file nothing writes and every suite stayed
+    green. Both name the same file, the file names the run the command
+    captures, every run id in the flow is that one, and the wait gives the
+    zoo at least its own readiness budget before it gives up.
+    """
+    commands = [
+        " ".join(block.replace("\\\n", " ").split())
+        for block in BASH_BLOCK.findall(operator_section())
+    ]
+    variant = next(
+        command for command in commands if "zoo capture" in command and ">" in command
+    )
+    capture_command, _, wait = variant.partition(" & ")
+    redirect = re.search(r'> ("[^"]+"\S*)', capture_command)
+    assert redirect is not None, "the variant redirects its log nowhere"
+    log = redirect.group(1)
+    assert log.startswith('"${TMPDIR:-/tmp}"/'), (
+        f"the log {log} is not outside the checkout and the run directory"
+    )
+
+    timeout = re.fullmatch(
+        r"\s*timeout (\d+(?:\.\d+)?) bash -c '(.*)'\s*", wait, re.DOTALL
+    )
+    assert timeout is not None, f"the wait is not a timeout loop: {wait!r}"
+    loop = timeout.group(2)
+    assert loop.rstrip("; ").split()[-1] == "done" and "sleep" in loop, (
+        "the wait loop does not pause between looks"
+    )
+    grepped = re.search(r'grep -q "[^"]+" (\S+);', loop)
+    assert grepped is not None, "the wait greps no file"
+    assert grepped.group(1) == log, (
+        f"the capture writes {log} and the wait reads {grepped.group(1)}"
+    )
+
+    run_id = argv_of(capture_command)[argv_of(capture_command).index("--run-id") + 1]
+    assert log.endswith(f"/zoo-capture-{run_id}.log"), (
+        f"the log {log} does not name the run it captures, {run_id}"
+    )
+    section = operator_section()
+    named = set(re.findall(r"--run-id (\S+)", section)) | set(
+        re.findall(r"captures/z4/([^\s/`]+)", section)
+    )
+    assert named == {run_id}, f"the flow names more than one run: {sorted(named)}"
+
+    # The zoo itself waits up to READY_ATTEMPTS looks for the Collector, each
+    # a pause and a connect that can take its whole timeout; a supervisor that
+    # gives up sooner gives up on a capture that is still legitimately coming
+    # up.
+    budget = collector.READY_ATTEMPTS * (
+        collector.READY_PAUSE + collector.READY_CONNECT_TIMEOUT
+    )
+    assert float(timeout.group(1)) >= budget, (
+        f"the wait gives up after {timeout.group(1)}s; the zoo's own readiness "
+        f"wait can take {budget:g}s"
+    )
+
+
+def test_step_4_names_the_key_a_real_run_needs():
+    # A3g; run-2b review N-5. `make run-real` in z4's checkout exits 2 without
+    # `OPENAI_API_KEY`, before it exports anything -- and the capture already
+    # running has spent its run id on a run that recorded nothing.
+    section = operator_section()
+    step_4 = section[section.index("**4.") : section.index("**5.")]
+    assert "OPENAI_API_KEY" in step_4

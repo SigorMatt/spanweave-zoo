@@ -30,14 +30,15 @@ gates:
 # every run -- so this is a prerequisite of `check` and not an errand someone
 # remembers.
 #
-# Two commands, because the first one has nothing to check here: `captures/` is
-# where the zoo's own runs go and this repository holds none, so `zoo verify`
-# alone says "nothing to re-hash" and exits 0 on every CI leg. The second reads
-# the one real capture committed under tests/fixtures/capture/ -- one protobuf
-# body through the real tee, both sides, headers and manifest -- so CI
-# re-hashes bytes rather than reporting an empty tree. A named path that is not
-# a capture exits 2 (SPEC.md section 5.6), so a fixture that went missing fails
-# this target instead of passing quietly.
+# Two commands, because the first can have nothing to check: `captures/` is
+# where the zoo's own runs go, and a checkout without any -- this repository's,
+# until Z4's were committed -- has `zoo verify` say "nothing to re-hash" and
+# exit 0. The second reads the one real capture committed under
+# tests/fixtures/capture/ -- one protobuf body through the real tee, both
+# sides, headers and manifest -- so CI re-hashes bytes rather than reporting
+# an empty tree. A named path that is not a capture exits 2 (SPEC.md section
+# 5.6), so a fixture that went missing fails this target instead of passing
+# quietly.
 verify:
 	uv run zoo verify
 	uv run zoo verify tests/fixtures/capture

@@ -75,8 +75,13 @@ from spanweave_zoo import (
 )
 
 # What `zoo capture` stops on. `SIGINT` is the operator's Ctrl-C; `SIGTERM` is
-# whatever supervises the process when a pet project's run ends.
-STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+# whatever supervises the process when a pet project's run ends; `SIGHUP` is
+# the terminal going away -- its window closed, its ssh session dropped. The
+# Collector is in a session of its own (`SPEC.md` §4.6) and hears none of them,
+# so a hang-up left to its default action killed `zoo capture` alone and left
+# the Collector running, holding its port, with the manifest never completed
+# (run-2b review N-2). All three end the run the same way.
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 # `captures/<project>/<run-id>/` -- `SPEC.md` §2. A run directory is what
 # `verify` counts; the project level carries nothing of its own.
@@ -130,7 +135,8 @@ class Progress:
     lines go nowhere, and the file descriptor is pointed at `os.devnull` so the
     interpreter's own flush at exit cannot raise either. The capture then ends
     the way Ctrl-C ends it: the manifest is completed, and the exit status is
-    what the capture was, not what the pipe did.
+    what the capture was, not what the pipe did. A terminal that hung up is
+    the same event by another errno: its next write fails with `EIO`.
     """
 
     def __init__(self, stream: IO[str] | None = None) -> None:
@@ -144,9 +150,13 @@ class Progress:
             return
         try:
             print(line, file=self._stream, flush=True)
-        except (BrokenPipeError, ValueError):
-            # `ValueError` is the same event seen a moment later: a stream that
-            # has already been closed under us.
+        except (OSError, ValueError):
+            # `BrokenPipeError` is a reader that went away; any other `OSError`
+            # is the terminal that did -- a write to a tty that hung up fails
+            # with `EIO`, and it arrives with the `SIGHUP` that is already
+            # ending the run (`STOP_SIGNALS`). Left to propagate, it escaped
+            # from the `finally` that stops the Collector. `ValueError` is the
+            # same event seen a moment later: a stream already closed under us.
             self.broken = True
             _silence(self._stream)
             if self.on_broken is not None:
@@ -275,7 +285,7 @@ def run_sink(host: str, port: int, out: Path) -> int:
 
 
 def _stop_on_signal(running: capture.Capture) -> dict[int, Any]:
-    """Make `SIGINT` and `SIGTERM` end the run cleanly. `SPEC.md` §4.6.
+    """Make `SIGINT`, `SIGTERM` and `SIGHUP` end the run cleanly. `SPEC.md` §4.6.
 
     Installed rather than relied upon: the pending-signal machinery runs a
     Python handler only when the main thread executes bytecode, and a capture
@@ -438,8 +448,15 @@ def run_replay(args: argparse.Namespace) -> int:
         log=progress,
     )
     undelivered = [outcome for outcome in outcomes if not outcome.delivered]
+    # Sent is answered: a body whose head could not be read, whose connection
+    # was refused or whose answer never came did not reach a receiver, and the
+    # last line -- the one a reader of a long replay reads -- must not count
+    # it as sent (`SPEC.md` §6.4; run-2b review N-10).
+    answered = [outcome for outcome in outcomes if outcome.status is not None]
+    turned_away = [outcome for outcome in answered if not outcome.delivered]
     progress(
-        f"zoo replay: {len(outcomes)} sent, {len(undelivered)} that did not answer 2xx"
+        f"zoo replay: {len(answered)} sent, {len(turned_away)} that did not answer "
+        f"2xx, {len(outcomes) - len(answered)} not sent"
     )
     for outcome in undelivered:
         progress(f"  ! {outcome.file}: {outcome.error or f'status {outcome.status}'}")

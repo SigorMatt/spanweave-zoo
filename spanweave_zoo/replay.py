@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from spanweave_zoo import capture, forward, manifest, sink
+from spanweave_zoo import capture, forward, manifest
 
 # Which side of a capture to send (`SPEC.md` §6.1): the exporter's own bytes,
 # or the Collector's re-encoding of them (`SPEC.md` §2.4).
@@ -182,16 +182,11 @@ def retarget(octets: bytes, host: str) -> bytes:
     CRLF stays. Every such line is substituted, so a head that carried two
     names the destination in both; a head that carried none gets none, because
     adding a header is adding something. A `Host:` after a bare LF is inside
-    another line, as it is in `NNNN.headers.json`, and is not touched.
+    another line, as it is in `NNNN.headers.json`, and is not touched. The
+    rule is `forward.rewrite_head`'s, which the tee's forward uses too, with
+    nothing dropped here.
     """
-    lines = octets.split(b"\r\n")
-    for index in range(1, len(lines)):
-        if not lines[index]:
-            break
-        name = sink.field_name(lines[index].decode("latin-1"))
-        if name is not None and name.lower() == "host":
-            lines[index] = name.encode("latin-1") + b": " + host.encode("latin-1")
-    return b"\r\n".join(lines)
+    return forward.rewrite_head(octets, host)
 
 
 def _head_file(run: Path, body_file: str) -> Path:

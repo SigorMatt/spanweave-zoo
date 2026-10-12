@@ -16,7 +16,7 @@
     }
   ],
   "collector_version": "0.162.0",
-  "ended_at": "2026-10-11T09:00:04+00:00",
+  "ended_at": "2026-10-12T09:00:04+00:00",
   "files": [
     {
       "bytes": 237,
@@ -26,7 +26,7 @@
     {
       "bytes": 2863,
       "file": "collector.log",
-      "sha256": "c170f8a0fe1952a709101fb0a6e0d0b97d842c524862e51ae0ac98932e942596"
+      "sha256": "f660dd2a8071a9183fd8e3654700f8423d6a078c040192243c06ad322afd9e18"
     },
     {
       "bytes": 41,
@@ -34,24 +34,24 @@
       "sha256": "8abd636f60e4823845cfb3b0ff6b3612ec20e2e542773650f5e22a9bf5f5f734"
     },
     {
-      "bytes": 434,
+      "bytes": 480,
       "file": "json/0001.headers.json",
-      "sha256": "57010b818092720f9ef3f4deec838aecc102fe92882331f0c52bf484dbf4ab02"
+      "sha256": "1b5eec683a86f1d327f9f14f491ff0c5e6c6a4d20206e365aa9eb56fd079847e"
     },
     {
       "bytes": 194,
       "file": "json/0001.headers.raw",
-      "sha256": "1356a21f77fc783b7b0fbac3460d258de34fa1810edeacaab5a53416d77106fe"
+      "sha256": "7eb92215ae4f42f301b98bcfcb3124c6176f8aac8adb2bf66c8633a76c2b1126"
     },
     {
-      "bytes": 349,
+      "bytes": 395,
       "file": "raw/0001.headers.json",
-      "sha256": "ec0967b6688fa21d47c91caec98305d60d7bffd8a645e74fde09aef7076d7cba"
+      "sha256": "6e3d516a6737878a654f84cb71bd0c5bb1c06a406f90b6c13cd2dd1fa7b376d2"
     },
     {
       "bytes": 137,
       "file": "raw/0001.headers.raw",
-      "sha256": "ca5c58dcd0f9e6d6e158b10a64f4d6c6851f89368fe8d7e936f5f02d1ff0ae98"
+      "sha256": "17fc2cb1a6e37a6ad4d8742a7377ebe681e0ea447d40e8a8965ec0d1839e88a1"
     }
   ],
   "forwards": [
@@ -66,9 +66,9 @@
     "framework": "none: tests/otlp.py hand-built this export",
     "mode": "recorded",
     "project": "fixture",
-    "started_at": "2026-10-11T09:00:30+00:00"
+    "started_at": "2026-10-12T09:00:02+00:00"
   },
-  "seal": "6016b685ce1fa1ccff78a5ed790d12f58ac298d2d13166dc588ad4cce89d8527",
+  "seal": "d76c40b9c59e8a941f288bd4d1da2b6caa1261f012d4e3f43c046c963f766ada",
   "sink_version": "0.0.1",
-  "started_at": "2026-10-11T09:00:01+00:00"
+  "started_at": "2026-10-12T09:00:01+00:00"
 }

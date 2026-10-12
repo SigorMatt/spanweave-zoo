@@ -16,6 +16,7 @@ from __future__ import annotations
 import gzip
 import http.client
 import json
+import socket
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -55,11 +56,11 @@ class Spy:
     def __init__(self, run: Path, *, status: int = 200) -> None:
         self.run = run
         self.status = status
-        self.calls: list[tuple[str, str, list[tuple[str, str]], bytes]] = []
+        self.calls: list[tuple[bytes, bytes]] = []
         self.on_disk: list[bytes | None] = []
 
-    def __call__(self, method, path, headers, body):
-        self.calls.append((method, path, list(headers), body))
+    def __call__(self, head, body):
+        self.calls.append((head, body))
         written = self.run / "raw" / f"{len(self.calls):04d}.body"
         self.on_disk.append(written.read_bytes() if written.exists() else None)
         return self.status
@@ -71,7 +72,7 @@ class Refusing:
     def __init__(self) -> None:
         self.calls = 0
 
-    def __call__(self, method, path, headers, body):
+    def __call__(self, head, body):
         self.calls += 1
         raise ConnectionRefusedError(111, "Connection refused")
 
@@ -123,7 +124,7 @@ def test_the_forwarded_body_is_the_bytes_that_arrived(tmp_path):
             {"Content-Type": "application/json", "Content-Encoding": "gzip"},
         )
     assert len(spy.calls) == 1
-    _, _, _, forwarded = spy.calls[0]
+    _, forwarded = spy.calls[0]
     assert forwarded == GZIP_BODY
     assert forwarded != JSON_BODY, "the tee decompressed on the way out"
     assert (raw / "0001.body").read_bytes() == forwarded
@@ -134,7 +135,7 @@ def test_a_protobuf_body_is_forwarded_as_protobuf(tmp_path):
     spy = Spy(raw.parent)
     with tee(raw, spy) as (_, port):
         post(port, "/v1/traces", PROTOBUF, {"Content-Type": "application/x-protobuf"})
-    assert spy.calls[0][3] == PROTOBUF
+    assert spy.calls[0][1] == PROTOBUF
 
 
 def test_the_body_is_on_disk_before_the_forward_is_attempted(tmp_path):
@@ -150,9 +151,11 @@ def test_the_body_is_on_disk_before_the_forward_is_attempted(tmp_path):
     )
 
 
-def test_every_header_is_forwarded_in_order_with_repeats(tmp_path):
-    # `SPEC.md` §4.3: the headers are what the Collector needs in order to read
-    # the bytes, and a repeated header is part of the record (`SPEC.md` §2.3).
+def test_the_forward_is_handed_the_recorded_head_octets(tmp_path):
+    # A3g; run-2b review N-7 (F-b1). The seam is handed the head **as
+    # recorded** -- the octets of `NNNN.headers.raw`, request line, `Host`,
+    # repeats and all -- and never the stdlib's parse of it: what the
+    # Collector is sent is decided from the record (`SPEC.md` §4.3).
     raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
     spy = Spy(raw.parent)
     with tee(raw, spy) as (_, port):
@@ -166,48 +169,126 @@ def test_every_header_is_forwarded_in_order_with_repeats(tmp_path):
         connection.endheaders(GZIP_BODY)
         connection.getresponse().read()
         connection.close()
-    _, _, headers, _ = spy.calls[0]
-    assert ("X-Zoo", "one") in headers
-    assert ("X-Zoo", "two") in headers
-    assert [value for name, value in headers if name == "X-Zoo"] == ["one", "two"]
-    assert ("Content-Type", "application/x-protobuf") in headers
-    assert ("Content-Encoding", "gzip") in headers
-    # The seam is handed the headers **as received**, `Host` included: the
-    # record is what arrived. Dropping `Host` and the hop-by-hop headers is
-    # `HttpForward`'s business, because it is the thing that has a new
-    # destination (`SPEC.md` §4.3) -- asserted by
-    # `test_forwardable_drops_the_connection_headers_and_keeps_the_rest` and,
-    # over a real socket, by
-    # `test_the_http_forward_delivers_the_same_bytes_to_a_real_listener`.
-    assert [name for name, _ in headers if name.lower() == "host"] == ["Host"]
-    assert forward.forwardable(headers) == [
-        pair for pair in headers if pair[0].lower() != "host"
-    ]
+    head, body = spy.calls[0]
+    assert head == (raw / "0001.headers.raw").read_bytes()
+    assert head.startswith(b"POST /v1/traces HTTP/1.1\r\n")
+    assert b"X-Zoo: one\r\nX-Zoo: two\r\n" in head
+    assert body == GZIP_BODY
 
 
-def test_the_method_and_the_path_are_forwarded_as_received(tmp_path):
+# A head with hop-by-hop headers, a repeat, no space after one colon, a bare CR
+# with header-shaped text after it, and `Host` not first: everything the
+# forward must either keep octet for octet or change by `SPEC.md` §4.3's two
+# rules and no others.
+AWKWARD_HEAD = (
+    b"POST /v1/traces HTTP/1.1\r\n"
+    b"Content-Type: application/x-protobuf\r\n"
+    b"Host: 127.0.0.1:4318\r\n"
+    b"Connection: close\r\n"
+    b"X-Zoo:one\r\n"
+    b"X-Zoo: two\r\n"
+    b"User-Agent: otel\rContent-Encoding: gzip\r\n"
+    b"Keep-Alive: timeout=5\r\n"
+    b"Content-Length: 5\r\n"
+    b"\r\n"
+)
+
+
+def test_the_collectors_head_is_the_record_with_host_and_hop_by_hop_changed():
+    assert forward.collector_head(AWKWARD_HEAD, "127.0.0.1:4320") == (
+        b"POST /v1/traces HTTP/1.1\r\n"
+        b"Content-Type: application/x-protobuf\r\n"
+        b"Host: 127.0.0.1:4320\r\n"
+        b"X-Zoo:one\r\n"
+        b"X-Zoo: two\r\n"
+        b"User-Agent: otel\rContent-Encoding: gzip\r\n"
+        b"Content-Length: 5\r\n"
+        b"\r\n"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(forward.HOP_BY_HOP))
+def test_every_hop_by_hop_header_line_is_dropped_in_any_case(name):
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: a\r\n"
+        + name.upper().encode()
+        + b": x\r\nContent-Length: 0\r\n\r\n"
+    )
+    assert forward.collector_head(head, "b:1") == (
+        b"POST /v1/traces HTTP/1.1\r\nHost: b:1\r\nContent-Length: 0\r\n\r\n"
+    )
+
+
+def test_a_head_with_no_crlf_goes_to_the_collector_as_it_arrived():
+    # An LF-only head is one line on `SPEC.md` §2.3's split: it has no `Host`
+    # line to substitute and no hop-by-hop line to drop, so it goes as it
+    # came -- exactly as `NNNN.headers.json` lists no header in it and the
+    # replay changes nothing in it (§6.2).
+    head = b"POST /v1/traces HTTP/1.1\nHost: a\nConnection: close\n\n"
+    assert forward.collector_head(head, "b:1") == head
+
+
+def test_the_request_line_is_forwarded_as_received(tmp_path):
     raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
     spy = Spy(raw.parent)
     with tee(raw, spy) as (_, port):
         post(port, "/v1/traces", PROTOBUF)
-    method, path, _, _ = spy.calls[0]
-    assert (method, path) == ("POST", "/v1/traces")
+    head, _ = spy.calls[0]
+    assert head.startswith(b"POST /v1/traces HTTP/1.1\r\n")
 
 
-def test_forwardable_drops_the_connection_headers_and_keeps_the_rest():
-    headers = [
-        ("Host", "127.0.0.1:4318"),
-        ("Connection", "keep-alive"),
-        ("Transfer-Encoding", "chunked"),
-        ("TE", "trailers"),
-        ("Upgrade", "h2c"),
-        ("Keep-Alive", "timeout=5"),
-        ("Content-Type", "application/x-protobuf"),
-        ("Content-Encoding", "gzip"),
-        ("Content-Length", "12"),
-        ("User-Agent", "OTel-OTLP-Exporter-Python/1.37.0"),
-    ]
-    assert forward.forwardable(headers) == headers[6:]
+def test_a_cr_injected_header_does_not_reach_the_collector_as_a_header(tmp_path):
+    """`SPEC.md` §4.3, A3g; run-2b review N-7 (F-b1), red before A3g.
+
+    The tee used to forward the stdlib's parse, which splits
+    `User-Agent: otel<CR>Content-Encoding: gzip` into two headers -- so a
+    Collector was told the body was gzipped when the record (A3f's split) says
+    the request declared no encoding at all, and its `400` was recorded
+    against a body whose record has none. The forward now sends the recorded
+    octets: what the downstream receiver gets is the captured head with only
+    the `Host` line and the hop-by-hop lines changed, and the injected text is
+    still inside the `User-Agent` value it arrived in.
+    """
+    run = tmp_path / "captures" / "z4" / "run-1"
+    downstream = sink.Recorder(
+        run / "json",
+        now=Clock(),
+        rejected=run / sink.REJECTED_JSON_DIR,
+        body_suffix=sink.JSON_SUFFIX,
+    )
+    server = sink.make_server(downstream, host="127.0.0.1", port=0)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+    )
+    thread.start()
+    collector_port = server.server_address[1]
+    try:
+        forwarder = forward.HttpForward("127.0.0.1", collector_port)
+        with tee(run / "raw", forwarder) as (_, port):
+            with socket.create_connection(
+                ("127.0.0.1", port), timeout=TIMEOUT
+            ) as client:
+                client.sendall(AWKWARD_HEAD + b"hello")
+                answer = b""
+                while chunk := client.recv(4096):
+                    answer += chunk
+            assert answer.startswith(b"HTTP/1.1 200"), answer
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=TIMEOUT)
+
+    recorded = (run / "raw" / "0001.headers.raw").read_bytes()
+    assert recorded == AWKWARD_HEAD
+    delivered = (run / "json" / "0001.headers.raw").read_bytes()
+    assert b"\r\nContent-Encoding: gzip\r\n" not in delivered
+    assert b"User-Agent: otel\rContent-Encoding: gzip\r\n" in delivered
+    split = json.loads((run / "json" / "0001.headers.json").read_text())
+    names = [name.lower() for name, _ in split["headers"]]
+    assert "content-encoding" not in names
+    assert names.count("user-agent") == 1
+    assert (run / "json" / "0001.json").read_bytes() == b"hello"
+    assert delivered == forward.collector_head(recorded, f"127.0.0.1:{collector_port}")
 
 
 # --- the answer, and what is not forwarded ----------------------------------
@@ -385,5 +466,5 @@ def test_the_http_forward_raises_when_nothing_is_listening(tmp_path):
     server.server_close()
     with pytest.raises(OSError):
         forward.HttpForward("127.0.0.1", port, timeout=1.0)(
-            "POST", "/v1/traces", [], b"x"
+            b"POST /v1/traces HTTP/1.1\r\nContent-Length: 1\r\n\r\n", b"x"
         )

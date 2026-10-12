@@ -26,6 +26,7 @@ import contextlib
 import http.client
 import os
 import queue
+import re
 import signal
 import socket
 import subprocess
@@ -245,12 +246,16 @@ class ZooCapture:
 
     def ctrl_c(self) -> int:
         """`SIGINT` to the process group, as a terminal sends it."""
-        os.killpg(self.process.pid, signal.SIGINT)
+        return self.signal_group(signal.SIGINT)
+
+    def signal_group(self, number: int) -> int:
+        """`number` to the process group, and the exit status that follows."""
+        os.killpg(self.process.pid, number)
         try:
             return self.process.wait(timeout=PATIENCE)
         except subprocess.TimeoutExpired:
             self.kill()
-            pytest.fail("zoo capture did not end on Ctrl-C")
+            pytest.fail(f"zoo capture did not end on {signal.Signals(number).name}")
 
     def kill(self) -> None:
         with contextlib.suppress(ProcessLookupError):
@@ -293,6 +298,47 @@ def test_ctrl_c_to_the_process_group_stops_the_capture_and_nothing_else(tmp_path
     # The operator's terminal has the zoo's lines and not the Collector's.
     assert COLLECTOR_READY not in printed
     assert "Received signal" not in printed
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_a_hang_up_to_the_process_group_stops_the_capture_as_ctrl_c_does(tmp_path):
+    # A3g; run-2b review N-2. Closing the terminal, or dropping the ssh session
+    # it is in, sends `SIGHUP` to the foreground process group. Since A3e the
+    # Collector is in a session of its own and does not get it -- so before
+    # A3g the hang-up killed `zoo capture` by its default action, the manifest
+    # was never completed and the Collector was left running, holding its
+    # port. It now ends the run as Ctrl-C does: exit 0, no `problems`, verify
+    # green, and the Collector stopped by the zoo.
+    collector_dir = stand_in(tmp_path)
+    zoo = ZooCapture(tmp_path, collector_dir)
+    try:
+        zoo.wait_for(READY_LINE)
+        pid = int((collector_dir / "pid").read_text(encoding="utf-8"))
+        assert post(zoo.port, PROTOBUF) == 200
+        zoo.wait_for("raw/0001.body")
+    except BaseException:
+        zoo.kill()
+        raise
+    try:
+        status = zoo.signal_group(signal.SIGHUP)
+        printed = "\n".join(zoo.printed)
+        assert status == 0, printed
+        assert not alive(pid), "the Collector outlived the hang-up"
+        document = manifest.read(zoo.run)
+        assert manifest.PROBLEMS not in document, document.get(manifest.PROBLEMS)
+        assert cli.verify(zoo.run) == 0
+        log = (zoo.run / collector.LOG_NAME).read_text(encoding="utf-8")
+        assert '"signal": "terminated"' in log, log
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
 
 
 def test_the_collector_killed_by_hand_mid_capture_is_a_problem(tmp_path):
@@ -346,7 +392,7 @@ def in_process(tmp_path: Path, collector_dir: Path, *, stop_wait: float, log):
         tmp_path / "captures" / "z4" / "run-1",
         now=Clock(),
         launcher=launcher,
-        forward=lambda method, path, headers, body: 200,
+        forward=lambda head, body: 200,
         pin=pinned,
         kind="recorded",
         project_manifest=project_manifest(tmp_path),
@@ -429,7 +475,7 @@ class Held:
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def __call__(self, method, path, headers, body):
+    def __call__(self, head, body):
         self.entered.set()
         self.release.wait(timeout=PATIENCE)
         return 200
@@ -511,3 +557,168 @@ def test_the_summary_counts_bodies_by_where_they_are(tmp_path):
     manifest.label(run, kind="recorded", collector_version="0", started_at="x")
     manifest.finish(run, ended_at="y")
     assert manifest.tally(run) == "1 body/bodies in raw/, 1 in json/, 1 in rejected/"
+
+
+# --- every line `zoo capture` prints is one SPEC.md §4.2 lists --------------
+
+
+def spec_terminal_lines() -> list[str]:
+    """The templates in SPEC.md §4.2's one `text` block, in order."""
+    text = (REPO / "SPEC.md").read_text(encoding="utf-8")
+    section = text[text.index("### 4.2 ") : text.index("### 4.3 ")]
+    found = re.findall(r"^```text\n(.*?)^```$", section, re.MULTILINE | re.DOTALL)
+    assert len(found) == 1, "SPEC.md section 4.2 holds no single `text` block"
+    return [line for line in found[0].splitlines() if line]
+
+
+def template(line: str) -> re.Pattern[str]:
+    """A §4.2 line as a pattern: each `<...>` stands for any text, or none."""
+    parts = re.split(r"<[^<>]+>", line)
+    return re.compile(".*".join(re.escape(part) for part in parts))
+
+
+class Exiting(Started):
+    """A Collector that exited on its own, or one that needed `SIGKILL`."""
+
+    def __init__(self, *, exited: int | None = None, killed: bool = False) -> None:
+        super().__init__()
+        self.exited = exited
+        self.killed = killed
+
+    def returncode(self) -> int | None:
+        return self.exited
+
+    def stop(self) -> bool:
+        super().stop()
+        return self.killed
+
+
+def printed_in_process(tmp_path: Path, name: str, forward, running: Started, **kwargs):
+    """What one in-process capture printed, start to summary."""
+    lines: list[str] = []
+    launcher = Launcher()
+    launcher.running = running
+    started = capture.Capture(
+        tmp_path / name / "captures" / "z4" / "run-1",
+        now=Clock(),
+        launcher=launcher,
+        forward=forward,
+        pin=collector.pin(COLLECTOR_DIR),
+        kind="recorded",
+        project_manifest=project_manifest(tmp_path / name),
+        raw_port=0,
+        json_port=0,
+        log=lines.append,
+        **kwargs,
+    )
+    started.start()
+    return started, lines
+
+
+def test_every_line_zoo_capture_prints_is_one_spec_42_lists(tmp_path, capsys):
+    """SPEC.md §4.2's list of terminal lines is the list, both ways.
+
+    A3g; run-2b review N-3. The list omitted the two lines after readiness,
+    `zoo capture: stopping` and the forward-failure lines, and nothing tested
+    the summary. Every line below is produced by the code -- through a real
+    `zoo capture` process for the lines an operator always sees, in process
+    for the ones only a failure prints -- and each must be one §4.2 lists;
+    and every line §4.2 lists must be one something here printed, so the
+    list cannot keep a line the code no longer prints.
+    """
+    printed: list[str] = []
+
+    # The operator's flow: a real process, an export, Ctrl-C.
+    zoo = ZooCapture(tmp_path / "process", stand_in(tmp_path / "process"))
+    try:
+        zoo.wait_for(READY_LINE)
+        assert post(zoo.port, PROTOBUF) == 200
+        zoo.wait_for("raw/0001.body")
+    except BaseException:
+        zoo.kill()
+        raise
+    assert zoo.ctrl_c() == 0, "\n".join(zoo.printed)
+    printed += zoo.printed
+
+    # A forward refused, and one answered with an error status.
+    def refused(head, body):
+        raise ConnectionRefusedError(111, "Connection refused")
+
+    for name, forward in (("refused", refused), ("503", lambda head, body: 503)):
+        started, lines = printed_in_process(tmp_path, name, forward, Started())
+        assert started.raw is not None
+        post(started.raw.port, PROTOBUF)
+        started.stop()
+        printed += [*lines, started.summary()]
+
+    # A Collector that exits on its own, and one that has to be killed.
+    started, lines = printed_in_process(
+        tmp_path, "exited", lambda head, body: 200, Exiting(exited=3)
+    )
+    started.check_collector()
+    started.stop()
+    printed += [*lines, started.summary()]
+    started, lines = printed_in_process(
+        tmp_path, "killed", lambda head, body: 200, Exiting(killed=True)
+    )
+    started.stop()
+    printed += lines
+
+    # A forward still waiting when the flush wait runs out.
+    held = Held()
+    started, lines = printed_in_process(
+        tmp_path, "held", held, Started(), flush_wait=0.05
+    )
+    assert started.raw is not None
+    poster = threading.Thread(target=post, args=(started.raw.port, PROTOBUF))
+    poster.start()
+    try:
+        assert held.entered.wait(timeout=PATIENCE)
+        started.stop()
+    finally:
+        held.release.set()
+        poster.join(timeout=PATIENCE)
+    printed += lines
+
+    # A refusal, which is the one line that goes to stderr.
+    capsys.readouterr()
+    assert (
+        cli.main(
+            [
+                "capture",
+                "--project",
+                "z4",
+                "--run-id",
+                "refused",
+                "--kind",
+                "recorded",
+                "--project-manifest",
+                str(project_manifest(tmp_path / "refusal")),
+                "--collector-dir",
+                str(tmp_path / "no-collector-here"),
+            ]
+        )
+        == 2
+    )
+    printed += capsys.readouterr().err.splitlines()
+
+    templates = [template(line) for line in spec_terminal_lines()]
+    produced = [line for line in printed if line]
+    unlisted = [
+        line
+        for line in produced
+        if not any(pattern.fullmatch(line) for pattern in templates)
+    ]
+    assert not unlisted, f"printed, and not in SPEC.md section 4.2: {unlisted}"
+    unprinted = [
+        pattern.pattern
+        for pattern in templates
+        if not any(pattern.fullmatch(line) for line in produced)
+    ]
+    assert not unprinted, f"in SPEC.md section 4.2, and never printed: {unprinted}"
+    # And the lines an operator always sees, in the order they are printed.
+    operator = [line for line in zoo.printed if line]
+    assert operator[0] == READY_LINE
+    assert operator[-2:-1] == ["zoo capture: stopping"]
+    assert operator[-1].startswith("zoo capture: 1 body/bodies in raw/, ")
+    assert operator[-1].endswith(", MANIFEST.json written: kind=recorded")

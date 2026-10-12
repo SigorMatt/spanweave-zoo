@@ -73,7 +73,9 @@ One run, three listeners: the **raw sink on 4318** -- the port every pet
 project was given -- the stock **OpenTelemetry Collector** behind it, and a
 **json sink on 4319** where the Collector's JSON re-encoding lands. The raw
 sink writes the body to disk and *then* forwards the same bytes, unchanged, to
-the Collector: the record is made first and the convenience second. If the
+the Collector, under the head it recorded -- the octets, with only the `Host`
+line and the hop-by-hop lines changed, never the stdlib's parse of them: the
+record is made first and the convenience second. If the
 Collector is down, the capture is still a capture and `MANIFEST.json` says
 which bodies never reached it (`SPEC.md` §4).
 
@@ -121,7 +123,9 @@ still goes out and the exit status says afterwards: **1** if any answer was not
 a 2xx or any body could not be sent, **2** if nothing was sent at all -- a path
 that is not a capture, or no body on the side you asked for. A `415` on a
 protobuf body is an answer and a finding, not an error, and what it *means* is
-the audit's to write down.
+the audit's to write down. The last line counts the bodies a receiver answered
+as sent, and the rest as not sent: `zoo replay: 1 sent, 1 that did not answer
+2xx, 1 not sent`.
 
 ### The manifest, and `zoo verify`
 
@@ -156,7 +160,7 @@ uv run zoo verify captures/z4/2026-10-09T12-00-00Z     # one run
 ```
 
 `zoo verify` exits 0 on a tree with no captures -- the default `captures/`,
-which this repository's own is -- and **2, naming the path**, on a path you
+in a checkout that holds none -- and **2, naming the path**, on a path you
 typed that is not a capture: an absent directory, a file, or a directory with
 no run in it. Nothing was checked, and a typo must not read as a clean bill of
 health. Otherwise it checks **both
@@ -172,7 +176,10 @@ notice a body nobody recorded.
 `tests/fixtures/capture/`, which holds one real capture -- a single OTLP
 protobuf body through the real tee, both sides, headers and manifest -- so the
 gate re-hashes bytes on every run and in CI rather than reporting an empty
-tree. It is a capture: it is never edited and never regenerated.
+tree. It is a capture: it is never edited. It has been regenerated, each time
+as a new run through the same tee, when a ratified rule changed what a capture
+carries -- the seal, then the request line in `headers.json` (`SPEC.md`
+§5.6); the zoo's own captures under `captures/` never are.
 
 ## Running a pet project's real run
 
@@ -232,7 +239,7 @@ uv run zoo capture --project z4 --run-id 2026-10-10T09-00-00Z \
                    --kind real \
                    --project-manifest ../streaming-concierge/MANIFEST.json \
                    > "${TMPDIR:-/tmp}"/zoo-capture-2026-10-10T09-00-00Z.log 2>&1 &
-timeout 30 bash -c 'until grep -q "^zoo capture: the raw bytes are the record" "${TMPDIR:-/tmp}"/zoo-capture-2026-10-10T09-00-00Z.log; do sleep 0.1; done'
+timeout 60 bash -c 'until grep -q "^zoo capture: the raw bytes are the record" "${TMPDIR:-/tmp}"/zoo-capture-2026-10-10T09-00-00Z.log; do sleep 0.1; done'
 ```
 
 Grep the log rather than the pipe, and anchor it: `recording POST /v1/traces on
@@ -253,6 +260,13 @@ The project's own command (`EXPORT-CONTRACT.md` §1). The zoo does not run the
 project, know its dependencies, or care what it does -- it is a recorder, and
 the project knows nothing about it either.
 
+`make run-real` reads the model's key from the environment of **this**
+terminal (`EXPORT-CONTRACT.md` §4): for z4 that is `OPENAI_API_KEY`, with
+`OPENAI_BASE_URL` honoured if set (z4's own README). Export it here before
+typing the command. Without it `make run-real` exits 2 before it exports
+anything -- and the capture in the first terminal has then spent its run id on
+a run that recorded nothing, because a run directory is never reused.
+
 **5. Back in the first terminal, once the project's run has exited -- end the
 capture.**
 
@@ -267,8 +281,12 @@ what it recorded, counted by side -- `zoo capture: 1 body/bodies in raw/, 1 in
 json/, under captures/z4/2026-10-10T09-00-00Z/, MANIFEST.json written:
 kind=real` for one export. The Collector runs in a session of its own, so the
 terminal's Ctrl-C reaches the zoo and not the Collector, and the zoo stops it:
-a clean run exits **0** and leaves no Collector running. `SIGTERM` does the
-same, so a supervisor can end a run. The exit status is non-zero if any body
+it prints `zoo capture: stopping`, then the summary, and a clean run exits
+**0** and leaves no Collector running. `SIGTERM` does the same, so a
+supervisor can end a run, and so does `SIGHUP` -- the terminal closed or the
+ssh session dropped -- so losing the first terminal still completes the
+capture and stops its Collector. `SPEC.md` §4.2 lists every line `zoo
+capture` prints. The exit status is non-zero if any body
 failed to reach the Collector, if the Collector exited during the run, or if
 the project's own `MANIFEST.json` could not be copied -- the capture is intact
 either way and the manifest says what happened.

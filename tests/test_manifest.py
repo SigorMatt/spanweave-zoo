@@ -568,17 +568,12 @@ SAMPLE = 100
 # tight.
 BOUND = 2.0
 
-HEADERS = [("Content-Type", "application/x-protobuf"), ("Content-Length", "9")]
-
 
 def _record(recorder: sink.Recorder, first: int, last: int) -> float:
     """Record bodies `first`..`last` and return the seconds it took."""
     started = time.perf_counter()
     for number in range(first, last):
         recorder.record(
-            method="POST",
-            path="/v1/traces",
-            headers=HEADERS,
             head=HEAD,
             body=b"body %04d" % number,
             accepted=True,
@@ -713,12 +708,53 @@ def test_a_manifest_with_no_seal_fails_verify(tmp_path, capsys):
     assert "seal" in capsys.readouterr().out
 
 
-def test_a_seal_that_is_not_a_string_fails_verify(tmp_path, capsys):
+def test_a_seal_that_is_null_fails_verify(tmp_path, capsys):
     run = hand_written_capture(tmp_path)
     rewrite_manifest(run, lambda document: document.update({"seal": None}))
 
     assert cli.verify(tmp_path / "captures") == 1
     assert "seal" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda seal: int(seal[:12], 16),
+        lambda seal: [seal],
+        lambda seal: {"seal": seal},
+    ],
+    ids=["a number", "the right seal in a list", "the right seal in an object"],
+)
+def test_a_seal_that_is_present_and_not_a_string_fails_verify(tmp_path, capsys, wrap):
+    # A3g; run-2b review N-9 (F-c2): the test above reaches only the absent
+    # branch, because `null` reads as no seal. A value that is there and is not
+    # the string -- even one that carries the right digest inside it -- is
+    # not a seal, and verify says so.
+    run = hand_written_capture(tmp_path)
+    rewrite_manifest(
+        run, lambda document: document.update({"seal": wrap(document["seal"])})
+    )
+
+    assert cli.verify(tmp_path / "captures") == 1
+    assert "seal" in capsys.readouterr().out
+
+
+def test_a_manifest_resealed_by_hand_verifies(tmp_path, capsys):
+    # A3g; the decision of 2026-10-11, "the seal", and run-2b review N-6: the
+    # seal catches accidental and incidental edits, and it is not
+    # authentication. An edit followed by a recomputed seal verifies -- SPEC.md
+    # section 5 says exactly that, and this test holds the claim to its limit
+    # so the spec cannot drift back into promising more.
+    run = hand_written_capture(tmp_path, kind="recorded")
+
+    def resealed(document: dict[str, object]) -> None:
+        document[manifest.KIND] = "real"
+        document["seal"] = canonical_seal(document)
+
+    rewrite_manifest(run, resealed)
+
+    assert cli.verify(tmp_path / "captures") == 0
+    capsys.readouterr()
 
 
 def test_the_seal_is_over_the_document_and_not_its_whitespace(tmp_path):

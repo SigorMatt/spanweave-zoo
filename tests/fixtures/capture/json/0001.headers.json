@@ -3,7 +3,7 @@
   "headers": [
     [
       "Host",
-      "127.0.0.1:39691"
+      "127.0.0.1:40939"
     ],
     [
       "User-Agent",
@@ -24,5 +24,6 @@
   ],
   "method": "POST",
   "path": "/v1/traces",
-  "received_at": "2026-10-11T09:00:03+00:00"
+  "received_at": "2026-10-12T09:00:03+00:00",
+  "request_line": "POST /v1/traces HTTP/1.1"
 }
