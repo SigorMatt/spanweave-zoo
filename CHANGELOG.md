@@ -33,6 +33,12 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
   audit-check`: `mypy --strict` with the three libraries present, then the
   `needs_audit` tests, failing if any skipped (they skip on every `check`
   leg, by design).
+- **The `collector` leg no longer sees the audit tests** (fixes f60f69c):
+  `tests/test_audit_real.py` skips per item (`skipif` in `pytestmark`) rather
+  than with a module-level `importorskip`, which skipped the module at
+  collection and put that skip into `collector-check`'s `-m needs_collector`
+  report. The guard is unchanged; a test runs that selection with the extra
+  hidden and fails on any skip.
 - **The Z4 captures audited**: `audit/z4-2026-10-12-real.md` and
   `audit/z4-2026-10-12-recorded.md`, three findings each (spanweave-live 2,
   spanweave 1, agentgolden 0). The live graph equals the batch graph byte for

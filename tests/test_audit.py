@@ -86,4 +86,46 @@ def test_audit_check_fails_on_a_skip_and_passes_a_clean_run():
 def test_every_audit_test_that_needs_the_extra_carries_the_marker():
     # A test that lost the marker would leave the set `audit-check` watches.
     text = (REPO / "tests" / "test_audit_real.py").read_text(encoding="utf-8")
-    assert "pytestmark = pytest.mark.needs_audit" in text
+    marks = text.split("pytestmark = [", 1)[1].split("]", 1)[0]
+    assert "pytest.mark.needs_audit" in marks
+
+
+def test_without_the_extra_the_collector_selection_reports_no_skip(tmp_path):
+    # f60f69c's `collector` leg: a module-level `importorskip` in
+    # test_audit_real.py skipped the whole module at collection, before `-m
+    # needs_collector` could deselect it, and `collector-check` -- rightly --
+    # fails on any skip in its report. The extra is hidden from a child pytest
+    # by shadowing the three packages with ones that refuse to import.
+    import subprocess
+
+    from tests import collector_check
+
+    for name in ("spanweave", "spanweave_live", "agentgolden"):
+        package = tmp_path / "shadow" / name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text(
+            "raise ImportError('hidden: the audit extra is not installed')\n"
+        )
+    report = tmp_path / "report.xml"
+    env = {**__import__("os").environ, "PYTHONPATH": str(tmp_path / "shadow")}
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-q",
+            "-m",
+            "needs_collector",
+            "tests/test_audit_real.py",
+            "--junitxml",
+            str(report),
+        ],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    cases = collector_check.outcomes(report.read_text(encoding="utf-8"))
+    assert [c for c in cases if c[1] != "passed"] == []

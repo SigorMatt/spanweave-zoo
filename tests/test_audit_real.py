@@ -20,14 +20,26 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("spanweave")
-pytest.importorskip("spanweave_live")
-pytest.importorskip("agentgolden")
-
-from spanweave_zoo import audit, cli
+from spanweave_zoo import cli
 from tests.test_replay import Clock, crafted, head_octets
 
-pytestmark = pytest.mark.needs_audit
+# Not `pytest.importorskip` at module level: that skips the whole module at
+# collection, before `-m` deselects anything, so the skip lands in every
+# marker-selected run's report -- and `collector-check`, which fails on any
+# skip, failed on f60f69c's `collector` leg. A per-item `skipif` is applied
+# only to items that were selected, so a deselected test reports nothing.
+try:
+    from spanweave_zoo import audit
+except ImportError:  # the `audit` extra is not installed
+    audit = None  # type: ignore[assignment]
+
+pytestmark = [
+    pytest.mark.needs_audit,
+    pytest.mark.skipif(
+        audit is None,
+        reason="needs the audit extra (uv sync --extra dev --extra audit)",
+    ),
+]
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "capture"
