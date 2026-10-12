@@ -8,7 +8,7 @@ captures land, extending `PROBES.md` until all six are in. One batch = one
 sub-agent = one commit = one concern. This file plus git is the only state;
 any session can resume cold from it.
 
-Last updated: 2026-10-12 (run 1 in progress: B0 done.)
+Last updated: 2026-10-12 (run 1 stopped: B0 done; B1 awaiting decision; B2, B3 not started.)
 
 ---
 
@@ -151,7 +151,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | ID | Batch | Status | Calls |
 |---|---|---|---|
 | B0 | **The two reviews of the close, archived and dispositioned.** Fetch the Qodo comment on PR #1 (`gh api repos/SigorMatt/spanweave-zoo/issues/comments/6127903067 --jq .body`) and keep it byte for byte as `reviews/QODO-2026-10-12.md`, its sha256 appended to `reviews/SHA256SUMS` (26 files, `sha256sum -c` green). `TASKS.md`: a "Series 2" heading with the twelve Qodo items Q1–Q12 and the close review's two carried threads (the port race; the PR wording), each pointing at the batch below that closes it. Docs only; no code. | done (d0debab) | 3 |
-| B1 | **The port hand-off cannot lose to a stranger.** Close-review thread. `zoo capture` picks the Collector's port, writes it into the config and launches the child; a bind that fails with "address in use" between the pick and the bind is today a refusal (SPEC §4.6). Make it a **bounded retry**: on a Collector exit whose log shows the bind failure, pick again, up to N (SPEC names N and says the refusal after N names every port tried); readiness unchanged. Test red on the parent: a stand-in Collector that fails its first bind and succeeds its second reaches readiness; the mutation "no retry" fails it. `test_the_collector_killed_by_hand_mid_capture_is_a_problem` stops depending on the pick. | todo | 6 |
+| B1 | **The port hand-off cannot lose to a stranger.** Close-review thread. `zoo capture` picks no port — the Collector's is `--collector-port` (default 4320), passed through unchanged; the pick that lost the race was the test harness's `free_port()`. A bind that fails with "address in use" between the pick and the bind is today a refusal (SPEC §4.6). Make it a **bounded retry**: on a Collector exit whose log shows the bind failure, pick again, up to N (SPEC names N and says the refusal after N names every port tried); readiness unchanged. Test red on the parent: a stand-in Collector that fails its first bind and succeeds its second reaches readiness; the mutation "no retry" fails it. `test_the_collector_killed_by_hand_mid_capture_is_a_problem` stops depending on the pick. | awaiting decision (OPEN_QUESTIONS §6, b7165a0) | 6 |
 | B2 | **Signals cover the whole life of a capture, and of the sink.** Q1, Q6, Q8. (a) `run_capture` installs the stop handlers **before** `running.start()`, so SIGTERM/SIGHUP during readiness (up to 52.5 s) runs the stop path and the Collector, in its own session, does not outlive the parent; a refusal still writes nothing. (b) `Capture.start`'s tail — `_now()`, `manifest.label`, `serve()`, the log lines — inside the same `try/except BaseException: self.stop(); raise` as the steps before it. (c) `run_sink` installs the same handlers so SIGTERM/SIGHUP end `serve_forever` normally and `manifest.finish` runs. Three tests red on the parent, one per letter: SIGTERM to the process while the stand-in Collector is still becoming ready → no Collector process remains and no run directory exists; a `manifest.label` that raises → the Collector is stopped; SIGTERM to a standalone sink → a sealed manifest. SPEC §4.6 and §3 say so. | todo | 8 |
 | B3 | **Nothing writes to a capture after its seal.** Q2, Q7. (a) `Capture.stop` seals only once every POST handler has returned: after the Collector is stopped (which fails any forward still waiting), settle again with a bound; a handler still running at that bound is recorded as a `problems` entry naming the body, and the journals are **closed** — an append after closing is refused by the recorder and recorded nowhere, so the sealed manifest's hashes hold. (b) A journal that does not decode as UTF-8 is a `problems` entry, and `finish` still writes `ended_at` and the seal. Tests red on the parent: a forward whose completion is held past the flush bound (injected) completes after the seal and `zoo verify` is **still green**; a journal with an invalid byte yields a sealed manifest with the problem listed. SPEC §5.5/§5.6 say what the seal covers and when writing ends. | todo | 7 |
 | B4 | **`verify` trusts nothing a manifest says about where a file is.** Q10, Q12. A manifest field that should be a list and is not → a problem, not a `TypeError` (`_listed`, `_incomplete`, as `_rehashed` already does); a file entry that is absolute, contains `..`, or resolves (symlinks followed) outside `run.resolve()` → a problem naming the entry, and the file is not read. SPEC §5.4: entries are normalized relative paths under the run directory. Tests red on the parent for `"files": 1`, `"problems": 1`, an absolute entry, a `..` entry, and a symlink out; mutation shown. The seal decision of 2026-10-11 stands: a resealed manifest still verifies — within the run directory. | todo | 5 |
@@ -185,6 +185,12 @@ to `main` at the series open.
   the archive keeps the raw body (38083 bytes). `reviews/SHA256SUMS` gained
   its 26th line at the end, so it is no longer in filename order — nothing
   checks the order. The PR-wording thread is mapped to B8.
+- 2026-10-12 B1: premise wrong — `zoo capture` picks no Collector port; the
+  port is `--collector-port`, and SPEC §4.6 makes a held named port a refusal
+  (tested). The race was the harness's `free_port()` (CI run 38273980263, port
+  43383, Errno 98); the harness's raw/json sink ports share it. Row corrected;
+  four options in OPEN_QUESTIONS §6 (b7165a0). Run 1 stopped here per 0.1
+  step 6; B2 and B3 do not depend on B1 and can run once it is decided.
 
 ## 5. Origins
 
