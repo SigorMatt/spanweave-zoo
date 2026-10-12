@@ -229,3 +229,59 @@ sentence that the operator log is not part of the record, because
 this: neither (a) nor (b) can arise when the log is not in the run
 directory. A0c re-runs in full with the six differences above, this one as
 decided, and the side findings.
+
+---
+
+## 5. A5: `agentgolden` is not a pinned dependency
+
+**Status: open. Asked by A5 (2026-10-12), which stopped before writing any
+code: the row's step 5 needs a dependency the repository does not declare.**
+
+**The conflict.** A5's row (`WORKPLAN.md` §1) has step 5 compute
+"`agentgolden`'s `Signature` on each graph as a smoke, no rules evaluated".
+`pyproject.toml`'s `audit` extra pins exactly two packages by git sha —
+`spanweave@fec7da27` and `spanweave-live@cddc694b` — and nothing else;
+`agentgolden` appears in no file of this repository but the row, and no
+decision in `WORKPLAN.md` §3 adds it. `CLAUDE.md` §0.6 rule 8 and "Halt
+points" make the dependency set and its pins a maintainer's call, so the batch
+does not add a third pin on its own.
+
+**Facts gathered, so the decision need not re-gather them.**
+
+- `agentgolden` exists at `https://github.com/SigorMatt/agentgolden`;
+  `origin/main` is `aa1847f2a2ad51a95b98ab3e180bc5d211e6b138` (0.1.0).
+  `agentgolden.signature.Signature` and `agentgolden.signature.signature(graph)`
+  exist at that sha.
+- Its only runtime dependency is `spanweave>=0.9.1,<1.0`. The pinned
+  `spanweave@fec7da27` is version 0.9.1, so the range admits the pin and
+  the resolver would not pull a second spanweave.
+- The `Cap(0)`-at-end completion policy the row names **is** expressible
+  without a change anywhere: `spanweave-live serve --requests N` stops after N
+  requests, and the end of input then runs `Run.finish()`, which replaces the
+  completion with `Cap(0)` and ticks once (`spanweave_live/cli.py` at
+  `cddc694b`, `SPEC.md` §8.5 there). That part of the row is not a question.
+- Nothing else in the row was found to need a rule the spec lacks, as far as
+  the batch read before stopping. SPEC §7 is an empty heading today, which is
+  expected: A5 writes it.
+
+**The options, each with its cost.**
+
+1. **Pin `agentgolden` by git sha in the `audit` extra**, beside the two
+   existing pins (`agentgolden @ git+https://github.com/SigorMatt/agentgolden@aa1847f2…`),
+   relock, and let the audit module import it (it is already the one module
+   the import gate exempts). Step 5 runs as written. Cost: a third pinned
+   repository whose sha must be recorded with every finding; the gate in
+   `tests/gates.py` names only `spanweave` and `spanweave_live`, so whether
+   `agentgolden` joins the gated names (and its import is likewise confined to
+   `audit.py`) is part of the decision.
+2. **Drop step 5 from A5** (or move it to A6 / the next series as a probe).
+   Steps 1–4 run unchanged. Cost: the row's smoke of a consumer on a
+   stranger's graph is not taken this series; `PROBES.md` would carry it as an
+   unrun probe.
+3. **Run `agentgolden` out of process from a separate environment** (e.g. its
+   own checkout's venv) over the graphs the audit writes, and record its
+   output. Cost: the reproduction then depends on an environment `pyproject.toml`
+   does not describe, which is the floating-dependency problem the `audit`
+   extra's pinning exists to prevent; not recommended.
+
+**The decision.** Pending.
