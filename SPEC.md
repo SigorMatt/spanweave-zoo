@@ -1353,6 +1353,20 @@ A1's three keys are untouched: `file`, `sha256` and `bytes` mean exactly what
 they meant, and `zoo verify`'s re-hash still reads only those. There is still
 exactly one home for a digest (§3.5).
 
+**`file` is a normalized relative path under the run directory** (B4), in
+`bodies` and `files` alike: POSIX separators, not absolute, no empty, `.` or
+`..` part — `raw/0001.body`, never `./raw/0001.body`, `raw/../raw/0001.body`
+or `/somewhere/0001.body` — and naming, with symlinks followed, a file inside
+the run directory. The zoo writes entries only of this shape — `bodies` from
+the names the sink gave its files, `files` from the walk — so the rule exists for `zoo verify`
+(§5.6), which reads the entry as a claim and not as an instruction. An entry
+that breaks it is a problem naming the entry, and the file it points at is
+**not read**: a manifest that could send the re-hash anywhere on the disk
+would let a capture be "verified" by bytes it does not hold. This confines
+*where* the seal's claims can point, not *whether* a resealed manifest
+verifies (§5, "What the seal is, and no more"): within the run directory, it
+still does.
+
 ### 5.5 When each field is written
 
 | When | Where | What |
@@ -1501,6 +1515,16 @@ disk that the manifest does not list**, a seal that is absent or differs, a
 missing `ended_at`, a `kind` the spec does not name, a recorded problem, and a
 manifest that is absent or unreadable.
 A manifest it cannot read is a refusal, never a pass.
+
+Two more, both about the manifest's shape rather than the capture's bytes
+(B4). A `files` or `problems` that is present and **not a list** is a line
+saying so, never a crash: a `files` that is not a list accounts for no file,
+so every file on disk is also unlisted; a `problems` that is not a list is a
+problem in itself, because what the run recorded going wrong cannot be read
+(a `bodies` that is not a list is already a manifest that cannot be read).
+And a `file` entry that is not a normalized relative path under the run
+directory (§5.4) — absolute, with a `..`, or a symlink resolving outside it —
+is a line naming the entry, and that file is not read.
 
 The second direction is why the check walks the **directory** and not only the
 list. A verify that iterated the manifest can only ever confirm what the

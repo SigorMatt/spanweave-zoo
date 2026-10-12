@@ -4,6 +4,30 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B4 — `verify` trusts nothing a manifest says about where a file is
+
+Qodo Q10, Q12 (`TASKS.md`, "Series 2"). `SPEC.md` §5.4, §5.6.
+
+- **A list that is not a list is a problem, not a `TypeError`**: `"files": 1`
+  and `"problems": 1` used to crash `zoo verify` (in `_listed` and
+  `_incomplete`); each is now one line (`'files' is not a list`, `'problems'
+  is not a list`) and a non-zero exit, as `_rehashed` already did.
+- **A `file` entry is a normalized relative path under the run directory**
+  (`SPEC.md` §5.4): one that is absolute, has a `.`/`..`/empty part, or —
+  symlinks followed — resolves outside `run.resolve()` is a problem naming
+  the entry, and the file it points at is **not read**. Before, a resealed
+  manifest listing an outside file with its correct digest verified. The seal
+  decision of 2026-10-11 stands: a resealed manifest still verifies, within
+  the run directory.
+- **Tests** (`tests/test_manifest.py`): `"files": 1`, `"problems": 1`, an
+  absolute entry, a `../../../` entry and a symlink out (each resealed, each
+  asserting the outside file is never read), a `raw/../raw/0001.body` entry
+  that lands back inside; all red on the parent. A symlink that stays inside
+  the run directory still verifies.
+- **Mutation shown caught**: the lexical checks kept and the
+  `resolve().is_relative_to(run.resolve())` check removed — the symlink case
+  verifies (exit 0) and is red.
+
 ## B3a — standalone `zoo sink` seals only once nothing can write
 
 B3's close-then-seal extended to `run_sink` (decisions log 2026-10-13: "nothing

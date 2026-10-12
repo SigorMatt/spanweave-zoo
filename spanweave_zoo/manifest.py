@@ -62,7 +62,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from spanweave_zoo import __version__
@@ -808,6 +808,10 @@ def _rehashed(run: Path, document: dict[str, Any], key: str) -> list[str]:
         if not isinstance(name, str):
             found.append(f"{run}: {key}[{position}] has no 'file'")
             continue
+        outside = _outside(run, name)
+        if outside is not None:
+            found.append(f"{run}: {key}[{position}] is {name!r}, {outside}")
+            continue
         try:
             data = (run / name).read_bytes()
         except OSError:
@@ -827,11 +831,44 @@ def _rehashed(run: Path, document: dict[str, Any], key: str) -> list[str]:
     return found
 
 
+def _outside(run: Path, name: str) -> str | None:
+    """Why a `file` entry does not name a file of this run, or `None` if it does.
+
+    An entry is a normalized relative path under the run directory
+    (`SPEC.md` §5.4): not absolute, no `.` or `..` part, no empty part, and --
+    symlinks followed -- resolving inside `run`. Anything else is a problem
+    and the file it points at is not read: the manifest is a claim about this
+    capture, and a resealed one still verifies (`SPEC.md` §5), but only about
+    bytes inside the run directory.
+    """
+    path = PurePosixPath(name)
+    if path.is_absolute():
+        return "an absolute path, outside the run directory (SPEC.md section 5.4)"
+    if name in ("", ".") or path.as_posix() != name or ".." in path.parts:
+        return (
+            "not a normalized relative path, so it may name a file outside the "
+            "run directory (SPEC.md section 5.4)"
+        )
+    if not (run / name).resolve().is_relative_to(run.resolve()):
+        return (
+            "which resolves outside the run directory, so it is not part of "
+            "this capture and was not read (SPEC.md section 5.4)"
+        )
+    return None
+
+
 def _listed(document: dict[str, Any]) -> set[str]:
-    """Every file the manifest accounts for, from both of its lists."""
+    """Every file the manifest accounts for, from both of its lists.
+
+    A list that is not a list accounts for nothing; `_rehashed` has already
+    said so (`SPEC.md` §5.6).
+    """
     names: set[str] = set()
     for key in (BODIES, FILES):
-        for entry in document.get(key) or []:
+        entries = document.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
             if isinstance(entry, dict) and isinstance(entry.get("file"), str):
                 names.add(entry["file"])
     return names
@@ -896,7 +933,14 @@ def _incomplete(run: Path, document: dict[str, Any]) -> list[str]:
             f"{' nor '.join(KINDS)} (SPEC.md section 5.2) -- the audit reads "
             f"this field as the truth about the run"
         )
-    for problem in document.get(PROBLEMS) or []:
+    recorded = document.get(PROBLEMS)
+    if recorded is not None and not isinstance(recorded, list):
+        found.append(
+            f"{run}: {MANIFEST_NAME}'s {PROBLEMS!r} is not a list, so what the "
+            f"run recorded going wrong cannot be read (SPEC.md section 5.6)"
+        )
+        recorded = None
+    for problem in recorded or []:
         found.append(
             f"{run}: {MANIFEST_NAME} records a problem from the run: {problem}"
         )

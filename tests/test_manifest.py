@@ -833,3 +833,127 @@ def test_the_seal_is_over_the_document_and_not_its_whitespace(tmp_path):
     document = json.loads(path.read_text(encoding="utf-8"))
     path.write_text(json.dumps(document, indent=7), encoding="utf-8")
     assert manifest.problems(run) == []
+
+
+# --- B4: what a manifest says about *where* a file is (`SPEC.md` §5.4, §5.6) --
+#
+# Qodo Q10 and Q12. Every manifest below is resealed by hand, so the seal agrees
+# and the one thing wrong is the one under test: the decision of 2026-10-11
+# stands -- a resealed manifest still verifies -- but only *within the run
+# directory*. A list that is not a list is a problem line, not a `TypeError`;
+# a `file` entry that is absolute, has a `..` in it, or resolves outside the run
+# directory (symlinks followed) is a problem naming the entry, and the file it
+# points at is never read.
+
+OUTSIDE = b"bytes from somewhere that is not this capture"
+
+
+def _resealed(run: Path, change) -> None:
+    def change_and_reseal(document: dict[str, object]) -> None:
+        change(document)
+        document["seal"] = canonical_seal(document)
+
+    rewrite_manifest(run, change_and_reseal)
+
+
+@pytest.mark.parametrize("key", ["files", "problems"])
+def test_a_manifest_list_that_is_not_a_list_is_a_problem_not_a_crash(
+    tmp_path, capsys, key
+):
+    run = hand_written_capture(tmp_path)
+    _resealed(run, lambda document: document.update({key: 1}))
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert f"{key!r} is not a list" in out
+    assert "seal" not in out, "the manifest was resealed; only the list is wrong"
+
+
+def _list_outside(run: Path, entry: str) -> None:
+    """Add a `files` entry naming `entry`, with the outside file's own digest.
+
+    The digest and the length agree with the bytes the entry points at, so a
+    verify that followed it would find nothing wrong -- which is the defect.
+    """
+
+    def change(document: dict[str, object]) -> None:
+        document[manifest.FILES].append(  # type: ignore[attr-defined]
+            {"bytes": len(OUTSIDE), "file": entry, "sha256": manifest.digest(OUTSIDE)}
+        )
+
+    _resealed(run, change)
+
+
+def _reads(monkeypatch) -> list[Path]:
+    """Every path `Path.read_bytes` is called on, from here on."""
+    seen: list[Path] = []
+    original = Path.read_bytes
+
+    def recording(self: Path) -> bytes:
+        seen.append(self)
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", recording)
+    return seen
+
+
+@pytest.mark.parametrize("how", ["absolute", "dot-dot", "symlink"])
+def test_a_file_entry_that_points_outside_the_run_is_a_problem_and_is_not_read(
+    tmp_path, capsys, monkeypatch, how
+):
+    run = hand_written_capture(tmp_path)
+    outside = tmp_path / "outside.body"
+    outside.write_bytes(OUTSIDE)
+    if how == "absolute":
+        entry = str(outside.resolve())
+    elif how == "dot-dot":
+        entry = "../../../outside.body"
+        assert (run / entry).resolve() == outside.resolve()
+    else:
+        (run / "raw" / "elsewhere.body").symlink_to(outside)
+        entry = "raw/elsewhere.body"
+    _list_outside(run, entry)
+    reads = _reads(monkeypatch)
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert entry in out
+    assert "outside the run directory" in out
+    assert "seal" not in out, "the manifest was resealed; only the entry is wrong"
+    assert outside.resolve() not in [path.resolve() for path in reads]
+
+
+def test_a_dot_dot_entry_that_lands_back_inside_is_still_a_problem(tmp_path, capsys):
+    # The rule is on the entry as written, not only on where it lands: entries
+    # are normalized relative paths (`SPEC.md` §5.4), and `raw/../raw/...` is
+    # not one even though it names a file the capture holds.
+    run = hand_written_capture(tmp_path)
+
+    def change(document: dict[str, object]) -> None:
+        document[manifest.BODIES][0]["file"] = "raw/../raw/0001.body"  # type: ignore[index]
+
+    _resealed(run, change)
+
+    assert cli.verify(tmp_path / "captures") == 1
+    assert "raw/../raw/0001.body" in capsys.readouterr().out
+
+
+def test_a_symlink_that_stays_inside_the_run_verifies(tmp_path, capsys):
+    # The confinement is *where*, not *whether* (decisions log, 2026-10-12): a
+    # symlink resolving inside the run directory is a file of the capture and
+    # is re-hashed like any other.
+    run = hand_written_capture(tmp_path)
+    (run / "raw" / "again.body").symlink_to(run / "raw" / "0001.body")
+
+    def change(document: dict[str, object]) -> None:
+        document[manifest.FILES].append(  # type: ignore[attr-defined]
+            {
+                "bytes": len(BODY),
+                "file": "raw/again.body",
+                "sha256": manifest.digest(BODY),
+            }
+        )
+
+    _resealed(run, change)
+
+    assert cli.verify(tmp_path / "captures") == 0, capsys.readouterr().out
