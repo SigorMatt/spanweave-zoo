@@ -80,6 +80,17 @@ HOP_BY_HOP = frozenset(
 DEFAULT_TIMEOUT = 5.0
 
 
+def authority(host: str, port: int) -> str:
+    """`host:port` as a `Host` value names it (RFC 9110 §7.2, RFC 3986 §3.2.2).
+
+    An IPv6 literal is bracketed -- `[::1]:4318` -- because without the
+    brackets its colons cannot be told from the port's. A host with a colon in
+    it is one: a name or an IPv4 address never carries one. The replay's
+    `Host` (`SPEC.md` §6.2) and the tee's (§4.3) are both written by this.
+    """
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
 def rewrite_head(
     octets: bytes, host: str, *, drop: frozenset[str] = frozenset()
 ) -> bytes:
@@ -186,14 +197,14 @@ class HttpForward:
 
     @property
     def endpoint(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return f"http://{authority(self.host, self.port)}"
 
     def __call__(self, head: bytes, body: bytes) -> int:
         """Send `head` as `collector_head` makes it, then `body`; the status."""
         return send_head(
             self.host,
             self.port,
-            collector_head(head, f"{self.host}:{self.port}"),
+            collector_head(head, authority(self.host, self.port)),
             body,
             timeout=self.timeout,
         )

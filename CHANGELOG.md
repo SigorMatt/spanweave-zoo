@@ -4,6 +4,39 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B5 — the wire is honest at its edges
+
+Qodo Q9, Q11, Q3 (`TASKS.md`, "Series 2"). `SPEC.md` §3.3, §3.7, §4.3, §6.2,
+§6.3.
+
+- **(a) A POST the sink cannot frame closes its connection** (`SPEC.md` §3.3,
+  §3.7). No `Content-Length`, a non-numeric one, or a non-positive one with a
+  `Transfer-Encoding` beside it: still recorded as a zero-byte body and
+  answered as before, now with `Connection: close`, and the connection is
+  closed after the answer. Kept alive, a chunked POST's chunks were read as
+  the next request line and drew a stray `400`. The sink still decodes no
+  framing (decision of 2026-10-12, B5(a)); B3's no-answer close after the
+  journals close is unchanged. `Content-Length: 0` with no
+  `Transfer-Encoding` keeps its connection.
+- **(b) An IPv6 literal is bracketed in `Host`** (`SPEC.md` §4.3, §6.2):
+  `forward.authority` writes `[::1]:4318`, used by `zoo replay`'s send and by
+  `HttpForward`. Before, `--to http://[::1]:4318` sent `Host: ::1:4318`.
+- **(c) `replay --timing` measures each gap from the body before it in the
+  capture, sent or not** (`SPEC.md` §6.3): a body whose head cannot be read
+  still advances the previous receipt to its own `received_at` (or to none,
+  when that is unreadable too, and the next gap is said not computed).
+- **Tests**: `tests/test_sink.py` — a chunked POST then a well-formed one on
+  one connection is one body, one `200`, `Connection: close`, no `400`; each
+  unframed shape (no length, `five`, `0` + TE, `-3` + TE) likewise; the
+  rejected side (`404`) likewise; `Content-Length: 0` keeps the connection.
+  `tests/test_replay.py` — `--to http://[::1]:<port>` into a real IPv6
+  listener receives `Host: [::1]:<port>`; `forward.authority`;
+  `HttpForward("::1", …)`; a skipped first and a skipped middle body; a
+  skipped body with no `headers.json`. All red on the parent except the
+  keep-alive guard.
+- **Mutation shown caught**: `if self._unframed:` in `_answer` replaced by
+  `if False:` — the chunked test and the five unframed cases are red.
+
 ## B4 — `verify` trusts nothing a manifest says about where a file is
 
 Qodo Q10, Q12 (`TASKS.md`, "Series 2"). `SPEC.md` §5.4, §5.6.

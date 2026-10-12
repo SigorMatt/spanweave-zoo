@@ -528,7 +528,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     `HTTP/1.1` with an explicit `Content-Length: 0` on every answer, so a real
     exporter's keep-alive connection is honoured and no answer is framed by
-    closing the socket.
+    closing the socket. The one exception is a request the sink could not
+    frame (`SPEC.md` §3.3, B5): answered the same way, with `Connection:
+    close`, and its connection closed after the answer.
     """
 
     protocol_version = "HTTP/1.1"
@@ -537,6 +539,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     _stream: _Head
     _head: bytes = b""
+    # Whether the request being answered gave no framing the sink can read
+    # (`_read_body`); if so its connection is closed after the answer.
+    _unframed: bool = False
 
     def setup(self) -> None:
         """Wrap the request stream before anything reads a byte off it."""
@@ -593,7 +598,15 @@ class _Handler(BaseHTTPRequestHandler):
         one -- is recorded as a zero-byte body (`SPEC.md` §3.7): reading a
         `Transfer-Encoding` means decoding a framing, and the sink decodes
         nothing. What it could see is what the capture says it saw.
+
+        B5 (a): such a request is also **unframed** -- the sink does not know
+        where its body ends, so it cannot know where the next request on the
+        connection begins -- and `_answer` closes the connection after it
+        rather than read whatever follows (a chunked body's chunks) as a
+        request. Unframed is: no `Content-Length`, one that is not a number,
+        or one that is not positive with a `Transfer-Encoding` beside it.
         """
+        self._unframed = True
         declared = self.headers.get("Content-Length")
         if declared is None:
             return b""
@@ -605,16 +618,27 @@ class _Handler(BaseHTTPRequestHandler):
             # read, which is nothing.
             return b""
         if length <= 0:
+            self._unframed = self.headers.get("Transfer-Encoding") is not None
             return b""
+        self._unframed = False
         return self.rfile.read(length)
 
     def _answer(self, status: HTTPStatus) -> None:
-        """Empty body, the request's own content type echoed, nothing else."""
+        """Empty body, the request's own content type echoed, nothing else.
+
+        After a request the sink could not frame (`_read_body`), the answer
+        also says `Connection: close` and the connection is closed once it is
+        sent (`SPEC.md` §3.3): the sink decodes no framing, so it refuses to
+        guess where the next request begins (decision of 2026-10-12, B5(a)).
+        """
         self.send_response(status)
         content_type = self.headers.get("Content-Type")
         if content_type is not None:
             self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", "0")
+        if self._unframed:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:

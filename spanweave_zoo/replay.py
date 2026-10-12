@@ -291,6 +291,10 @@ def replay(
         except HeadUnreadable as unreadable:
             outcomes.append(Outcome(file=file, error=str(unreadable)))
             log(f"  {file}  not sent: {unreadable}")
+            # B5 (c), `SPEC.md` §6.3: the body was still received when the
+            # sink says it was, so the next gap is measured from this receipt
+            # -- or from none, when this one is not on record either.
+            previous = manifest.received_at(run, file)
             continue
         slept: float | None = None
         if timing and position:
@@ -322,10 +326,11 @@ def sender(host: str, port: int, *, timeout: float = forward.DEFAULT_TIMEOUT) ->
     """The real `send`, pointed at `--to` (`SPEC.md` §6.2).
 
     The captured head with its `Host` line naming `host:port` (`retarget`),
+    an IPv6 literal bracketed (`forward.authority`, B5),
     then the body, on one connection of `forward.send_head`'s. That is the
     only difference between the request the exporter made and this one.
     """
-    destination_host = f"{host}:{port}"
+    destination_host = forward.authority(host, port)
 
     def send(head: bytes, body: bytes) -> int:
         return forward.send_head(

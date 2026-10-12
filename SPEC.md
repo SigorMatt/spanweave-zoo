@@ -363,6 +363,16 @@ for JSON, for gzip, for a truncated body and for a body no receiver would
 accept. The sink is not a receiver and its `200` means "recorded", never
 "understood".
 
+A POST the sink **could not frame** (§3.7) gets that same answer with one
+header more, **`Connection: close`**, and the connection is closed once the
+answer is sent (B5, Q9). The sink decodes no framing, so after such a request
+it does not know where the next one begins: kept alive, it read a chunked
+body's chunks as a request line and answered a `400` no exporter asked for.
+Closing records what it could see and guesses nothing about what follows
+(the decision of 2026-10-12, B5(a)); a client with more to send opens a new
+connection. Whether the answer says close depends on the framing headers the
+request carried and never on its bytes.
+
 A POST that reaches a sink after its journals have closed (§5.5) — `zoo
 sink`'s or either of `zoo capture`'s — is not recorded, so it is **not
 answered**: the connection is closed
@@ -455,6 +465,15 @@ answered like any other. The sink reads the framing it was given and does not
 guess one it was not: decoding a `Transfer-Encoding` is decoding. What it could
 see is what the capture says it saw, and the header that said so is in the
 record.
+
+Such a POST is **unframed**, and so is one whose `Content-Length` is not
+positive while a `Transfer-Encoding` is present: in each the sink cannot tell
+where the body ends, and so where the next request on the connection begins.
+An unframed POST is recorded exactly as above and answered with `Connection:
+close`, and its connection is closed after the answer (§3.3): nothing sent
+after it on that connection is read, recorded or answered. A `Content-Length:
+0` with no `Transfer-Encoding` is a framing — an empty body — and keeps its
+connection.
 
 It **binds and resolves no name**. `http.server`'s own bind follows with
 `socket.getfqdn(host)` — a reverse lookup of the address it was just given,
@@ -677,8 +696,8 @@ The raw sink forwards every body it **accepts** (§3.2 — a POST to
   zoo, as the replay writes its head (§6.2), with two changes that name the
   connection rather than the payload, each a whole line of §2.3's split:
   - the **`Host` line** is substituted by §6.2's rule — the name as sent,
-    `: `, and the Collector's `host:port` — because the destination has
-    changed;
+    `: `, and the Collector's `host:port`, an IPv6 literal bracketed as
+    §6.2 says — because the destination has changed;
   - the **hop-by-hop header lines** are dropped with their CRLF, because
     they describe a connection the forward is not. Which lines those are is
     two rules, matched by field name in any case:
@@ -1654,7 +1673,10 @@ then the body, and nothing else:
   nothing else — and a `Host` line is a line after the request line and before
   the empty line whose field name (§2.3's token rule) is `Host` in any case. It
   becomes the name as sent, `: `, and the `--to` destination as `host:port`;
-  its CRLF stays. Every such line is substituted, so a head that carried two
+  its CRLF stays. A host that is an IPv6 literal is written in brackets, as
+  RFC 9110 §7.2 and RFC 3986 §3.2.2 write one — `--to http://[::1]:4318`
+  names `Host: [::1]:4318` — because unbracketed its colons cannot be told
+  from the port's (B5, Q11). Every such line is substituted, so a head that carried two
   names the destination in both. A head that carried **none** gets none —
   adding a header is adding something — and a `Host:` that §2.3's split puts
   inside another line (after a bare LF, or in a head whose every line ends in
@@ -1719,6 +1741,15 @@ Without `--timing` the bodies go out back to back, as fast as the receiver
 accepts them. With it, before each body after the first, the replayer sleeps
 the gap between that body's receipt time and the previous one's — so a receiver
 sees the export pattern the exporter actually had, batches and bursts included.
+
+"The previous one" is the body before it **in the capture**, whether or not
+that body was sent. A body whose head cannot be read (§6.2) is not sent, but
+the sink still received it when its `received_at` says, so the next gap is
+measured from that receipt (B5, Q3): skipping the first body does not cost
+the second its gap, and skipping a middle one does not stretch the next gap
+back to the body before it. A skipped body with no readable `received_at`
+leaves the next gap one that cannot be computed (below), rather than one
+measured from an earlier body.
 
 The receipt times come from `NNNN.headers.json`'s `received_at`, which is the
 one thing in that file the request did not say: it is the sink's own note of

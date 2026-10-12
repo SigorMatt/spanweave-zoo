@@ -902,3 +902,99 @@ def test_a_post_the_standalone_sink_outwaits_writes_nothing_after_the_seal(
     assert len(found) == 1, found
     assert found[0].endswith(f"records a problem from the run: {late[0]}"), found
     assert cli.verify(raw.parent) == 1
+
+
+# --- B5 (a): a POST the sink cannot frame closes its connection --------------
+
+# A well-formed POST, sent after an unframed one on the same connection. If
+# the sink kept the connection open it would read this -- or the unframed
+# one's leftover framing -- as the next request.
+WELL_FORMED = (
+    b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+    b"Content-Length: %d\r\n\r\n" % len(PROTOBUF)
+) + PROTOBUF
+
+
+def statuses(answer: bytes) -> list[bytes]:
+    """Every status line in what came back, in order."""
+    return re.findall(rb"HTTP/1\.[01] \d{3}", answer)
+
+
+def test_a_chunked_post_then_a_well_formed_one_is_one_body_and_no_stray_400(
+    tmp_path,
+):
+    # B5 (a), Q9, `SPEC.md` §3.3/§3.7. The sink decodes no framing, so the
+    # chunked POST is a zero-byte body -- and its chunks are still on the
+    # connection. Kept alive, the sink read them as a request line and
+    # answered a 400 no exporter asked for. Closed, nothing after the answer
+    # is read: one body recorded, one answer, and that answer says close.
+    raw = tmp_path / "run" / "raw"
+    chunked = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+        b"Content-Type: application/x-protobuf\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        b"5\r\nhello\r\n0\r\n\r\n"
+    )
+    with running(raw) as (_, port):
+        answer = send_octets(port, chunked + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert [entry["file"] for entry in manifest.read(raw.parent)["bodies"]] == [
+        "raw/0001.body"
+    ]
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        b"",
+        b"Content-Length: five\r\n",
+        b"Content-Length: 0\r\nTransfer-Encoding: chunked\r\n",
+        b"Content-Length: -3\r\nTransfer-Encoding: chunked\r\n",
+    ],
+    ids=["no-length", "non-numeric", "zero-with-te", "negative-with-te"],
+)
+def test_every_post_the_sink_cannot_frame_closes_its_connection(tmp_path, framing):
+    # B5 (a): each framing the row names is recorded as a zero-byte body
+    # (`SPEC.md` §3.7), answered 200 with `Connection: close`, and nothing
+    # sent after it on that connection is read as a request.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+
+
+def test_an_unframed_post_to_another_path_is_404_and_closes_too(tmp_path):
+    # B5 (a), the rejected side (`SPEC.md` §3.4): same recording, same close.
+    raw = tmp_path / "run" / "raw"
+    head = (
+        b"POST /elsewhere HTTP/1.1\r\nHost: zoo\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"0\r\n\r\n" + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 404"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert not raw.exists() or list(raw.glob("*.body")) == []
+    assert (raw.parent / sink.REJECTED_DIR / "0001.body").read_bytes() == b""
+
+
+def test_a_framed_post_keeps_its_connection(tmp_path):
+    # B5 (a), the other edge: `Content-Length: 0` with no `Transfer-Encoding`
+    # is a framing -- an empty body -- and the connection is kept, so the
+    # well-formed POST after it is recorded as the second body. Closing here
+    # would refuse a keep-alive the request was entitled to.
+    raw = tmp_path / "run" / "raw"
+    empty = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\nContent-Length: 0\r\n\r\n"
+    last = WELL_FORMED.replace(b"Host: zoo\r\n", b"Host: zoo\r\nConnection: close\r\n")
+    with running(raw) as (_, port):
+        answer = send_octets(port, empty + last)
+    assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
+    assert answer.count(b"Connection: close") == 0
+    assert [body_of(raw, 1), body_of(raw, 2)] == [b"", PROTOBUF]

@@ -801,3 +801,176 @@ def test_a_replay_answers_with_what_the_receiver_said_and_nothing_more(tmp_path)
     assert [outcome.status for outcome in outcomes] == [202]
     assert all(outcome.delivered for outcome in outcomes)
     assert all(outcome.error is None for outcome in outcomes)
+
+
+# --- B5 (b): an IPv6 destination is bracketed in `Host` ----------------------
+
+
+@contextmanager
+def ipv6_listener():
+    """A one-request receiver on `[::1]` that keeps the head it was sent.
+
+    Raw octets rather than `http.server`, whose servers bind IPv4. Skipped
+    only where the machine has no IPv6 loopback to bind.
+    """
+    try:
+        server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        server.bind(("::1", 0))
+    except OSError as unavailable:
+        pytest.skip(f"no IPv6 loopback here: {unavailable}")
+    server.listen(1)
+    server.settimeout(TIMEOUT)
+    heads: list[bytes] = []
+
+    def serve() -> None:
+        connection, _ = server.accept()
+        with connection:
+            connection.settimeout(TIMEOUT)
+            received = b""
+            while b"\r\n\r\n" not in received:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                received += chunk
+            heads.append(received.partition(b"\r\n\r\n")[0] + b"\r\n\r\n")
+            connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield heads, server.getsockname()[1]
+    finally:
+        thread.join(timeout=TIMEOUT)
+        server.close()
+
+
+def test_a_replay_to_an_ipv6_literal_sends_a_bracketed_host(tmp_path):
+    # B5 (b), Q11, `SPEC.md` §6.2: `--to http://[::1]:<port>` names the
+    # destination as RFC 9110 §7.2 writes an IPv6 literal, `[::1]:<port>`.
+    # Unbracketed, `::1:<port>` is no host a receiver can read.
+    source = crafted(
+        tmp_path / "source",
+        [(lambda port: head_octets(port, b"x"), b"x")],
+        Clock("2026-10-09T12:00:00+00:00"),
+    )
+    with ipv6_listener() as (heads, port):
+        status = cli.main(["replay", str(source), "--to", f"http://[::1]:{port}"])
+    assert status == 0
+    assert f"\r\nHost: [::1]:{port}\r\n".encode() in heads[0], heads
+
+
+def test_the_destination_host_is_bracketed_only_for_an_ipv6_literal():
+    # B5 (b): one rule for the replay and the tee (`forward.authority`).
+    from spanweave_zoo import forward
+
+    assert forward.authority("::1", 4318) == "[::1]:4318"
+    assert forward.authority("fe80::1%eth0", 80) == "[fe80::1%eth0]:80"
+    assert forward.authority("127.0.0.1", 4318) == "127.0.0.1:4318"
+    assert forward.authority("collector", 4318) == "collector:4318"
+
+
+def test_the_tee_names_an_ipv6_collector_bracketed(monkeypatch):
+    # B5 (b), `SPEC.md` §4.3: `HttpForward`'s `Host` follows the same rule.
+    from spanweave_zoo import forward
+
+    sent: list[bytes] = []
+
+    def spy(host, port, head, body, *, timeout):
+        sent.append(head)
+        return 200
+
+    monkeypatch.setattr(forward, "send_head", spy)
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: 127.0.0.1:4318\r\n\r\n"
+    assert forward.HttpForward("::1", 4319)(head, b"") == 200
+    assert sent == [b"POST /v1/traces HTTP/1.1\r\nHost: [::1]:4319\r\n\r\n"]
+
+
+# --- B5 (c): `--timing` measures from the body before, sent or not -----------
+
+
+def _unreadable_head(run: Path, number: int) -> None:
+    """Empty one recorded head, so that body is not sent (`SPEC.md` §6.2)."""
+    (run / "raw" / f"{number:04d}.headers.raw").write_bytes(b"")
+
+
+# Receipts four seconds then two seconds apart, as a test's clock says.
+THREE_RECEIPTS = (
+    "2026-10-09T12:00:00+00:00",
+    "2026-10-09T12:00:04+00:00",
+    "2026-10-09T12:00:06+00:00",
+)
+
+
+def test_a_skipped_first_body_still_starts_the_next_gap(tmp_path):
+    # B5 (c), Q3, `SPEC.md` §6.3: the first body's head is unreadable and it
+    # is not sent, but it was received at 12:00:00, so the second waits the
+    # four seconds after it, as the exporter's did.
+    source = crafted(
+        tmp_path / "source",
+        [(lambda port: head_octets(port, b"x"), b"x")] * 3,
+        Clock(*THREE_RECEIPTS),
+    )
+    _unreadable_head(source, 1)
+    sleeps = Sleeps()
+    lines: list[str] = []
+    outcomes = replay.replay(
+        source,
+        source=replay.RAW,
+        send=Spy(200),
+        timing=True,
+        sleep=sleeps,
+        log=lines.append,
+    )
+    assert [outcome.status for outcome in outcomes] == [None, 200, 200]
+    assert sleeps.slept == [4.0, 2.0]
+    assert [outcome.slept for outcome in outcomes] == [None, 4.0, 2.0]
+    assert not any("no gap was slept" in line for line in lines), lines
+
+
+def test_a_skipped_middle_body_still_ends_the_gap_before_it(tmp_path):
+    # B5 (c): the second body is not sent; the third's gap is measured from
+    # the second's receipt (two seconds), not from the first's (six).
+    source = crafted(
+        tmp_path / "source",
+        [(lambda port: head_octets(port, b"x"), b"x")] * 3,
+        Clock(*THREE_RECEIPTS),
+    )
+    _unreadable_head(source, 2)
+    sleeps = Sleeps()
+    outcomes = replay.replay(
+        source,
+        source=replay.RAW,
+        send=Spy(200),
+        timing=True,
+        sleep=sleeps,
+        log=lambda line: None,
+    )
+    assert [outcome.status for outcome in outcomes] == [200, None, 200]
+    assert sleeps.slept == [2.0]
+    assert [outcome.slept for outcome in outcomes] == [None, None, 2.0]
+
+
+def test_a_skipped_body_with_no_receipt_time_leaves_no_gap_to_guess(tmp_path):
+    # B5 (c), degenerate: the skipped body's `headers.json` is gone too, so
+    # its receipt is unknown. The next gap is not measured from the body
+    # before it -- that would be guessing -- and the replay says so.
+    source = crafted(
+        tmp_path / "source",
+        [(lambda port: head_octets(port, b"x"), b"x")] * 3,
+        Clock(*THREE_RECEIPTS),
+    )
+    _unreadable_head(source, 2)
+    (source / "raw" / "0002.headers.json").unlink()
+    sleeps = Sleeps()
+    lines: list[str] = []
+    replay.replay(
+        source,
+        source=replay.RAW,
+        send=Spy(200),
+        timing=True,
+        sleep=sleeps,
+        log=lines.append,
+    )
+    assert sleeps.slept == []
+    said = [line for line in lines if "no gap was slept" in line]
+    assert len(said) == 1 and "raw/0003.body" in said[0], lines
