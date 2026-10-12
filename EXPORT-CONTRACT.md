@@ -1,7 +1,8 @@
 # Export contract — for every telemetry pet project
 
-Contract version **1.2** (1.0 was given to Z4; 1.1 and 1.2 are listed at the
-end). Put the version you were given in `MANIFEST.json`.
+Contract version **1.3** (1.0 was given to Z4, 1.2 to Z3 and Z5; the
+changes are listed at the end). Put the version you were given in
+`MANIFEST.json`.
 
 You are building a small, ordinary AI agent. Its only job beyond working is
 to be **instrumented by stock instrumentation and to export its telemetry
@@ -18,14 +19,15 @@ A repository with:
 - `make run-recorded`: the same run against a **key-free** OpenAI-compatible
   stub you provide (a tiny local server returning scripted completions and
   tool calls is fine), so a stranger can run it with no credentials;
-- `make run-real`: the same run against a real model, which you execute
-  **once** and whose telemetry you do not need to keep — the collector on our
-  side keeps it;
+- `make run-real`: the same run against a real model. **You do not run it**;
+  the operator on our side runs it once, against the endpoint and gateway we
+  name, and keeps the telemetry. Its only requirements on you are §4's
+  variables and that the README says how to invoke it;
 - `README.md` with: the framework and instrumentation packages **pinned to
   exact versions**, the model used for the real run, and a one-paragraph
   description of what the agent does;
 - a `MANIFEST.json` written by `make run` next to nothing else:
-  `{"contract_version": "1.2", "framework": "...", "framework_version": "...",
+  `{"contract_version": "1.3", "framework": "...", "framework_version": "...",
   "instrumentation": ["pkg==ver", ...], "sdk": {"opentelemetry-sdk": "...",
   "exporter": "pkg==ver"}, "python": "3.x.y", "platform": "...",
   "model": "...", "base_url": "...", "mode": "recorded" | "real",
@@ -35,7 +37,8 @@ A repository with:
   client actually used — the stub's URL under `recorded`, the gateway's under
   `real` — because a model name alone does not say who served it.
   `started_at` is taken from the clock when the run starts, before the first
-  model call.
+  model call, and `MANIFEST.json` is **written before the first model call**
+  too, so it exists however the run ends.
 - `make run` with no arguments is the recorded mode, so the default works
   with no credentials. A full lock of the dependency tree installed with
   `--no-deps` is the recommended way to keep the pins exact.
@@ -99,7 +102,13 @@ A repository with:
   equivalents, named in `README.md` — and takes the model as `MODEL=<id>` on
   the make command line, so one credential set and one gateway drive every
   pet project. The real run is made against an OpenAI-compatible gateway we
-  name, not necessarily OpenAI; nothing in the agent may assume which.
+  name, not necessarily OpenAI; nothing in the agent may assume which. **What
+  the gateway serves** is `/v1/chat/completions` with tool calling and
+  streaming, and nothing else is assumed: a framework whose default is
+  another API (the Responses API, say) is configured to use chat
+  completions, and the README says so. A model id is an opaque string the
+  gateway serves and may contain `/` (`vendor/model-name`); the agent passes
+  it to the gateway unchanged and never reads a provider out of it.
 
 ## 5. Definition of done
 
@@ -107,9 +116,9 @@ A stranger with Python and no credentials can clone the repository, run
 `make run-recorded ENDPOINT=http://localhost:4318` against any OTLP endpoint
 (or none — the SDK logs export failures and the run still completes), and
 read `MANIFEST.json` afterwards. A reviewer will do exactly that on a
-machine that has never seen the repository. You have run `make run-real`
-once with the endpoint we gave you. You could not say what the consumer of
-the telemetry is, and you have not tried to find out.
+machine that has never seen the repository. `make run-real` is documented
+and untested by you. You could not say what the consumer of the telemetry
+is, and you have not tried to find out.
 
 ## 6. Report back
 
@@ -119,6 +128,18 @@ where this contract or your brief left you guessing** — what you guessed and
 why. Those guesses are how the contract improves.
 
 ---
+
+Changes from 1.2 (after Z3's and Z5's reports): the real run is the
+operator's, not the implementer's (§1, §5 — both implementers found the
+old §5 contradicted their instructions); the gateway's API surface is stated
+(§4: chat completions with tools and streaming; a framework defaulting to
+another API is configured away from it); `MANIFEST.json` is written before
+the first model call (§1); a model id may contain `/` and is passed through
+unchanged (§4 — Z3's framework read `vendor/` as a provider). Not changed,
+on purpose: the processor and
+exporter defaults — Z5 showed that a run shorter than the batch schedule
+delay that exits abruptly exports nothing, and the brief, not the SDK
+settings, is what decides how long a run lasts.
 
 Changes from 1.1 (after Z4's captures): manifest gains `base_url`, and
 `started_at` is UTC with `Z`, taken before the first model call; `make

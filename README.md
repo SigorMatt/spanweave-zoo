@@ -394,20 +394,23 @@ to the pet projects, byte for byte. They are the record: nothing here reflows
 them, re-indents them or fixes them.
 
 ```
-90c08f000eb0fe7a68a6eed179900e652312a8c572dab40da3b45425582184b9  EXPORT-CONTRACT.md
-c82487fd275d1a0d365ff43134f03ff527e201091a39154f336bd01548095a70  ZOO-BRIEFS.md
+cd1faed49497257fab456ae7b2a5b56040ca3b4db4b709e4d2ca0cd1ba94cc6c  EXPORT-CONTRACT.md
+9f022c7cee379bbf36d30397ddf1f83333408d8b594e8eac6efc452f4c9f0b26  ZOO-BRIEFS.md
 ```
 
-Both root copies are **contract version 1.2**.
+Both root copies are **contract version 1.3**.
 
 The pilot project **Z4 (`streaming-concierge`) was built against version 1.0**,
-which is 1.2 minus the changes the contract lists in its own closing
-*"Changes from 1.0"* and *"Changes from 1.1"* sections -- read those for the
+which is 1.3 minus the changes the contract lists in its own closing
+*"Changes from 1.0"*, *"Changes from 1.1"* and *"Changes from 1.2"* sections -- read those for the
 difference rather than any paraphrase of it, here or elsewhere. So for Z4, and for Z4 only, the
 root copy is a later revision than the one its implementer held; its own
 `MANIFEST.json` records `1.0`, which is the contract's instruction ("Put the
 version you were given in `MANIFEST.json`") and is how a capture stays
-readable against what was actually asked for.
+readable against what was actually asked for. **Z3 (`echo-planner`) and Z5
+(`flaky-fetcher`) were built against version 1.2** -- 1.3 minus its
+*"Changes from 1.2"* section -- and the same holds for them: their
+`MANIFEST.json` records `1.2`.
 
 For **every project started from now on**, these two files are byte-identical
 to the ones handed to the project, and the sha256s above are how that is

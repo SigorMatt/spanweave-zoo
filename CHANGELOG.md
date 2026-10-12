@@ -4,6 +4,26 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## Between runs: export contract 1.3, the Z5 brief amendment, ROADMAP rows for Z3 and Z5
+
+Docs only: no behaviour change, no capture touched.
+
+- **`EXPORT-CONTRACT.md` 1.2 → 1.3**, from Z3's and Z5's reports: the real
+  run is the operator's, not the implementer's (§1, §5); `MANIFEST.json` is
+  written before the first model call (§1); §4 states the gateway's surface
+  (chat completions with tools and streaming) and that a model id may contain
+  `/` and is passed through unchanged; a closing "Changes from 1.2" paragraph.
+- **`ZOO-BRIEFS.md`, Z5**: the retry edge backs off a scripted 3 s, the same
+  in both modes, so a run that exits via `os._exit` outlasts the batch
+  processor's delay.
+- **`README.md`, Provenance**: both documents' new sha256s, "contract version
+  1.3", Z4's 1.0 described as 1.3 minus all three closing change sections,
+  and Z3 and Z5 named as built against 1.2.
+- **`ROADMAP.md`**: the Z3 and Z5 rows filled (repository, contract,
+  captures; not yet audited), and two operating notes — the Agents SDK's
+  reading of `vendor/` in a model id, and the batch processor exporting
+  nothing from a short run that exits via `os._exit`.
+
 ## B3 — nothing writes to a capture after its seal
 
 Qodo Q2, Q7 (`TASKS.md`, "Series 2").

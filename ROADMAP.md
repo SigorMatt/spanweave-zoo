@@ -14,9 +14,9 @@ of what each zoo series did; `PROBES.md` is what the audits found;
 |---|---|---|---|---|---|---|
 | Z1 `ledger-clerk` | nesting | LangChain / OpenInference | — | — | — | — |
 | Z2 `fan-out-researcher` | parallel tools | LlamaIndex / OpenInference | — | — | — | — |
-| Z3 `echo-planner` | 25-turn history-resending loop, two instrumentors on one client | OpenAI Agents SDK / OpenInference ×2 | — | — | — | — |
+| Z3 `echo-planner` | 25-turn history-resending loop, two instrumentors on one client | OpenAI Agents SDK / OpenInference ×2 | [SigorMatt/echo-planner](https://github.com/SigorMatt/echo-planner) `71bc477` | 1.2 | `captures/z3/2026-10-13-real` (Nebius, `Qwen/Qwen3-235B-A22B-Instruct-2507`; 4 bodies, the root in the last), `-recorded` (1 body) — `9b0268f` | — |
 | Z4 `streaming-concierge` | streamed tool call, one manual root span | bare `openai` / OTel GenAI | [SigorMatt/streaming-concierge](https://github.com/SigorMatt/streaming-concierge) `553279a` | 1.0 (built), 1.1 (reviewed) | `captures/z4/2026-10-12-real` (Nebius, `Qwen/Qwen3-235B-A22B-Instruct-2507`), `-recorded` — `47cb06c` | series 1, `audit/z4-*.md`, PROBES L1–L2, S1–S5 |
-| Z5 `flaky-fetcher` | retries, `os._exit(0)` with no shutdown | LangGraph / OpenInference | — | — | — | — |
+| Z5 `flaky-fetcher` | retries, `os._exit(0)` with no shutdown | LangGraph / OpenInference | [SigorMatt/flaky-fetcher](https://github.com/SigorMatt/flaky-fetcher) `2a3e778` | 1.2 | `captures/z5/2026-10-13-real` (Nebius, `Qwen/Qwen3-235B-A22B-Instruct-2507`), `-recorded` — one body each, four spans, no root — `f081997` | — |
 | Z6 `crew-of-three` | agents nested under a crew, one client seen twice | CrewAI / OpenInference | — | — | — | — |
 
 Suggested order for the rest: Z3 and Z5 first (each built to produce a shape
@@ -84,3 +84,10 @@ captures it reproduces.
   two indices, the second without a name; a per-index assembler (the OpenAI
   convention) gets invalid JSON. `Qwen/Qwen3-235B-A22B-Instruct-2507` streams
   one complete call. Pre-flight before every real capture regardless.
+- The OpenAI Agents SDK reads `vendor/` in a model id as a provider prefix,
+  so `Qwen/Qwen3-...` reached no gateway until Z3 passed the id through
+  unchanged (fixed at `71bc477`; contract 1.3 §4 now says so for everyone).
+- With the stock batch span processor, a run shorter than its 5 s schedule
+  delay that exits via `os._exit` exports nothing: no flush ever fires. Z5's
+  brief gained a scripted 3 s retry backoff so the run outlasts the delay;
+  the SDK defaults stay as they are (contract 1.3, "Changes from 1.2").

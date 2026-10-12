@@ -103,8 +103,9 @@ retry edge), instrumented by `openinference-instrumentation-langchain`.
 
 **What it does.** A fetch-and-summarize agent calls `http_get(url)`, which
 **raises** on the first two calls (a scripted `ConnectionError`) and succeeds
-on the third; the graph's retry edge re-enters the tool node each time; then
-one LLM summary. After the final answer the process **exits via
+on the third; the graph's retry edge **backs off** — a fixed 3-second sleep,
+scripted, the same in both modes — and re-enters the tool node each time;
+then one LLM summary. After the final answer the process **exits via
 `os._exit(0)` without calling `shutdown()`** — the one place the contract's
 flush rule is deliberately broken, on the brief's instruction — so the last
 batch may never leave the process and the root span may never be exported.
