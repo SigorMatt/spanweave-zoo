@@ -6,3 +6,8 @@
 # rewrote those bytes would fail verify for a reason that has nothing to do
 # with the capture.
 tests/fixtures/capture/** -text
+
+# The reviews under reviews/ are kept byte for byte, and reviews/SHA256SUMS
+# records each one's digest; the same `-text` keeps a checkout from rewriting
+# them out from under their sums.
+reviews/** -text

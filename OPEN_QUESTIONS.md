@@ -17,6 +17,11 @@ thing.
 Each entry says what was asked, what the options were, what was decided, who
 decided it, and where the decision now lives.
 
+A citation of `WORKPLAN.md` below is to series 1's plan, which was deleted at
+that series' close: its §3 (decisions log) and §4 (resume notes) are folded
+verbatim into `TASKS.md`, and the whole file as it last stood is
+`git show 22be077:WORKPLAN.md`.
+
 ---
 
 ## 1. When is the pet project's `MANIFEST.json` copied into the capture?
@@ -234,8 +239,10 @@ decided, and the side findings.
 
 ## 5. A5: `agentgolden` is not a pinned dependency
 
-**Status: open. Asked by A5 (2026-10-12), which stopped before writing any
-code: the row's step 5 needs a dependency the repository does not declare.**
+**Status: resolved, 2026-10-12, by the maintainer: option 1. Implemented in A5
+(`f60f69c`, `701fc80`); normative in `SPEC.md` §7 and `CLAUDE.md` rules 6
+and 8. Asked by A5 (2026-10-12), which stopped before writing any code: the
+row's step 5 needs a dependency the repository does not declare.**
 
 **The conflict.** A5's row (`WORKPLAN.md` §1) has step 5 compute
 "`agentgolden`'s `Signature` on each graph as a smoke, no rules evaluated".

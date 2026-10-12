@@ -35,9 +35,10 @@ processors:
   batch: {}
 
 exporters:
-  # `WORKPLAN.md`'s A2 row calls this `otlphttp`. At the pinned version that
-  # spelling is a deprecated alias the Collector warns about on every start;
-  # `otlp_http` is the current name for the same component (`SPEC.md` §4.2).
+  # Series 1's A2 batch row called this `otlphttp` (`TASKS.md`). At the pinned
+  # version that spelling is a deprecated alias the Collector warns about on
+  # every start; `otlp_http` is the current name for the same component
+  # (`SPEC.md` §4.2).
   otlp_http:
     endpoint: ${env:ZOO_JSON_SINK:-http://127.0.0.1:4319}
     # The whole reason the Collector is here.

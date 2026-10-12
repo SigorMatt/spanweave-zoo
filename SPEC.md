@@ -178,7 +178,7 @@ the client did not send is not a record (§1).
 character per octet, so nothing is replaced or lost) and split on **CRLF and on
 nothing else**. A bare CR, or a bare LF, is inside the line it arrived in and
 therefore inside the value. This rule was ratified by the maintainer on
-2026-10-11 (`WORKPLAN.md` §3, "header rule"), with the request-line amendment
+2026-10-11 (`TASKS.md`, series 1's decisions log, "header rule"), with the request-line amendment
 A3g implements.
 
 - The **first line** is the request line, recorded **verbatim** under
@@ -619,9 +619,10 @@ in the runs it drives is one of these, and each of these is one it printed. `col
 overwrite or append: one already in the run directory is refused, like a body
 already there (§3.1).
 
-The `WORKPLAN.md` A2 row names this exporter `otlphttp`. At the pinned version
-that spelling is a **deprecated alias** and the Collector says so on every
-start; the config uses the current name, `otlp_http`, for the same component.
+Series 1's A2 batch row named this exporter `otlphttp` (`TASKS.md`, A2's
+resume note of 2026-10-09). At the pinned version that spelling is a
+**deprecated alias** and the Collector says so on every start; the config uses
+the current name, `otlp_http`, for the same component.
 
 ### 4.3 The tee: write first, then forward, byte for byte
 

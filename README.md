@@ -35,6 +35,7 @@ are all unfrozen and will change. The one thing meant to be durable is the
 | `zoo audit` | runs a capture through `spanweave-live serve`, `spanweave` and `agentgolden`, and writes down what broke |
 | `collector/` | the pinned Collector's version, digests and config -- `make collector` fetches the binary |
 | `audit/` | one report per audited capture, `<project>-<run-id>.md` |
+| `PROBES.md` | the audit's findings, consolidated: each owning repository's next-series probes, with capture and command |
 | `SPEC.md` §1-§7 | the non-goals, the layout, the sink, the Collector and the tee, the manifest, the replayer, the audit |
 
 Every command printed in this README is **complete as printed**: no block here
@@ -438,6 +439,9 @@ captures/<project>/<run-id>/MANIFEST.json          what this capture is, its has
 change must not cross. `CONTRIBUTING.md` is the bar a batch clears.
 `SPEC.md` is what to build. `CHANGELOG.md` is what landed.
 `OPEN_QUESTIONS.md` is the register of what was asked and how it was answered,
-including what is still open.
+including what is still open. `TASKS.md` is the registry between series: each
+batch and the commit that closed it, the decisions log, and the threads the next
+series inherits. `reviews/` holds every review a series took, byte for byte,
+with `reviews/SHA256SUMS`.
 
 MIT licensed (`LICENSE`), as are `spanweave` and `spanweave-live`.

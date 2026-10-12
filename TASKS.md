@@ -1,183 +1,143 @@
-# WORKPLAN.md — spanweave-zoo, the stranger's-trace series
+# TASKS.md — the registry between series
 
-Status file for the zoo: the capture side of the pet-project programme
-(`EXPORT-CONTRACT.md`, `ZOO-BRIEFS.md`) — a sink that records what real
-exporters send, a Collector that re-encodes it, a replayer, and the audit
-that runs spanweave and spanweave-live over every capture and writes the
-next series' probes. One batch = one sub-agent = one commit = one concern.
-This file plus git is the only state; any session can resume cold from it.
-
-Last updated: 2026-10-12 (runs 1, 2 and 2b complete; Z4 captured; run 3:
-A3g done, A5 done — the audit of Z4's two captures is committed; A6
-next.)
+`CLAUDE.md` names this file: while a series is open its execution state lives in
+a `WORKPLAN.md`; at the close that file is deleted and what outlives it lands
+here — one line per batch with the commit(s) that closed it, the series'
+decisions log and resume notes folded in verbatim, and the threads the next
+series inherits. Nothing here is normative: `SPEC.md` says what the zoo does,
+`CLAUDE.md` how work is done, `OPEN_QUESTIONS.md` why a question was answered
+the way it was.
 
 ---
 
-## 0. Operating protocol
+## Series 1 — the stranger's-trace series (2026-10-09 → 2026-10-12)
 
-### 0.1 Builder — orchestrator loop
+Branch `zoo`, opened from `main` at `d33059e`. The plan as it stood at the
+close is `git show 22be077:WORKPLAN.md`; its §1 rows are the full text of each
+batch below. The reviews it took are kept byte for byte under `reviews/`
+(`reviews/SHA256SUMS`, 24 files: three review files and the 21 section files
+they were assembled from; `cd reviews && sha256sum -c SHA256SUMS`). The audit's
+findings are the next series' probes, in `PROBES.md`.
 
-The builder's own context must stay small. It reads this file, dispatches,
-verifies, records, and moves on. It does not read source files itself,
-does not debug itself, and does not carry batch detail in its context: all
-of that happens inside a sub-agent whose context is discarded.
+### Registry
 
-On the prompt `Execute WORKPLAN.md run N` (or `Resume WORKPLAN.md`):
+| ID | Batch | Closed by |
+|---|---|---|
+| A0 | Repository skeleton, on `main` | `d33059e` |
+| A1 | The sink records bytes, and nothing else | `69fb6bd` |
+| A2 | The Collector re-encodes beside the raw | `8c8299f` |
+| A3 | The capture is a manifest, immutable | `9074ecd` (replaced `c965c9b` by a force-push, before the rule against it existed) |
+| A3a | A capture exists only once it is ready, and a refusal writes nothing | `2b3c499` |
+| A3b | The manifest is written once, at the end, and covers every file | `810f2db` |
+| A3c | The header octets are the record | `8af242d` |
+| A3d | `verify` refuses what it did not check, and CI checks something | `52c33ba` |
+| A0a | The README is true, the licence exists, and the open question has a home | `91e91af` |
+| A0b | CI proves the Collector claim | `222825f` |
+| A4 | The replayer re-sends what was captured | `0c1e538` |
+| A3e | Ctrl-C stops the capture and nothing else | `89b8dbf`, `9f23d12` |
+| A3f | The manifest is sealed, and the parse cannot invent | `46b2c15` |
+| A4a | Replay sends the captured head | `29c9d5c` |
+| A0c | The README survives its own rehearsal | `c48e093` (question `af667c8`, `OPEN_QUESTIONS.md` §4) |
+| A3g | The run-2b review's `next batch` items, closed | `487bbc1` |
+| A5 | The audit: every capture through spanweave-live and spanweave, and what broke | `f60f69c`, `701fc80` (question `639485a`, `OPEN_QUESTIONS.md` §5) |
+| A6 | The series closes | the `close:` commit that adds this file and deletes `WORKPLAN.md` |
 
-1. `git status`. If the tree is dirty: dispatch one sub-agent with the
-   **recovery brief** (0.4). Do not proceed until the tree is clean and
-   `make check` is green (verify with a sub-agent; the builder runs no
-   commands longer than `git status` / `git log --oneline -5` itself).
-2. Read §1 and §2. Take the first batch of the requested run whose status is
-   not `done` / `dropped` / `awaiting decision`. A status `awaiting <batch>`
-   is `todo` once that batch is `done`.
-3. Dispatch **one sub-agent** with the **batch brief** (0.3) for that batch.
-   Wait for its ≤12-line report.
-4. Verify: `git log --oneline -3` shows the batch commit; the report says
-   `make check` passed. If not, dispatch the same batch once more with the
-   report's failure appended. If it fails twice: set status
-   `blocked: <one line>`, write the resume note, and continue to the next
-   batch **unless** the blocked batch is a dependency of the next.
-5. Edit this file: status → `done (<sha>)`, one line under §4 if anything
-   was learned. If a row's acceptance number or premise was shown wrong by
-   the batch, correct the row in the same edit and say why in the §4 line
-   — a wrong criterion has an owner, and it is this step. Commit the plan
-   edit together with nothing else (`plan: <batch> done`; a second clause
-   after the batch id is allowed when it records something a reader needs).
-6. Repeat from 2. Stop when: the run's batches are exhausted; a batch ends
-   `awaiting decision`; or the same batch has failed twice.
-7. Final step of a run: dispatch a sub-agent to `git format-patch main -o
-   patches/` and print `git log --oneline main..HEAD`. Report to the human:
-   batches done, blocked, awaiting decision, and the memo file paths to read.
-8. `git push origin zoo`. A run is not finished until the push succeeds
-   **and the GitHub checks on the pushed tip are green, or every failing
-   check is explained in the run report**; local `make check` is not a
-   substitute — the CI matrix runs interpreters the machine does not have.
-   A series branch is never force-pushed. An amended batch is a new commit
-   on top; the replaced sha is recorded in §4 with the reason.
+Not a batch, and in the series' history: `47cb06c`, the operator's Z4 captures
+(`real` and `recorded`), taken with the README's commands.
 
-### 0.2 Aux — cold reader
+### Threads the next series inherits
 
-On the prompt `Review WORKPLAN.md commits since <sha>`: for each code commit,
-in a sub-agent per commit, check against `CONTRIBUTING.md` and `CLAUDE.md`:
-spec changed in the same commit where behaviour changed; the new test fails
-on the parent commit, where the parent is `<sha>^` **derived**, never a sha a
-brief names (`plan:` commits interleave) — and because a tests-only batch's
-derived parent is a `plan:` commit, which makes the parent run vacuous, a
-**mutation the new test catches** is required for every code commit, not only
-the parent run; worktrees are created by **absolute path under the
-scratchpad**, never relative, never inside the repo; no clock read, no
-randomness, no network in `spanweave_zoo/` except behind the injected
-`now`/`sleep`/socket seams the spec names; commit is one concern. Write
-findings to `patches/REVIEW-<date>.md` (untracked) and print them. **Aux
-never edits tracked files and never commits**: a finding that needs a commit
-is made by the builder from the review file, never by the reviewer.
+Registered here at the close, as the decisions log and the three reviews ask.
+None is acted on in this series. Each says where it was raised.
 
-### 0.3 Batch brief (template the builder passes to a sub-agent)
+**From the decisions log and the resume notes.**
 
-```
-You are executing batch <ID> of WORKPLAN.md in the spanweave-zoo repo.
-Read, in this order: CLAUDE.md, the WORKPLAN.md row for <ID> and §5, then
-the SPEC.md sections the row names, then only the source and test files
-the batch touches. Rules: spec first (SPEC.md edited in this commit if
-behaviour changes); write the failing test before the fix and confirm it
-fails on the parent (`<sha>^`, in a worktree by absolute path under the
-scratchpad); name one mutation the test catches and show it caught; then
-implement; then `make check` and `make install-check`. Add a CHANGELOG
-entry. Commit once: `<area>: <one line>` with a body naming <ID> and the
-SPEC sections touched. Never edit WORKPLAN.md. If completing the batch
-would require a change in spanweave itself, a dialect read outside
-spanweave's adapters, a rule or a policy the spec does not already state —
-stop, write the options to OPEN_QUESTIONS.md under a heading "<ID>: …",
-commit that alone, and report `awaiting decision`. Report in ≤12 lines:
-commit sha, files changed, tests added, mutation shown, make check result,
-anything the orchestrator must know.
-```
+- **macOS wall-clock cost test** (decision 2026-10-12, "CI"):
+  `test_sixteen_hundred_bodies_cost_the_same_each` failed once on the macOS leg
+  at A3g (675 → 2,168 µs/body on the runner) and passed on a re-run of that job
+  alone with no code change. A wall-clock ratio on a shared runner is not a test
+  of the recorder. **Fix the registry names:** measure the per-body cost by CPU
+  time (`time.process_time`) or by counting the writes per body, not by wall
+  clock. Until then a macOS failure of this one test, green on a re-run with no
+  code change, does not block `done`. (Same root as run-2 thread A3b-5.)
+- **A3g's four readings where SPEC was silent** (decision 2026-10-12, "A3g"),
+  open for the scoped review of the close: a head with no CRLF carries no
+  `request_line`/`method`/`path` (`headers: []`); the `forward` seam is
+  `(head, body)`; the README's readiness `timeout` is 60 s; `Trailer` is in
+  SPEC's hop-by-hop list.
+- **A5's four items for the scoped review of the close** (resume note
+  2026-10-12, A5): (1) CI gained a seventh leg, `audit`, which the row did not
+  name; (2) SPEC §7.4's owner table is the batch's reading, notably that the
+  unclaimed root counts against both spanweave and spanweave-live; (3) the
+  reports differ between runs in the `listening` port and the `completed` clock
+  readings, stated in their method section; (4) `CLAUDE.md` rules 6 and 8 named
+  only two of the three gated libraries — **made true in A6's commit**, which
+  writes the decided third name (`agentgolden`) into both; the other three stay
+  open for the review.
+- **A3b's `started_at` preference** (`OPEN_QUESTIONS.md` §3): a project
+  manifest present but with no readable `started_at` is kept **and** recorded as
+  a problem; the maintainer may prefer `project_manifest: null`, or no problem.
+  Open as a preference, blocking nothing.
 
-### 0.4 Recovery brief (dirty tree or interrupted batch)
+**Run-1 review** (`reviews/REVIEW-2026-10-10.md` §2, "Thread"), T1–T25, registered
+at close by the decision of 2026-10-10. Acted on in the series: T1 and T24 (A3d),
+T5, T18 and T20 (A0a), T25 (A0b), T17 (A0c: the Layout lists `json/NNNN.headers.*`).
+Open, as the review states them:
 
-```
-The previous batch was interrupted. Read WORKPLAN.md §4. Run git status
-and git diff --stat. If the in-progress work is complete enough to pass
-`make check`, finish it under the batch brief rules and commit. Otherwise
-`git stash` it with the message `wip <ID> <date>` and report what was
-stashed and where it stopped. Leave the tree clean either way.
-```
+- T2 `make check` never type-checks `tests/`; `strict = false` for `tests.*` is dead config.
+- T3 `README.md` called `zoo verify` "the capture re-hash" at A0, where it re-hashed nothing.
+- T4 The README says both root copies are contract version 1.1; `ZOO-BRIEFS.md` carries no version marker.
+- T6 §4's "both runs are vacuous" for A1 over-claims: two `test_cli.py` tests failed the parent by assertion.
+- T7 The sink's answers carry a `Date` from the stdlib's real clock, which the AST clock gate cannot see.
+- T8 The exporter's `200` is serialized behind the forward (`200 after 5.01s` against a wedged Collector); no test asserts the bound.
+- T9 No `fsync`: "on disk before the forward" means visible, not crash-durable.
+- T10 The manifest-equals-`VERSION` test is tautological for the pin's value; the `SHA256SUMS` cross-check is what holds it.
+- T11 `.gitignore`'s "(A2)" Collector line was pre-added in A0.
+- T12 A capture that fails to bind after labelling verified green as `kind=real, 0 bodies`; `MANIFEST.json.partial` reported as unlisted when verify races a live capture.
+- T13 SPEC §1.1's "two things named here" list omits `headers.json`, the third document read.
+- T14 No gate for the no-clock invariant; it is grep-and-discipline.
+- T15 `--project probe` is accepted silently though `--help` prints `z1 ... z6`.
+- T16 The Collector download lands as 389 MiB on disk; the README says ~100 MB.
+- T19 The plan's "push once per run" contradicted "CI green per batch"; the next series' plan should state one.
+- T21 Suite totals in the resume notes are the builder's word, unverifiable from git.
+- T22 A3's note cites a brief requirement absent from its row.
+- T23 "Holds only by counting the keystroke" describes a miscount as a tightening.
 
-### 0.5 Context management (for the human)
+**Run-2 review** (`reviews/REVIEW-2026-10-10-run2.md` §2 "Thread" and §3),
+registered at close per its §5 item 4:
 
-- Builder: **clear context** before `Execute WORKPLAN.md run N` and before
-  any `Resume WORKPLAN.md`. Continuity lives in this file and git, not in
-  the session. The only time not to clear is when the builder has asked a
-  question and is waiting for the answer.
-- Aux: **always clear** before a review or a status check. Every aux task
-  is stateless.
-- A prompt that starts a run names `run N` within its first 100 characters,
-  so the watcher's transcript derivation can see it. Decisions files are
-  copied to `patches/` by the relay before the builder is prompted.
+- A3b-4 The Collector log echo bypasses `Progress`: not flushed per line, no BrokenPipe guard in the drain thread.
+- A3b-5 The cost test reads `perf_counter` against a real-time bar (see the macOS thread above).
+- A3b-6 `EXPORT-CONTRACT.md` does not require an offset on `started_at`, and an offset-less one fails every capture.
+- A3a-4 The connect half of readiness is untested.
+- A3a-5 A refusal prints the Collector's log twice.
+- A3a-6 A failing stub test leaks its 600 s child.
+- A3d-3 One `zoo capture` hang after a double SIGINT (0 in 10 retries).
+- A3d-4 `.gitattributes` does not cover `EXPORT-CONTRACT.md` / `ZOO-BRIEFS.md`, so an `autocrlf=true` clone fails `test_readme`.
+- A3d-5 The fixture's project `started_at` is after the capture's `ended_at`; a seconds-precision `started_at` in the capture's first second is rejected.
+- A3d-6 The `Makefile` comment on `gates` still says "except audit.py" (a basename, where the gate exempts a path), and names only two of the three gated libraries.
+- A0a-2 README command extraction depends on the fence being labelled `bash`.
+- A0b-2 The check legs' "skips loudly" is a count only; there is no `-rs`.
+- A4-3 No test distinguishes manifest order from directory order.
+- A4-4 After a bad timestamp, the next replay gap is measured from it.
+- OP The supervisor form's log location and the pet project's committed `MANIFEST.json` (the log moved by A0c; the rest as the review states).
+- P-2 … P-10 Plan-hygiene threads (review §3); P-10 is T19.
+- (A0a-3 and A0a-4 are closed: `WORKPLAN.md` is gone, and A0c fixed the digest wording.)
 
-### 0.6 Standing rules (from CLAUDE.md, repeated because load-bearing)
+**Run-2b review** (`reviews/REVIEW-2026-10-11.md` §2 "Thread" and §3),
+registered at close per its §5 item 3:
 
-The zoo captures what exporters send and never improves it. A capture is
-immutable: bytes as received, with the request headers beside them and a
-sha256 of each body in the manifest; `zoo verify` re-hashes every capture
-and `make check` fails if any differs. The sink parses nothing and answers
-every POST the same way; the Collector is the stock OpenTelemetry Collector
-at a pinned version with a checked-in config, and its JSON re-encoding is
-kept *beside* the raw bytes, never instead of them. The replayer re-sends
-bytes and headers as captured and adds nothing. Nothing under
-`spanweave_zoo/` imports spanweave or spanweave-live except the audit
-module, and a gate holds that. An audit finding is a reproduction (a
-capture, a command, an observed and an expected result), never a fix: fixes
-belong to the repo that owns the defect, in its own series. `spanweave` and `spanweave-live` are pinned by git sha in
-`pyproject.toml` and used only by the audit batch; the sink, the Collector
-config and the replayer import neither.
+- A3e: "214 s → 46 s" is pytest time and red-vs-green, not a speed-up (P-3); `89b8dbf` stays red on macOS on `zoo` (P-9); the timed waits sit outside the `sleep` seam; Ctrl-C during the readiness wait gives a traceback and exit -2; a `TimeoutExpired` after SIGKILL is uncaught, so the manifest is never finished; a Collector exit during the flush counting as a problem narrows the decision (P-10).
+- A3f: the obs-fold note; two decisions in one commit; the fixture's `collector.log` is on the real wall clock; the fixture's project `started_at` is after its `ended_at`.
+- A4a: an LF-only head carries the old Host to the new target (T-A4a-1); `collector.py`'s `_accepts` is a third outbound connect behind no named seam (T-A4a-2); an over-long hand-edited body is delivered as an extra request (T-A4a-3).
+- A0c: the README's anchor rationale names a line the pattern does not contain (A0c-6); the `../streaming-concierge` sibling-checkout assumption is unstated (A0c-7).
+- Plan: "ten of ten locally" was unevidenced (P-4); `b012fe5` is a `plan:` commit that also edits `OPEN_QUESTIONS.md` (P-5); option 2's maintainer provenance exists only in a builder commit, and a maintainer-signed decision row was rewritten in place (P-6); `OPEN_QUESTIONS.md` §4 lacked "where the decision now lives" (P-7).
+- Operator: `collector.log` publishes the machine's UTC offset (OP-1).
 
-TASKS.md is the item registry (one line per batch, written at series
-close); this file is execution state only and is deleted at series close
-with §3 folded into TASKS.md.
+### Decisions log (`WORKPLAN.md` §3, folded verbatim)
 
-### 0.7 Watch (aux, read-only, report-then-stop)
-
-While the builder is on a run, aux may run `~/spanweave-ops/watch_monitor.sh`
-with `--base` set to the run's plan commit; it derives the branch and the
-builder PIDs itself. Triggers and tripwires are as `~/spanweave-ops/WATCH.md`
-states; the series-close commit that deletes this file is the one plan
-commit that cannot say `plan:`, and the watcher exempts it once per series.
-
----
-
-## 1. Batch list
-
-| ID | Batch | Status | Calls |
-|---|---|---|---|
-| A0 | **Repository skeleton, on `main`.** `pyproject.toml` (package `spanweave_zoo`, CLI `zoo`, Python 3.11–3.14; `spanweave @ git+https://github.com/SigorMatt/spanweave@fec7da27af517ad8b58ae3ec57827916aae60674` and `spanweave-live @ git+https://github.com/SigorMatt/spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d` as an **`audit` extra only**); `uv.lock`; `Makefile` with `check` (ruff, format, `mypy --strict`, pytest, gates), `verify` (re-hash every capture), `install-check`; `.github/workflows/ci.yml` as spanweave-live's (`check` on 3.11–3.14 ubuntu and 3.12 macos); `CLAUDE.md` with §0.6; `CONTRIBUTING.md` with the batch bar; `SPEC.md` §1 non-goals (the zoo parses nothing, fixes nothing, improves nothing) and §2 the capture layout: `captures/<project>/<run-id>/raw/NNNN.body` + `NNNN.headers.json`, `captures/<project>/<run-id>/json/NNNN.json` (Collector re-encoding), `MANIFEST.json`; `tests/gates.py` with one gate: no module under `spanweave_zoo/` imports `spanweave` or `spanweave_live` except `audit.py`; `README.md`; `CHANGELOG.md`; copies of `EXPORT-CONTRACT.md` and `ZOO-BRIEFS.md` at the root, byte-identical to the ones handed to the projects (sha256 in README). `make check` green, CI green on `main`. Then `git switch -c zoo`; every later batch lands on `zoo`. | done (d33059e) | 10 |
-| A1 | **The sink records bytes, and nothing else.** `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` (SPEC §3): stdlib `http.server`; `POST /v1/traces` with **any** `Content-Type` and `Content-Encoding` is written as `NNNN.body` (the bytes exactly as received, still encoded if gzip) with `NNNN.headers.json` (method, path, every header, length, receipt time from an injected `now`), and answered `200` with an empty body and the request's content type echoed; any other path is `404` and still recorded under `rejected/`. The sink never decodes, decompresses or parses. Tests red on the parent: a protobuf body, a JSON body and a gzip body round-trip byte for byte; two POSTs in flight are numbered in receipt order; `zoo verify` on the result passes and fails after one byte of one body is changed. Mutation: a sink that decompresses before writing fails the gzip case. | done (69fb6bd) | 8 |
-| A2 | **The Collector re-encodes beside the raw.** `collector/config.yaml` (SPEC §4): stock OpenTelemetry Collector (contrib, exact version pinned in `collector/VERSION`, fetched by `make collector` from the release URL with its sha256 checked), `otlp` receiver on 4317/4318 **by default, overridable** (4318 is the raw sink's own port, so `zoo capture` moves the Collector's HTTP receiver to 4320), `otlp_http` exporter (`otlphttp` is a deprecated alias at 0.162.0, same component) with `encoding: json` to the sink on a second port, batch processor at defaults; `zoo capture --project z4 --run-id <id>` starts two sinks (raw on 4318 for the app, json on 4319 for the Collector) **and** the Collector pointed at the raw sink's port — the app's traffic reaches the raw sink first and the Collector second (a tee: the raw sink forwards each body unchanged to the Collector after writing it; SPEC states this and that the forward is byte-identical). Tests: a synthetic protobuf export through the tee yields `raw/0001.body` (protobuf) and `json/0001.json` (valid OTLP JSON with the same span ids); the Collector version in the manifest equals `collector/VERSION`. If the Collector cannot run in CI, the test is marked and `make check` still runs it locally — say so in the body. | done (8c8299f) | 12 |
-| A3 | **The capture is a manifest, immutable.** `zoo capture` ends by writing `MANIFEST.json` (SPEC §5): the project's own `MANIFEST.json` (copied from a path the operator passes), the zoo's `sink_version`, `collector_version`, `kind` (`recorded` \| `real`), `started_at`/`ended_at` from the injected clock, and `bodies: [{"file": ..., "sha256": ..., "content_type": ..., "content_encoding": ..., "bytes": ...}]` for raw and json; `zoo verify [path]` re-hashes everything under `captures/` and exits non-zero on any difference or any body without a manifest entry; `make check` runs `zoo verify` (already wired in A0; A3 extends it from refusal to manifest re-hashing). `README.md` §"Running a pet project's real run": the commands an operator types — **the commands the README lists**, in two terminals. Tests red on the parent: a manifest with a stale hash fails verify; a body not listed fails verify; `kind` is required. **End of run 1: the sink is ready for the pilot project's real run.** | done (9074ecd) | 6 |
-| A3a | **A capture exists only once it is ready, and a refusal writes nothing.** Review F2, F8. Readiness is: three listeners accepting **and** the Collector child alive with its ready line read from its log; only then is `captures/<project>/<run-id>/` created and the single readiness line `zoo capture: the raw bytes are the record. Ctrl-C to stop.` printed. A refusal before readiness (any port held, the Collector exiting, a bad config) names the port or the cause, exits 2, and leaves no directory. During a capture, the Collector child exiting is recorded (`problems: ["collector exited: <code>"]`) and reported at exit non-zero. Tests red on the parent: a foreign listener on 4320 → refusal naming 4320, no directory; the Collector killed mid-capture → non-zero exit and the problem in the manifest; `zoo sink`'s banner is distinct from the readiness line. Mutation: a probe that only connects to the port passes the foreign-listener test's inverse. | done (2b3c499) | 8 |
-| A3b | **The manifest is written once, at the end, and covers every file.** Review F4, F7, F9, F10, F12. Bodies journalled to `bodies.jsonl` (one line per POST, flushed); the manifest assembled at `Ctrl-C` from the journal; the project manifest copied then, with the `started_at` check of §3 and `project_manifest: null` + `problems` on failure; a sha256 entry for every file in the run directory except `MANIFEST.json`; `kind` ∈ {recorded, real}; `ended_at` set last. `zoo verify` re-hashes every listed file and fails on an unlisted one, a missing one, a missing `ended_at`, or any `problems`. Progress lines flushed on every write; `BrokenPipeError` on stdout finalizes and exits 0 with the manifest complete. Tests red on the parent: a project manifest rewritten mid-run lands as the end-of-run copy; a project manifest older than the capture → `problems`, exit non-zero, verify fails; a rewritten `Content-Type` in `headers.json` fails verify; `kind` flipped fails verify; 1,600 bodies at constant per-body cost (measure and put the three numbers in the body). Mutation: a verify that skips `headers.json` passes the rewritten-content-type test's inverse. | done (810f2db) | 10 |
-| A3c | **The header octets are the record.** Review F6. `NNNN.headers.raw`: the request line and header block as received, CRLFs intact, up to the blank line; `NNNN.headers.json` unchanged beside it; SPEC §2.3 says the raw file is the unmodified record and the json is the parse. Test red on the parent: a bare CR inside a header value is present in `.raw` and absent as a header in `.json`; `.raw` is byte-identical to what the client sent. Mutation: writing the stdlib's reconstructed headers to `.raw` fails the bare-CR test. | done (8af242d) | 5 |
-| A3d | **`verify` refuses what it did not check, and CI checks something.** Review F1, F5, T1, T24. `zoo verify <path>` on a path that is not a capture → exit 2 naming the path; `cli.py`'s docstring says what the code does. A test recomputes the two contract sha256s in README and fails on drift. The import gate exempts `spanweave_zoo/audit.py` by path, not basename. `tests/fixtures/capture/` holds one real capture (one protobuf span through the real tee, both sides, headers raw and json, manifest) and CI's `make verify` is shown to read it. Tests red on the parent for each. | done (52c33ba) | 6 |
-| A0a | **The README is true, the licence exists, and the open question has a home.** Review F3, F15, F14, T5, T18, T20, F16. README: the operator section lists the exact commands, each complete and runnable as printed, numbered, with `uv sync --extra dev` as the first; the row and §4 stop counting and cite the README. `LICENSE` MIT and `license` in `pyproject.toml`. `OPEN_QUESTIONS.md` created with §1 = the manifest-timing question and its decision (§3). §4 gains: the A2 CI line; the `c965c9b` → `9074ecd` force-push; the `b913e2b` two-clause subject. Docs only; say so in the body. | done (91e91af) | 5 |
-| A0b | **CI proves the Collector claim.** Review T25. A sixth job `collector (ubuntu-latest)`: `make collector` with the release archive cached by its sha256, then the `@needs_collector` tests run and are shown **not skipped** (the job fails if any is). Pin the Collector download's sha in `collector/SHA256SUMS` as today. Say in the body how long the job takes. | done (222825f) | 5 |
-| A4 | **The replayer re-sends what was captured.** `zoo replay captures/<project>/<run-id> --to http://host:port [--raw\|--json] [--timing]` (SPEC §6): re-sends each body with its captured headers (content type and encoding intact) in receipt order; `--timing` sleeps the captured inter-arrival gaps through an injected `sleep`; prints each response status; exits non-zero if any status is not 2xx but still sends the rest. Tests: replaying a capture into a fresh sink produces byte-identical bodies and headers; `--timing` on a fake clock sleeps the recorded gaps. | done (0c1e538) | 6 |
-| A3e | **Ctrl-C stops the capture and nothing else.** Review blocker. The Collector child in its own session; `zoo capture` on SIGINT: stop accepting, let the Collector flush (bounded), SIGTERM it, wait (bounded), SIGKILL if needed, finalize; a Collector exit inside that sequence is not a `problems` entry; outside it, it is. `collector.log` in the run directory, listed in the manifest. The body count counts bodies. Tests red on the parent: SIGINT to the **process group** of a running capture (as a terminal sends it) → exit 0, no `problems`, `verify` green, ten of ten runs; the Collector killed by hand mid-capture → `problems`, exit non-zero; `collector.log` present and listed. Mutation: a capture that leaves the child in the parent's process group fails the group-SIGINT test. SPEC §4 states the shutdown order. | done (89b8dbf, 9f23d12) | 8 |
-| A3f | **The manifest is sealed, and the parse cannot invent.** Review A3b-1, A3c. `seal` as §3 defines; `zoo verify` recomputes it; `kind` flipped, a `problems` entry removed, a file entry edited — each fails verify. `NNNN.headers.json` derived from `.headers.raw` by the strict CRLF split; the bare-CR-plus-header-shaped-text case (`otel\rX-Injected: yes`) yields no `X-Injected` key. Tests red on the parent for each; the committed fixture capture regenerated with a seal and the explanation in the body. Mutation: a verify that skips the seal passes the flipped-`kind` test's inverse. | done (46b2c15) | 8 |
-| A4a | **Replay sends the captured head.** Review A4. Raw head bytes over a socket, `Host` substituted, body appended, response read; `--json` likewise with the json file's head reconstructed as the Collector sent it. Test red on the parent: replaying into a fresh sink yields `.headers.raw` byte-identical except the `Host` line (the four differences the review lists are gone); bodies byte-identical as before. Mutation: a replay through `http.client` fails the head-identity test. | done (29c9d5c) | 6 |
-| A0c | **The README survives its own rehearsal.** Review §1.5. The seven differences closed: Ctrl-C now true (A3e); `make verify`/`make check` green after a clean run; the Collector's lines out of the terminal (A3e); the body count (A3e); the digest wording in step 2; the log-to-file variant writes outside the checkout and outside the run directory (`OPEN_QUESTIONS.md` §4); the note that a pet project's `make run` rewrites its own `MANIFEST.json`, which the operator does not commit from the pet's checkout. A reviewer runs the README's commands again after this batch. Docs, plus the `zoo verify` closing-line wording (review N-1); say so in the body. | done (c48e093) | 4 |
-| A3g | **The run-2b review's `next batch` items, closed.** Read `patches/REVIEW-2026-10-11.md` and close every `next batch` item as the file states it, one commit, tests first, mutation shown: `request_line` in `headers.json` and the LF-only head as one `unparsed` entry (§3); SIGHUP stops the Collector as SIGINT does; SPEC §4.2 lists every terminal line; a test holds the README's log redirect and its `grep` to the same file; README step 4 names `OPENAI_API_KEY`; the seal's claim in SPEC narrowed (§3); the sink forwards the raw head, not the stdlib's parse, to the Collector; the CRLF-split test gaps; replay counts only bodies it sent; the chunked-replay wording; the run-2b patch set written under `patches/`. Items the file lists that this row does not name are closed too. The committed fixture capture is regenerated only if its json changes under the ratified rule, with the explanation in the body. | done (487bbc1) | 8 |
-| A5 | **The audit: every capture through spanweave-live and spanweave, and what broke.** `zoo audit captures/<project>/<run-id>` (SPEC §7; the one module that imports both): (1) `zoo replay --raw` into `spanweave-live serve` and record every response status and every receiver event — a 415 on protobuf is a finding, not an error; (2) `zoo replay --json` into `serve` with a completion policy of `Cap(0)`-at-end (replay then signal end of input), collect each trace's final graph and every event; (3) for each trace, the records the receiver fed, in order, through `spanweave.build` — the live graph must equal the batch graph byte for byte (prefix consistency on a stranger's trace); (4) `spanweave inspect` on each graph: diagnostics by code, unmapped attributes by size, unknown kinds; (5) `agentgolden`'s `Signature` computed on each graph as a smoke, no rules evaluated. Output `audit/<project>-<run-id>.md`: a table per step, every diagnostic code with its count, every event, every divergence — each as a reproduction with the capture path and the command. **Findings are never fixed here**: each names the repo that owns it. The `real` capture is Z4's, taken by the operator after run 2 with the commands README names. Decided 2026-10-12 (§3): the `audit` extra pins `agentgolden@aa1847f2` as its first commit; `agentgolden` joins the gate's analyser names; the report header records all three shas. | done (f60f69c, 701fc80) | 15 |
-| A6 | **The series closes.** `TASKS.md` registry A0–A6 with shas; §3 and §4 folded; `reviews/` with every review byte-for-byte and sha256; `audit/` findings consolidated into `PROBES.md`: the next series' probe list for spanweave and spanweave-live, each with its capture and command; WORKPLAN.md deleted; PR `zoo` → `main`. No `plan:` commit follows. | todo | 6 |
-
-## 2. Execution order
-
-Runs 1, 2 and 2b are done. Z4 is captured by the operator after the plan
-commit that applies this file. Run 3 = A3g → A5 → A6, then the scoped
-review of the close and the PR. Every batch: CI green on the pushed tip
-before `done`.
-
-## 3. Decisions log
+Section references inside (`§0.1`, `§3`, `§4`, a row) are to `WORKPLAN.md` as
+it stood at `22be077`.
 
 | Date | Batch | Decision | By |
 |---|---|---|---|
@@ -207,7 +167,9 @@ before `done`.
 | 2026-10-12 | CI | **`test_sixteen_hundred_bodies_cost_the_same_each` on the macOS leg.** A wall-clock ratio on a shared runner is not a test of the recorder; the builder's call (re-run of that job alone, green with no code change, logged) was right and is ratified **for this test only**: a macOS failure of this one test, green on a re-run with no code change, does not block `done`. A6 registers it in `TASKS.md` for the next series with the fix the registry entry names: measure the per-body cost by CPU time (`time.process_time`) or by counting the writes per body, not by wall clock. Nothing changes in this series. | maintainer |
 | 2026-10-12 | A3g | A3g's four readings where SPEC was silent (no-CRLF head carries no `request_line`/`method`/`path`; `forward` seam `(head, body)`; README readiness timeout 60 s; `Trailer` in the hop-by-hop list) stand until the scoped review of the close; none of them touches A5. | maintainer |
 
-## 4. Resume note
+### Resume notes (`WORKPLAN.md` §4, folded verbatim)
+
+Section references inside are to `WORKPLAN.md` as it stood at `22be077`.
 
 - 2026-10-09: series opened. Nothing has run. The pilot pet project (Z4,
   streaming-concierge) is being built elsewhere; A3 is the point at which
@@ -602,10 +564,3 @@ because a batch never edits this file:
   port and the `completed` clock readings, stated in their method
   section; (4) CLAUDE.md rules 6 and 8 and §0.6 still name only spanweave
   and spanweave_live — the third name decided in §3 is not yet in either.
-
-## 5. Origins
-
-| ID | Origin |
-|---|---|
-| A0–A6 | The stranger's-trace decision of 2026-10-09 (this conversation): pet projects instrumented by stock instrumentors as the step before outside users; `EXPORT-CONTRACT.md`, `ZOO-BRIEFS.md`. |
-| A2, A5(1) | The Python OTLP/HTTP exporter sends protobuf, not JSON (opentelemetry-python #1003, #2104); spanweave-live `serve` accepts JSON only (its R6). |

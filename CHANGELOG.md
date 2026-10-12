@@ -1,11 +1,38 @@
 # Changelog
 
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
-`MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
+`MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
+`WORKPLAN.md` §1).
+
+## A6 — the series closes
+
+Series 1's A6 row (`TASKS.md`). Docs only: no code, no test, no capture
+changes.
+
+- **`TASKS.md`**: the registry between series — A0–A6, each with the
+  commit(s) that closed it; the plan's decisions log (§3) and resume notes (§4)
+  folded in verbatim; the threads the next series inherits (the macOS
+  wall-clock cost test and the fix it names, A3g's four readings, A5's four
+  review items, `OPEN_QUESTIONS.md` §3, and the three reviews' threads).
+- **`reviews/`**: the series' three reviews and the 21 section files they were
+  assembled from, copied byte for byte from the orchestrator's untracked
+  `patches/`, with `reviews/SHA256SUMS` (24 entries, `sha256sum -c`) and a
+  `-text` line in `.gitattributes` so a checkout cannot rewrite them.
+- **`PROBES.md`**: `audit/`'s findings and step-4 tables consolidated into the
+  next series' probes — spanweave-live 2, spanweave 5, agentgolden 0 — each
+  with its captures, its command and its owner, and no fix.
+- **`WORKPLAN.md` deleted.** `CLAUDE.md` rules 6 and 8 now name the three
+  libraries the 2026-10-12 decision gated and pinned (`agentgolden` beside
+  `spanweave` and `spanweave_live`) and no longer cite the plan's §0.6 as
+  their source; `SPEC.md` §2.3 and §4.2, `collector/config.yaml`'s comment,
+  `CHANGELOG.md`'s header and `OPEN_QUESTIONS.md` repoint their `WORKPLAN.md`
+  citations at `TASKS.md` (or `git show 22be077:WORKPLAN.md`);
+  `OPEN_QUESTIONS.md` §5's status line reads resolved, as its body already
+  did. `README.md` names `PROBES.md`, `TASKS.md` and `reviews/`.
 
 ## A5 — the audit: every capture through spanweave-live and spanweave
 
-`WORKPLAN.md` §1 row A5; the decisions of 2026-10-12 (`OPEN_QUESTIONS.md` §5).
+Series 1's A5 row (`TASKS.md`); the decisions of 2026-10-12 (`OPEN_QUESTIONS.md` §5).
 
 - **`zoo audit <run> [--out audit]`** (`SPEC.md` §7): replays the capture's
   raw bytes, then the Collector's JSON, into a real `spanweave-live serve

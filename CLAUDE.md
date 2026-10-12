@@ -31,9 +31,10 @@ implementers were handed, kept here byte for byte as the record
 
 ## 0.6 Standing rules — non-negotiable
 
-These are `WORKPLAN.md` §0.6, which is where they were first written, repeated
-here because they are the contract and a session must not have to read the plan
-to find them. A change that violates one is wrong even if it passes tests.
+They were first written as §0.6 of series 1's `WORKPLAN.md` (deleted at the
+close; `TASKS.md` says where it lives in git), and this file is now their only
+home: they are the contract, and a session must not have to read a plan to find
+them. A change that violates one is wrong even if it passes tests.
 
 1. **The zoo captures what exporters send and never improves it.**
    (`SPEC.md` §1.)
@@ -50,16 +51,19 @@ to find them. A change that violates one is wrong even if it passes tests.
 
 5. **The replayer re-sends bytes and headers as captured and adds nothing.**
 
-6. **Nothing under `spanweave_zoo/` imports `spanweave` or `spanweave_live`
-   except the audit module**, and a gate holds that (`tests/gates.py`).
+6. **Nothing under `spanweave_zoo/` imports `spanweave`, `spanweave_live` or
+   `agentgolden` except the audit module**, and a gate holds that
+   (`tests/gates.py`). The third name was decided on 2026-10-12
+   (`OPEN_QUESTIONS.md` §5).
 
 7. **An audit finding is a reproduction** — a capture, a command, an observed
    and an expected result — **never a fix**: fixes belong to the repo that owns
    the defect, in its own series.
 
-8. **`spanweave` and `spanweave-live` are pinned by git sha** in
-   `pyproject.toml` and used only by the audit batch; the sink, the Collector
-   config and the replayer import neither.
+8. **`spanweave`, `spanweave-live` and `agentgolden` are pinned by git sha**
+   in `pyproject.toml`'s `audit` extra and used only by the audit; the sink, the
+   Collector config and the replayer import none of them. `agentgolden` was
+   pinned on 2026-10-12 (`OPEN_QUESTIONS.md` §5).
 
 ## Architecture invariants
 
