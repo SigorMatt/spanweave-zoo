@@ -595,7 +595,8 @@ zoo capture: refusing to start: <why>
 - The **readiness line** is printed once, first, and only once the run
   directory exists (§4.6); the **two lines after it** name the raw sink's
   port and directory and the Collector's version, the json sink's directory
-  and its port.
+  and its port. Each port is the one the sink actually bound, so under
+  `--port 0` or `--json-port 0` these two lines are where it is read (§4.6).
 - **One line per recorded body**, on either side, as it lands (§3.6's
   `after_record`): its file relative to the run directory, its length and the
   start of its digest. A single export prints two, one in `raw/` and one in
@@ -966,6 +967,17 @@ an operator who has to find it.
 | `--host` | `127.0.0.1` | what all three bind |
 | `--collector-dir` | `collector` | where `VERSION`, `SHA256SUMS` and `config.yaml` are |
 | `--forward-timeout` | `5.0` | seconds (§4.4) |
+
+**`0` for either sink is a port the kernel chooses.** `--port 0` and
+`--json-port 0` bind whatever free port the sink is given, and the two lines
+after the readiness line (§4.2) name the port each one got — a script, or the
+test suite, that passes `0` reads them there. `--collector-port` is not given
+that meaning: the forward and the child are both told the Collector's port
+before the child exists, so `zoo capture` picks no port of its own and names
+the one it was given in any refusal (`OPEN_QUESTIONS.md` §6). A test harness
+that picks one, and loses it to something else before the Collector binds it,
+gets §4.6's refusal like anyone else; retrying is the harness's business, not
+the zoo's.
 
 It **refuses to start**, writing nothing, when: the run directory already holds
 a body (§3.1, both sinks); any of `--port`, `--json-port` and

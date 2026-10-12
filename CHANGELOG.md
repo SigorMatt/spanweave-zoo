@@ -4,6 +4,28 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B1 — the test harness does not lose a port race
+
+`OPEN_QUESTIONS.md` §6, option 4: no product change. `zoo capture` still picks
+no port and refuses a held one (`SPEC.md` §4.6).
+
+- **`SPEC.md` §4.2, §4.6**: `--port 0` and `--json-port 0` — already accepted —
+  are stated: a port the kernel chooses, read back from the two lines after
+  the readiness line. `--collector-port` is not given that meaning.
+- **`tests/ports.py`** (new): the suite's one `free_port()` pick, and a
+  bounded retry (5) of a whole start whose refusal names an address in use,
+  logging every port tried and failing after the last naming them all. Any
+  other refusal is not retried.
+- **`ZooCapture`** (`tests/test_shutdown.py`) passes `--port 0 --json-port 0`
+  and reads the bound ports back; it picks only the Collector's two ports,
+  through the retry, and is up when constructed. The in-process captures in
+  `test_shutdown.py`, `test_collector_real.py`'s protobuf test and
+  `test_capture.py`'s ready-Collector test start through the same retry.
+- **Tests**: a Collector port held under the first pick is picked again and
+  the run reaches readiness; sinks on `0` print two ports a test POSTs to; a
+  refusal naming no address in use is not retried; the retry is bounded and
+  names every port tried.
+
 ## B0 — the two reviews of the close, archived and dispositioned
 
 Docs only: no behaviour change, no capture touched, no `SPEC.md` section.
