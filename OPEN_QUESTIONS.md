@@ -300,3 +300,80 @@ reports a raise as a finding naming its owner. Option 3 is rejected for the
 reason the batch gave; option 2 would leave the one consumer smoke of the
 series untaken for the cost of a line in `pyproject.toml`. Applied in
 WORKPLAN.md §3 by the same commit.
+
+## 6. B1: `zoo capture` does not pick the Collector's port, so there is nothing to pick again
+
+**Status: open, 2026-10-12. Asked by B1, which stopped before writing any
+code or test: the row's premise does not hold of the code, and each way of
+making it hold is a rule `SPEC.md` does not state.**
+
+**The conflict.** B1's row (`WORKPLAN.md` §1, series 2) says "`zoo capture`
+picks the Collector's port, writes it into the config and launches the child",
+and asks that a bind failure make it "pick again, up to N". `TASKS.md`
+registers the thread the same way ("taken between the zoo's pick and the
+Collector's bind"). But `zoo capture` picks nothing: the Collector's receiver
+port is `--collector-port`, default `4320` (`SPEC.md` §4.6's option table),
+handed unchanged to the child through `ZOO_COLLECTOR_OTLP_HTTP`
+(`collector.Binary.environment`) **and**, before the launch, to the forward
+(`cli.run_capture` builds `forward.HttpForward(args.host, args.collector_port)`).
+The pick in the failing run was the **test harness's**: `ZooCapture` in
+`tests/test_shutdown.py` calls `free_port()` (bind port 0, read it, close) for
+all four ports and passes them on the command line.
+
+**Facts gathered, so the decision need not re-gather them.**
+
+- The CI failure (`gh run view 38273980263 --attempt 1 --log-failed`, PR run
+  at `e50a56e`): `zoo capture: refusing to start: the Collector exited with 1
+  before it reported ready on 127.0.0.1:43383`, the stand-in's own log ending
+  `OSError: [Errno 98] Address already in use`. So it was the Collector's port,
+  as registered; the refusal was the one §4.6 specifies for a held port.
+- `SPEC.md` §4.6 makes a held Collector port a refusal, and
+  `tests/test_capture.py::test_a_foreign_listener_on_the_collector_port_is_refused_and_writes_nothing`
+  holds that for an operator-named port. A retry that moved off an
+  operator-named port would turn that refusal into a success on a port the
+  operator did not choose.
+- `SPEC.md` §4.2: "The app's port is the one thing the zoo does not move" —
+  read as permission, the Collector's port is internal and movable; read
+  narrowly, it says nothing about it.
+- The same harness picks the raw and json sink ports the same way, and the
+  `zoo capture` subprocess binds them only after interpreter start-up, so the
+  window is at least as wide for them; a retry on the Collector's port alone
+  does not close the harness's race. The two readiness lines after the ready
+  line already print the raw and json ports (§4.2), so a harness could pass
+  `0` for those and read them back.
+- Binding a probe socket to pick a port is a socket outside an injected seam
+  unless a seam is added (`CLAUDE.md`, "One seam"); the forward would have to
+  learn the port after the launch (e.g. from the `Running` handle) rather than
+  from `args`.
+- The real Collector's bind failure reads `bind: address already in use`; the
+  stand-in's reads `OSError: [Errno 98] Address already in use`. "A log that
+  shows the bind failure" needs a stated marker either way.
+
+**The options, each with its cost.**
+
+1. **`--collector-port 0` means the zoo picks**, through a new `pick` seam
+   (§4.8), and only a picked port is retried: on a Collector that exits before
+   ready with an address-in-use line in its log, pick again, up to N (say 5),
+   and the refusal after N names every port tried. An operator-named port held
+   stays the refusal it is today; the default stays `4320`. The forward takes
+   the port the launcher ended on. `ZooCapture` passes `--collector-port 0`.
+   Cost: a new CLI meaning and a new seam; the sink ports' harness race is
+   left (or fixed in the same batch by passing `0` and reading the printed
+   ports — a second concern).
+2. **The zoo always picks the Collector's port** (default becomes "picked"),
+   on §4.2's reading that only the app's port is fixed, with the same retry;
+   `--collector-port` given explicitly disables the retry. Cost: a default
+   behaviour change in §4.6's table, `--help` and the README; an operator can
+   no longer predict the port without reading the ready lines.
+3. **Retry on any port, explicit or not**, picking a new one after a bind
+   failure. Cost: contradicts §4.6's held-port refusal and the foreign-listener
+   test; the operator's choice is overridden silently. Not recommended.
+4. **No product change: the race is the harness's, and is fixed there.** The
+   harness lets the subprocess choose (raw and json sinks at `0`, read back
+   from the printed lines) and, for the Collector port, retries the whole
+   `ZooCapture` start when the refusal names an address in use, bounded.
+   Cost: the maintainer's 2026-10-12 decision ("the retry is bounded and every
+   port tried is named") then describes the harness, not `zoo capture`, and
+   §4.6 does not change.
+
+**The decision.** Pending.
