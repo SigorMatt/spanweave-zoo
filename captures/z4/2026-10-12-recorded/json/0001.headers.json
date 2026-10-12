@@ -1,0 +1,28 @@
+{
+  "bytes": 9543,
+  "headers": [
+    [
+      "Host",
+      "127.0.0.1:4319"
+    ],
+    [
+      "User-Agent",
+      "OpenTelemetry Collector Contrib/0.162.0 (linux/amd64)"
+    ],
+    [
+      "Content-Length",
+      "9543"
+    ],
+    [
+      "Content-Type",
+      "application/json"
+    ],
+    [
+      "Accept-Encoding",
+      "gzip"
+    ]
+  ],
+  "method": "POST",
+  "path": "/v1/traces",
+  "received_at": "2026-10-12T13:27:12.946111+00:00"
+}

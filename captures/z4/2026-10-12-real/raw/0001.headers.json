@@ -1,0 +1,36 @@
+{
+  "bytes": 4864,
+  "headers": [
+    [
+      "Host",
+      "localhost:4318"
+    ],
+    [
+      "user-agent",
+      "OTel-OTLP-Exporter-Python/1.45.1"
+    ],
+    [
+      "Accept-Encoding",
+      "gzip, deflate"
+    ],
+    [
+      "Accept",
+      "*/*"
+    ],
+    [
+      "Connection",
+      "keep-alive"
+    ],
+    [
+      "content-type",
+      "application/x-protobuf"
+    ],
+    [
+      "Content-Length",
+      "4864"
+    ]
+  ],
+  "method": "POST",
+  "path": "/v1/traces",
+  "received_at": "2026-10-12T13:26:40.460890+00:00"
+}
