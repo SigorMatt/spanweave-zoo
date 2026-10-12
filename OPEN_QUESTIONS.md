@@ -284,4 +284,12 @@ does not add a third pin on its own.
    does not describe, which is the floating-dependency problem the `audit`
    extra's pinning exists to prevent; not recommended.
 
-**The decision.** Pending.
+**The decision (2026-10-12, maintainer).** Option 1. `agentgolden` is pinned
+at `aa1847f2a2ad51a95b98ab3e180bc5d211e6b138` in the `audit` extra and
+relocked; the import gate's analyser names become `spanweave`,
+`spanweave_live`, `agentgolden`, all confined to `spanweave_zoo/audit.py`;
+the audit report's header records the three shas. Step 5 runs as written and
+reports a raise as a finding naming its owner. Option 3 is rejected for the
+reason the batch gave; option 2 would leave the one consumer smoke of the
+series untaken for the cost of a line in `pyproject.toml`. Applied in
+WORKPLAN.md §3 by the same commit.
