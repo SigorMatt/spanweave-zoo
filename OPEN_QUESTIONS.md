@@ -383,3 +383,78 @@ made acceptable for them if it is not) and retries its own start, bounded,
 when the refusal names an address in use. The series-1 thread and the
 2026-10-12 decision log entry are corrected to say "harness". Options 1–3
 are declined: each adds a product rule for a race only the test suite runs.
+
+## 7. B4a: the audit already refuses such a manifest, and §7.2 says a refusal writes no report
+
+**Status: open, 2026-10-13. Asked by B4a, which stopped before writing any
+code or test: the row's audit outcome contradicts `SPEC.md` §7.2, and each way
+of reconciling them is a rule the spec does not state.**
+
+**The conflict.** B4a's row (`WORKPLAN.md` §1, series 2) asks that "a manifest
+with an absolute entry and one with `..` make ... `zoo audit` write an
+incomplete report naming the entry". But such a manifest does not verify: B4
+(`99edcbd`) made `manifest.problems` -- through `_outside`, the function the
+row names as the shared check -- report an absolute, non-normalized or
+symlinked-out `file` entry as a problem. And `audit.audit()` calls
+`manifest.problems(run)` **first**, before any step reads a file, and refuses
+on any problem, exactly as §7.2 specifies: "the run does not verify (§5.6)"
+is a refusal, "exit **2**, no report written". So an incomplete report (exit
+1, §7.5) for this manifest would mean the audit *not* refusing a run that does
+not verify -- a change to §7.2's rule, not an application of B4's.
+
+**Facts gathered, so the decision need not re-gather them.** Observed at
+`a3daaf8` on copies of `tests/fixtures/capture` with `bodies[0].file` edited
+(scratchpad, never a real capture):
+
+- absolute entry (`/…/outside.body`): `zoo audit` exits 2, no report, and the
+  refusal line's first problem is `bodies[0] is '/…/outside.body', an
+  absolute path, outside the run directory (SPEC.md section 5.4)`. Nothing is
+  read: the check precedes step 1.
+- `..` entry (`raw/../../../outside.body`): `zoo audit` exits 2 the same way,
+  naming `bodies[0] is 'raw/../../../outside.body', not a normalized relative
+  path ...`.
+- `zoo replay --raw`, absolute entry: exit 2, but only **by accident** -- the
+  entry does not start with `raw/`, so `planned` filtered it out and the
+  refusal reads "holds no body under raw/", not naming the entry.
+- `zoo replay --raw`, `..` entry: the entry passes the `raw/` prefix filter and
+  **is read** (`run / "raw/../../../outside.body"` is opened; here it did not
+  exist, so "not sent", exit 1). This is the defect the row is about, and it is
+  the replayer's alone: the replayer never calls `verify`.
+- The audit's own reads (`serve` → `replay.planned`/`replay.replay`, and
+  `_request` in step 3) all take their names from `replay.planned`, so a check
+  in `planned` covers them too -- but behind the verify refusal that path is
+  unreachable through `zoo audit`.
+
+**The options, each with its cost.**
+
+1. **The audit keeps §7.2; the row's audit clause reads "refuses, naming the
+   entry".** `replay.planned` checks every `bodies` entry with `_outside`
+   (made public in `manifest`, one function for every reader) and raises
+   `ReplayRefused` naming the first bad entry, before anything is read or sent
+   -- so `zoo replay` exits 2 naming it, and the audit's `serve` inherits the
+   same check (defence in depth, rendered "step N not run" if ever reached).
+   The audit test asserts what is true today: exit 2, no report, the refusal
+   naming the entry. §5.4's "the rule exists for `zoo verify`" becomes "for
+   every reader of the manifest (`verify`, `replay`, `audit`)". Cost: the
+   row's "incomplete report" is corrected rather than delivered; the audit
+   half of the batch adds a test, not a behaviour.
+2. **A path-confinement problem is not a refusal for the audit.** The audit
+   refuses on every verify problem except an entry outside the run, which
+   instead makes the steps reading it "not run" and writes an incomplete
+   report (exit 1). Cost: an exception in §7.2, whose reason ("an audit of
+   bytes that are not the bytes recorded would be a reproduction of nothing")
+   applies to this case as much as any; a report would exist for a capture
+   `zoo verify` fails.
+3. **The audit never refuses on verify; every verify problem becomes an
+   incomplete report.** Cost: §7.2 and §7.5 both change; `make check`'s
+   "an unverified capture is not audited" guarantee goes; larger than the row.
+
+**A smaller question inside option 1.** Should `zoo replay --raw` refuse on a
+bad entry under `json/` (the side it is not sending)? (a) Yes -- any bad
+`bodies` entry makes the manifest one this cannot replay honestly, as it makes
+it one `verify` fails; (b) no -- only the entries it would read. (a) is the
+simpler rule and the one `verify` already follows.
+
+**Recommended:** option 1, with (a). It is B4's rule applied to the one reader
+that lacks it, and it leaves §7.2's refusal, which already names the entry and
+reads nothing, standing.
