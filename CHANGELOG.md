@@ -4,6 +4,25 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## Close review R-1, R-6 — a divergence reaches the report
+
+From `patches/decisions-zoo-2026-10-12b.md`, Commit 1. Tests only: no code,
+no `SPEC.md` change, no capture touched.
+
+- **R-1**: new `test_a_live_batch_divergence_reaches_the_report_with_its_owner`
+  (`tests/test_audit_real.py`). The audit runs Z4's `recorded` capture through
+  the real `spanweave-live serve`, wrapped so that one byte is appended to each
+  graph it writes: live ≠ batch while incremental = batch, and the test asserts
+  the step-3 finding, its owner (spanweave-live, as `divergence_owner` assigns,
+  `SPEC.md` §7.4) and its heading and step-3 row in the written report. The
+  mutation `owner = None` in `partition_findings`, which the review saw survive
+  the suite, now fails it.
+- **R-6**: the shadow packages in
+  `test_without_the_extra_the_collector_selection_reports_no_skip`
+  (`tests/test_audit.py`) raise `ModuleNotFoundError`, not `ImportError`, so on
+  f60f69c the test goes red by the module-level skip CI saw
+  (`('::tests.test_audit_real', 'skipped')`), not by a collection error.
+
 ## A6 — the series closes
 
 Series 1's A6 row (`TASKS.md`). Docs only: no code, no test, no capture

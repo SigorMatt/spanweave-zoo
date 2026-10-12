@@ -178,6 +178,55 @@ def test_a_divergence_is_owned_by_the_library_whose_graph_moved(
     assert audit.divergence_owner(live, batch, incremental) == owner
 
 
+# The real receiver, run as it is run, and then one byte appended to every graph
+# file it wrote: a live graph that is not the batch graph while spanweave's own
+# two builds still agree. The tampering is in the receiver's stand-in, outside
+# the zoo, so the audit is exercised exactly as it runs; nothing under captures/
+# is touched.
+DIVERGING_SERVE = (
+    sys.executable,
+    "-c",
+    "import runpy, sys\n"
+    "from pathlib import Path\n"
+    "sys.argv = ['spanweave-live', *sys.argv[1:]]\n"
+    "code = 0\n"
+    "try:\n"
+    "    runpy.run_module('spanweave_live.cli', run_name='__main__')\n"
+    "except SystemExit as stop:\n"
+    "    code = stop.code\n"
+    "for graph in sorted(Path('graphs').glob('*.json')):\n"
+    "    graph.write_bytes(graph.read_bytes() + b'\\n')\n"
+    "sys.exit(code)\n",
+)
+
+
+def test_a_live_batch_divergence_reaches_the_report_with_its_owner(tmp_path):
+    # SPEC.md section 7.4: live != batch where incremental = batch is
+    # spanweave-live's. `divergence_owner` is tested directly above; this is
+    # the path from it to a finding and to the report (REVIEW-2026-10-12 R-1).
+    result = audit.audit(RECORDED, out=tmp_path, serve_command=DIVERGING_SERVE)
+    assert result.exit == 0, result.incomplete
+    identified = [p for p in result.partitions if p.trace_id is not None]
+    assert identified
+    diverged = [f for f in result.findings if f.step == 3 and "differ" in f.title]
+    assert len(diverged) == len(identified)
+    text = result.path.read_text(encoding="utf-8")
+    for partition in identified:
+        assert partition.live != partition.batch
+        assert partition.batch == partition.incremental
+        owner = audit.divergence_owner(
+            partition.live, partition.batch, partition.incremental
+        )
+        assert owner == "spanweave-live"
+        [finding] = [f for f in diverged if partition.trace_id in f.title]
+        assert finding.owner == owner
+        assert str(RECORDED) in finding.capture
+        heading = f"live and batch graphs differ for {partition.trace_id}"
+        assert f"{heading} -- owner: {owner}" in text
+        assert f"| `{partition.trace_id}` |" in text
+        assert f"differs ({owner})" in text
+
+
 def test_a_signature_that_raises_is_a_finding_owned_by_agentgolden(tmp_path):
     def raising(graph):
         raise RuntimeError("planted")

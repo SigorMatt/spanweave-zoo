@@ -95,7 +95,10 @@ def test_without_the_extra_the_collector_selection_reports_no_skip(tmp_path):
     # test_audit_real.py skipped the whole module at collection, before `-m
     # needs_collector` could deselect it, and `collector-check` -- rightly --
     # fails on any skip in its report. The extra is hidden from a child pytest
-    # by shadowing the three packages with ones that refuse to import.
+    # by shadowing the three packages with ones that refuse to import -- with
+    # `ModuleNotFoundError`, what an absent package raises and the only error
+    # `pytest.importorskip` turns into a skip, so on f60f69c this goes red by
+    # the skip CI saw, not by a collection error (REVIEW-2026-10-12 R-6).
     import subprocess
 
     from tests import collector_check
@@ -104,7 +107,7 @@ def test_without_the_extra_the_collector_selection_reports_no_skip(tmp_path):
         package = tmp_path / "shadow" / name
         package.mkdir(parents=True)
         (package / "__init__.py").write_text(
-            "raise ImportError('hidden: the audit extra is not installed')\n"
+            "raise ModuleNotFoundError('hidden: the audit extra is not installed')\n"
         )
     report = tmp_path / "report.xml"
     env = {**__import__("os").environ, "PYTHONPATH": str(tmp_path / "shadow")}
