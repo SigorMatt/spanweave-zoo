@@ -81,7 +81,16 @@ def audit_wheel(wheel: Path) -> None:
     for forbidden in ("tests/", "captures/", "collector/"):
         leaked = [n for n in names if n.startswith(forbidden)]
         assert not leaked, f"wheel ships {forbidden}: {leaked}"
-    print(f"  wheel ships {len(names)} entries, library only")
+    # The licence, in the metadata directory where a tool looks for it
+    # (`pyproject.toml`'s `license-files`). A declaration in `pyproject.toml`
+    # that does not reach the wheel leaves a stranger holding bytes with no
+    # licence, which is exactly the state A0a found the repository in.
+    licences = [n for n in names if n.endswith(".dist-info/licenses/LICENSE")]
+    assert licences, (
+        "wheel ships no LICENSE: pyproject.toml declares `license-files` but "
+        f"the built artifact does not carry it. Entries: {names}"
+    )
+    print(f"  wheel ships {len(names)} entries, library only, licence included")
 
 
 def install_and_run(wheel: Path) -> None:
@@ -100,13 +109,65 @@ def install_and_run(wheel: Path) -> None:
 
         # The console script, from outside the repo: what a stranger types.
         helped = run([str(venv / "bin" / "zoo"), "--help"], cwd=outside)
-        assert "verify" in helped.stdout, helped.stdout
+        for subcommand in ("sink", "capture", "verify"):
+            assert subcommand in helped.stdout, helped.stdout
         versioned = run([str(venv / "bin" / "zoo"), "--version"], cwd=outside)
         print(f"  zoo --version -> {versioned.stdout.strip()}")
 
         # `zoo verify` on a directory that has no captures: exit 0, cleanly.
         verified = run([str(venv / "bin" / "zoo"), "verify"], cwd=outside)
         assert "nothing to re-hash" in verified.stdout, verified.stdout
+
+        # `kind` is required in what SHIPS, not only in the source tree
+        # (`SPEC.md` §5.2): a capture the audit cannot tell apart from a
+        # recorded one is the failure this declaration exists to prevent, and
+        # the console script is where an operator meets it.
+        undeclared = subprocess.run(
+            [
+                str(venv / "bin" / "zoo"),
+                "capture",
+                "--project",
+                "z4",
+                "--run-id",
+                "install-check",
+            ],
+            cwd=outside,
+            capture_output=True,
+            text=True,
+        )
+        assert undeclared.returncode != 0, undeclared.stdout
+        assert "--kind" in undeclared.stderr, undeclared.stderr
+        assert "--project-manifest" in undeclared.stderr, undeclared.stderr
+        print("  zoo capture with no --kind -> refused")
+
+        # `collector/` is repository data and is NOT in the wheel (above), so
+        # the installed `zoo capture` has no pin to read. It must say so and
+        # exit non-zero rather than start a capture it cannot label
+        # (`SPEC.md` §4.6) -- the shipped artifact's honest refusal, asserted
+        # where it actually ships.
+        project_manifest = outside / "MANIFEST.json"
+        project_manifest.write_text('{"contract_version": "1.1"}', encoding="utf-8")
+        refused = subprocess.run(
+            [
+                str(venv / "bin" / "zoo"),
+                "capture",
+                "--project",
+                "z4",
+                "--run-id",
+                "install-check",
+                "--kind",
+                "recorded",
+                "--project-manifest",
+                str(project_manifest),
+            ],
+            cwd=outside,
+            capture_output=True,
+            text=True,
+        )
+        assert refused.returncode != 0, refused.stdout
+        assert "VERSION" in refused.stderr, refused.stderr
+        assert not (outside / "captures").exists(), "the refusal still wrote something"
+        print("  zoo capture with no collector/ -> refused, wrote nothing")
 
         probed = run([str(python), "-c", PROBE], cwd=outside)
         facts = json.loads(probed.stdout)

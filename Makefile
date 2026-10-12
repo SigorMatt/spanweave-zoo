@@ -2,7 +2,7 @@
 # counts as done (CONTRIBUTING.md, "The bar"): it wraps the exact toolchain
 # commands plus the invariant gate and the capture re-hash as runnable checks.
 
-.PHONY: check lint types test gates verify install-check clean
+.PHONY: check lint types test gates verify collector collector-check audit-check install-check clean
 
 check: lint types test gates verify
 	uv run zoo --version
@@ -28,13 +28,60 @@ gates:
 # Re-hash every capture against its manifest. A capture is immutable (CLAUDE.md
 # section 0.6), and that claim is worth making only if something checks it on
 # every run -- so this is a prerequisite of `check` and not an errand someone
-# remembers. With no captures in the tree it says so and exits 0: nothing to
-# re-hash is not a failure. SPEC.md section 5 is the manifest, and A3
-# implements the re-hash; until then a capture found on disk makes this target
-# FAIL rather than pass silently, because reporting an unchecked capture as
-# verified is the one thing this target exists to prevent.
+# remembers.
+#
+# Two commands, because the first can have nothing to check: `captures/` is
+# where the zoo's own runs go, and a checkout without any -- this repository's,
+# until Z4's were committed -- has `zoo verify` say "nothing to re-hash" and
+# exit 0. The second reads the one real capture committed under
+# tests/fixtures/capture/ -- one protobuf body through the real tee, both
+# sides, headers and manifest -- so CI re-hashes bytes rather than reporting
+# an empty tree. A named path that is not a capture exits 2 (SPEC.md section
+# 5.6), so a fixture that went missing fails this target instead of passing
+# quietly.
 verify:
 	uv run zoo verify
+	uv run zoo verify tests/fixtures/capture
+
+# Fetch the pinned stock OpenTelemetry Collector and check its sha256 against
+# the pin checked in at collector/SHA256SUMS (SPEC.md section 4.1); a cached
+# archive in collector/.cache/ is re-hashed against the same pin. The version
+# lives in collector/VERSION; the ~100MB binary is gitignored, because the pin
+# is the record and the bytes are a download.
+#
+# Deliberately NOT a prerequisite of anything. `make check` is green with the
+# binary and without it: the integration test that runs the real Collector is
+# skipped when it is absent, which is how it behaves in CI (SPEC.md section
+# 4.9). A gate that reaches the network to decide whether it passes is a gate
+# that fails when GitHub does.
+collector:
+	uv run python collector/fetch.py
+
+# The other half of that honesty: the @needs_collector tests RAN, and not one
+# of them skipped. `make check` is green with the binary and without it, which
+# means `make check` alone has never once proved A2's claim anywhere but on a
+# machine that happens to have run `make collector` -- a leg where all three
+# tests skipped looks exactly like a leg where all three passed.
+#
+# So this target runs exactly those tests and FAILS if any is skipped or in
+# error, and if the marker selected none of them at all (pytest exits 0 when
+# everything skips, which is why it reads the junit report rather than the exit
+# code). CI's sixth leg, `collector`,
+# runs it right after `make collector`; locally it is how you check that the
+# binary you just fetched actually re-encodes.
+collector-check:
+	uv run python -m tests.collector_check
+
+# The audit's tests RAN, and not one of them skipped (SPEC.md section 7). They
+# need the `audit` extra -- spanweave, spanweave-live and agentgolden, pinned by
+# git sha -- which no `check` leg installs, so on those legs they skip; this
+# target installs the extra, runs mypy --strict with the three libraries
+# present, then exactly the `needs_audit` tests, and fails if any skipped.
+# CI's `audit` leg runs it. Not a prerequisite of `check`, for the reason the
+# extra is not: everything else must keep working without it.
+audit-check:
+	uv sync --extra dev --extra audit
+	uv run python -m tests.audit_check
 
 # Prove that what SHIPS works: builds the sdist and the wheel, installs the
 # wheel into a throwaway venv, and runs `zoo --help` from a working directory

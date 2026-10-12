@@ -1,0 +1,17 @@
+# The pinned opentelemetry-collector-contrib release's own sha256 digests
+# (`SPEC.md` §4.1). Each line is `<sha256>  <asset>`, copied from the
+# `<asset>.sha256` file published beside the asset in the release
+#
+#   https://github.com/open-telemetry/opentelemetry-collector-releases
+#       /releases/tag/v0.162.0
+#
+# The version lives in `collector/VERSION` and is the only place it is spelled;
+# `make collector` reads it, builds the asset name, and refuses to unpack a
+# tarball whose digest is not the one on the matching line below -- or a
+# platform that has no line at all. The four pinned platforms are the ones this
+# repository is developed and tested on (`.github/workflows/ci.yml`: ubuntu and
+# macos); adding another is one line copied from the release.
+fcc063749f730f8c21fe29f2d340ff174f5f1c5885bd3156fb6c985a3036fcc3  otelcol-contrib_0.162.0_linux_amd64.tar.gz
+ecf6a917e2b53beb1703b19a84bc4e112a2fcaba549639cf6b0ba58446bfd7d2  otelcol-contrib_0.162.0_linux_arm64.tar.gz
+91a6e7a0f5e1981986c897db4535de5ba8d7fc45d4205809aecb9ebebf68c71c  otelcol-contrib_0.162.0_darwin_amd64.tar.gz
+d5e11974d2e4adac3cc001a25137aad52f6e77ec3034ba7735cac7c219a5f97a  otelcol-contrib_0.162.0_darwin_arm64.tar.gz

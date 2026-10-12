@@ -7,8 +7,9 @@ is the bar a batch clears. `CLAUDE.md` is the contract it must not violate;
 
 ## Before you write code
 
-Read, in order: `CLAUDE.md` (the standing rules, §0.6), the `WORKPLAN.md` row
-for your batch and §5, then the `SPEC.md` sections that row names, then only
+Read, in order: `CLAUDE.md` (the standing rules, §0.6); while a series is
+open, the `WORKPLAN.md` row for your batch and §5, and between series, the
+batch's entry in `TASKS.md`; then the `SPEC.md` sections those name, then only
 the source and test files the batch touches.
 
 The standing rules are non-negotiable and a change that violates one is wrong

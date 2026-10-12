@@ -1,7 +1,793 @@
 # Changelog
 
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
-`MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
+`MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
+`WORKPLAN.md` §1).
+
+## Close review R-2, R-4, R-5, R-7 — the review archived, its dispositions registered
+
+From `patches/decisions-zoo-2026-10-12b.md`, Commit 3. Docs and one test
+rename: no behaviour change, no capture touched.
+
+- **`SPEC.md` §7.6, the audit's seams** (R-7): `serve_command`,
+  `inspect_command`, `signature` and `installed` as `audit()`'s injectable
+  parameters, replay's `send` seam, `--port 0`, and each bounded wait with its
+  constant: `START_WAIT` 30 s, `SEND_TIMEOUT` 10 s, `FINISH_WAIT` 60 s. A
+  bounded wait on a stdlib timeout is ruled not a clock read. The two places a
+  bound passed is not caught (a second `serve` wait after a kill, and
+  `inspect`'s `subprocess.run`) are stated as the code behaves.
+- **`PROBES.md` L2** (R-2): cites spanweave-live `cddc694` §1.1/§1.5 beside
+  §4.3/§5.4/§8.5 and names their tension; says its command runs without
+  `--deltas`; notes that `serve --deltas` writes the record as a delta carrying
+  `unclaimed_record` and `missing_trace_id`. The "Expected" line is unchanged.
+- **`CONTRIBUTING.md`** (R-4): the reading order names `WORKPLAN.md` only while
+  a series is open, and `TASKS.md` between series.
+- **Three, not two** (R-5): `pyproject.toml`'s dependency comment,
+  `spanweave_zoo/__init__.py`'s docstring, and the gate test, renamed
+  `test_the_package_imports_none_of_the_three`. `pyproject.toml`'s agentgolden
+  comment cites step 5 at §7.3 and its seam at §7.6.
+- **`tests/collector_check.py`**: the failure hint names both causes of a skip,
+  the binary absent or a module-level skip (f60f69c's was the second); 701fc80
+  had not changed it.
+- **Registry**: `reviews/REVIEW-2026-10-12.md`, byte for byte from `patches/`,
+  its sha256 in `reviews/SHA256SUMS` (25 files, `sha256sum -c`); `TASKS.md`
+  records R-1 to R-8's dispositions, R-8 as spanweave-ops'.
+
+## Close review R-3 — the hop-by-hop list is the zoo's own
+
+From `patches/decisions-zoo-2026-10-12b.md`, Commit 2. Changes what the
+Collector receives; no capture touched, and the recorded head keeps every line.
+
+- **`SPEC.md` §4.3, `spanweave_zoo/forward.py`**: the hop-by-hop list is
+  stated as the zoo's own, one reason per name. RFC 9110 §7.6.1 is cited for
+  `Connection`, its connection-options and the fields it names for removal;
+  RFC 2616 §13.5.1 for `Trailer`, `Proxy-Authenticate` and
+  `Proxy-Authorization`. §6.2 no longer attributes the list to RFC 9110.
+- **`Proxy-Connection`** joins the list (nine names, was eight).
+- **Fields named in `Connection`** are dropped from the forward, as RFC 9110
+  §7.6.1 requires of an intermediary (`forward.connection_options`): every
+  `Connection` line's value read as a comma list, items stripped of spaces
+  and tabs, compared in any case.
+- Tests (`tests/test_tee.py`):
+  `test_proxy_connection_does_not_reach_the_collector`,
+  `test_fields_named_in_connection_are_dropped_across_lines_in_any_case`
+  (repeats, case, empty items, and a `Connection:` after a bare LF that names
+  nothing), and `test_a_field_named_in_connection_does_not_reach_the_collector`
+  (`Connection: X-Foo, keep-alive` plus `X-Foo` through a real tee into a
+  downstream sink: recorded, not delivered). All three red on 1ddf386; the
+  mutation "skip the `Connection` parse" fails the last two.
+
+## Close review R-1, R-6 — a divergence reaches the report
+
+From `patches/decisions-zoo-2026-10-12b.md`, Commit 1. Tests only: no code,
+no `SPEC.md` change, no capture touched.
+
+- **R-1**: new `test_a_live_batch_divergence_reaches_the_report_with_its_owner`
+  (`tests/test_audit_real.py`). The audit runs Z4's `recorded` capture through
+  the real `spanweave-live serve`, wrapped so that one byte is appended to each
+  graph it writes: live ≠ batch while incremental = batch, and the test asserts
+  the step-3 finding, its owner (spanweave-live, as `divergence_owner` assigns,
+  `SPEC.md` §7.4) and its heading and step-3 row in the written report. The
+  mutation `owner = None` in `partition_findings`, which the review saw survive
+  the suite, now fails it.
+- **R-6**: the shadow packages in
+  `test_without_the_extra_the_collector_selection_reports_no_skip`
+  (`tests/test_audit.py`) raise `ModuleNotFoundError`, not `ImportError`, so on
+  f60f69c the test goes red by the module-level skip CI saw
+  (`('::tests.test_audit_real', 'skipped')`), not by a collection error.
+
+## A6 — the series closes
+
+Series 1's A6 row (`TASKS.md`). Docs only: no code, no test, no capture
+changes.
+
+- **`TASKS.md`**: the registry between series — A0–A6, each with the
+  commit(s) that closed it; the plan's decisions log (§3) and resume notes (§4)
+  folded in verbatim; the threads the next series inherits (the macOS
+  wall-clock cost test and the fix it names, A3g's four readings, A5's four
+  review items, `OPEN_QUESTIONS.md` §3, and the three reviews' threads).
+- **`reviews/`**: the series' three reviews and the 21 section files they were
+  assembled from, copied byte for byte from the orchestrator's untracked
+  `patches/`, with `reviews/SHA256SUMS` (24 entries, `sha256sum -c`) and a
+  `-text` line in `.gitattributes` so a checkout cannot rewrite them.
+- **`PROBES.md`**: `audit/`'s findings and step-4 tables consolidated into the
+  next series' probes — spanweave-live 2, spanweave 5, agentgolden 0 — each
+  with its captures, its command and its owner, and no fix.
+- **`WORKPLAN.md` deleted.** `CLAUDE.md` rules 6 and 8 now name the three
+  libraries the 2026-10-12 decision gated and pinned (`agentgolden` beside
+  `spanweave` and `spanweave_live`) and no longer cite the plan's §0.6 as
+  their source; `SPEC.md` §2.3 and §4.2, `collector/config.yaml`'s comment,
+  `CHANGELOG.md`'s header and `OPEN_QUESTIONS.md` repoint their `WORKPLAN.md`
+  citations at `TASKS.md` (or `git show 22be077:WORKPLAN.md`);
+  `OPEN_QUESTIONS.md` §5's status line reads resolved, as its body already
+  did. `README.md` names `PROBES.md`, `TASKS.md` and `reviews/`.
+
+## A5 — the audit: every capture through spanweave-live and spanweave
+
+Series 1's A5 row (`TASKS.md`); the decisions of 2026-10-12 (`OPEN_QUESTIONS.md` §5).
+
+- **`zoo audit <run> [--out audit]`** (`SPEC.md` §7): replays the capture's
+  raw bytes, then the Collector's JSON, into a real `spanweave-live serve
+  --requests N` (whose end of input runs `Run.finish()`, the `Cap(0)`-at-end);
+  compares every graph `serve` wrote with `spanweave.build` and with a
+  `spanweave.Builder` fed the same records, re-read in-process by the pinned
+  `Endpoint` and partitioned by the pinned `trace_id_of`; runs `spanweave
+  inspect` and tables diagnostics, unmapped keys and `unknown` nodes; computes
+  `agentgolden.signature.signature(graph)` as a smoke. Writes
+  `audit/<project>-<run-id>.md`, every finding a reproduction naming its owner
+  by the rules of §7.4. Exit 0 written, 1 written but a step incomplete, 2
+  refused (not a run, does not verify, extra missing, an installed sha that is
+  not the pin).
+- **`agentgolden` pinned** in the `audit` extra at
+  `aa1847f2a2ad51a95b98ab3e180bc5d211e6b138`, beside the two existing pins;
+  `uv.lock` relocked (it adds agentgolden alone: its `spanweave>=0.9.1,<1.0`
+  is met by the pinned 0.9.1). The report header records all three shas,
+  pinned and installed.
+- **The import gate names three libraries**: `agentgolden` joins
+  `ANALYSER_MODULES`, confined to `spanweave_zoo/audit.py` like the other two.
+  `cli.py` imports the audit module only when `zoo audit` runs, so the bare
+  wheel and every other subcommand work without the extra; without it `zoo
+  audit` refuses, exit 2, naming `uv sync --extra dev --extra audit`.
+- **A seventh CI leg, `audit`**, installs the extra and runs `make
+  audit-check`: `mypy --strict` with the three libraries present, then the
+  `needs_audit` tests, failing if any skipped (they skip on every `check`
+  leg, by design).
+- **The `collector` leg no longer sees the audit tests** (fixes f60f69c):
+  `tests/test_audit_real.py` skips per item (`skipif` in `pytestmark`) rather
+  than with a module-level `importorskip`, which skipped the module at
+  collection and put that skip into `collector-check`'s `-m needs_collector`
+  report. The guard is unchanged; a test runs that selection with the extra
+  hidden and fails on any skip.
+- **The Z4 captures audited**: `audit/z4-2026-10-12-real.md` and
+  `audit/z4-2026-10-12-recorded.md`, three findings each (spanweave-live 2,
+  spanweave 1, agentgolden 0). The live graph equals the batch graph byte for
+  byte on every trace `serve` wrote.
+
+## A3g — the run-2b review's `next batch` items, closed
+
+Run-2b review (`patches/REVIEW-2026-10-11.md`) N-2 to N-12; the decisions of
+2026-10-11 ("header rule", "the seal"). N-1 was the plan's own, made by the
+orchestrator before this batch.
+
+- **`headers.json` records the request line whole** (`SPEC.md` §2.3, §3.2):
+  `request_line`, verbatim, beside `method` and `path`, so the HTTP version
+  and anything after it are no longer dropped (N-8). A head with **no CRLF at
+  all** is one `unparsed` entry, verbatim, with no `request_line`, `method`
+  or `path`; it used to read as an empty, fully parsed head.
+- **The tee forwards the recorded head, not the stdlib's parse** (`SPEC.md`
+  §4.3, §4.8; N-7). The `forward` seam is now `(head octets, body)`; the
+  Collector is sent `NNNN.headers.raw` with the `Host` line substituted and
+  the hop-by-hop lines dropped, by the replay's own line rule
+  (`forward.rewrite_head`). A CR-injected `Content-Encoding: gzip` no longer
+  reaches the Collector as a header. `Recorder.record` takes the head, the
+  body and whether the path was accepted, and nothing of the stdlib's parse.
+- **`SIGHUP` ends a capture as Ctrl-C does** (`SPEC.md` §4.6; N-2): closing
+  the terminal or dropping ssh completes the manifest and stops the Collector,
+  which used to be left running. A write to a hung-up terminal (`EIO`) is
+  handled as a closed pipe.
+- **`SPEC.md` §4.2 lists every line `zoo capture` prints** (N-3), and a test
+  holds the list both ways, the summary included. README step 5 names
+  `zoo capture: stopping`.
+- **README**: a test holds the log-to-file variant's redirect, its `grep`, its
+  run id and its `timeout` together (N-4); the `timeout` is now 60 s, not
+  less than the zoo's own readiness wait (52.5 s). Step 4 says `make
+  run-real` needs `OPENAI_API_KEY` in that terminal (N-5).
+- **The seal's claim narrowed** (`SPEC.md` §5; N-6): it catches accidental
+  and incidental edits and is not authentication; a test shows a manifest
+  resealed by hand verifies.
+- **`zoo replay`'s summary counts only what was sent** (`SPEC.md` §6.4;
+  N-10): `<n> sent, <n> that did not answer 2xx, <n> not sent`, where sent
+  means a receiver answered.
+- `SPEC.md` §6.2's chunked replay no longer says it "will time out": that is
+  a framing-aware receiver's answer, and a `zoo sink` answers `200` (N-11).
+- Test gaps on the CRLF split closed (N-9): a CR or LF at a value's edge
+  stays, a non-token name is no header, and a seal present but not a string
+  fails verify.
+- **The committed fixture capture was regenerated** as a new run through the
+  real tee, because its `headers.json` files lacked `request_line` under the
+  ratified rule; both bodies are byte-identical to the last two fixtures'.
+  Z4's captures of 2026-10-12 are untouched and keep the json they were
+  taken with.
+- The run-2b patch set was written under `patches/` (N-12; untracked).
+
+## A0c — the README survives its own rehearsal
+
+Run-2 review §1.5; `OPEN_QUESTIONS.md` §4 (option 2). Docs only, except the
+`zoo verify` closing-line wording (review N-1).
+
+- **The operator flow says what a run does.** Ctrl-C to the terminal's group
+  exits 0 and leaves no Collector running; `make verify` and `make check` are
+  green with the new capture present; the terminal shows the readiness line,
+  the two lines naming the ports and directories, one line per body per side
+  and the summary (`1 body/bodies in raw/, 1 in json/`), and none of the
+  Collector's lines, which are in `collector.log`; step 2 checks against
+  `collector/SHA256SUMS`, uses the cache on a second run, and is once per
+  checkout; the pet project's `make run` rewrites its own `MANIFEST.json`,
+  which the operator does not commit from the pet's checkout.
+- **The log-to-file variant** writes to
+  `"${TMPDIR:-/tmp}"/zoo-capture-<run-id>.log`, outside the checkout and the
+  run directory; the operator log is not part of the record, because
+  `collector.log` is.
+- README Layout and the `SPEC.md` §2 tree list `collector.log` and
+  `json/NNNN.headers.*`, which every capture already holds. The Makefile's
+  `collector` comment names `collector/SHA256SUMS` as the pin.
+- **`zoo verify`'s closing line** is `N problem(s), each named above -- not
+  verified.`; it no longer says "these bytes are not the bytes that were
+  recorded" for a recorded problem, a bad `kind`, a missing `ended_at` or a
+  seal mismatch. Test: four non-byte failures, red on the parent.
+
+## A4a — replay sends the captured head
+
+Run-2 review, A4 (N-6); the decision of 2026-10-11 ("replay").
+
+- **`zoo replay` writes `NNNN.headers.raw` onto the socket itself** (`SPEC.md`
+  §6, §6.2), with only the `Host` line substituted, then the body; it no
+  longer goes through `http.client`. The replayed head is byte-identical to
+  the captured one except `Host`. Gone: `Host` moved to the front, value
+  whitespace normalised (`x:v` sent as `x: v`), `HTTP/1.0` sent as
+  `HTTP/1.1`, bare-LF line endings sent as CRLF — and the hop-by-hop
+  headers, which the replay used to drop on §4.3's rule and now sends as
+  captured (§6.5). The tee's forward to the Collector is unchanged.
+- **The `Host` line** is a line of §2.3's CRLF split whose field name is
+  `Host`: every such line names the destination, a head with none gets none,
+  and a `Host:` inside another line (after a bare LF; an all-LF head) is not
+  touched.
+- **`--json`** replays `json/NNNN.headers.raw` — the head the Collector sent,
+  as the json sink recorded it — by the same rule.
+- **A bare CR in a header value now goes out** as it arrived, where the
+  replay used to refuse it because `http.client` would not send it. A head
+  that is empty or unterminated is refused per body, named, exit 1.
+- A new seam, `send` (§6.2), whose real implementation is
+  `forward.send_head`; with §4.8's `forward` it is the package's only
+  outbound socket. `sink.field_name` is the one token rule the split and the
+  substitution share.
+- Tests: the head-identity test over five head shapes, red on the parent and
+  on a replay through `http.client`; `retarget` (six); empty and unterminated
+  heads (three); no `http.client` connection opened; the bare-CR test now
+  asserts the head goes out identical.
+
+## A3f — the manifest is sealed, and the parse cannot invent
+
+Run-2 review, A3b-1 and A3c; the decisions of 2026-10-11 ("the seal", "the
+parse").
+
+- **`MANIFEST.json` carries `seal`** (`SPEC.md` §5, §5.5): the sha256 of the
+  manifest's canonical JSON with `seal` absent — `json.dumps(document,
+  sort_keys=True, separators=(",", ":"), ensure_ascii=True)` encoded as ASCII
+  — written in the same atomic write as `ended_at`, by `zoo capture` and
+  `zoo sink` alike. **`zoo verify` recomputes it** (§5.6) and fails on a seal
+  that is absent, not a string, or different: `kind` flipped from `recorded`
+  to `real`, a `problems` entry removed, or a `files` entry rewritten together
+  with its file all used to pass, because every file still hashed as recorded.
+  Re-indenting the file changes no seal; the document is sealed, not its
+  whitespace.
+- **`NNNN.headers.json` is derived from `NNNN.headers.raw`** (`SPEC.md` §2.3,
+  §3.2) by a split on CRLF and nothing else, never from the stdlib's parse. A
+  bare CR or LF stays inside the value it arrived in: `User-Agent:
+  otel\rX-Injected: yes` is one `User-Agent` header, where the stdlib's parse
+  reported an `X-Injected` header no client sent. A line that is not a header
+  (a continuation line, no colon) is listed under `unparsed` rather than
+  folded into one. The stdlib's parse is still what the sink handles the
+  request with (framing, the echoed content type, the forward).
+- **The committed fixture capture was regenerated** through the real tee with
+  the stock Collector 0.162.0, so that it carries a seal — a seal cannot be
+  added to a capture after it is taken. Its two bodies are byte-identical to
+  A3d's; it now also holds `collector.log` (A3e), and its headers files are
+  the new split.
+- Tests: seven on the seal in `tests/test_manifest.py`, five on the split in
+  `tests/test_sink.py`, two on the fixture. The A4 replay test whose premise
+  was the stdlib's truncated `User-Agent` now reads the whole value.
+
+## A3e — Ctrl-C stops the capture and nothing else
+
+A review blocker (run-2 review, Z-1). A terminal sends Ctrl-C to its whole
+foreground process group, and the Collector child was in `zoo capture`'s: it
+heard the keystroke itself, exited 0, and was recorded as `problems:
+["collector exited: 0"]` — exit 1, `verify` and `make check` red, on a capture
+that was fine and is immutable. Reproduced on the parent by the new test, with
+the stand-in and with the stock binary alike.
+
+- **The Collector child runs in its own session** (`SPEC.md` §4.6). Only
+  `zoo capture` hears Ctrl-C, and it stops the Collector itself.
+- **The shutdown order is stated and kept** (`SPEC.md` §4.6): the raw sink
+  stops accepting; every POST it is handling — every forward the Collector has
+  not answered — finishes, for at most 10 s; one last look at the Collector,
+  then `SIGTERM` (its own shutdown flushes into the json sink), `SIGKILL` after
+  a bounded wait, said aloud; the json sink stops; the manifest is assembled.
+  An exit before `SIGTERM` is a problem; an exit after it is not.
+- **`collector.log` in the run directory** (`SPEC.md` §4.2, §5.5): the
+  Collector's stdout and stderr, verbatim, from its first line, listed in
+  `files` and re-hashed by `verify`. None of it is echoed to the terminal any
+  more.
+- **The body count counts bodies** by where they are: `1 body/bodies in raw/,
+  1 in json/` in `zoo capture`'s summary and `zoo verify`'s line, rather than
+  "2 body/bodies" for one export.
+- A Ctrl-C during the readiness wait stops the child the launcher started,
+  which its own session no longer does for it.
+- Tests: `tests/test_shutdown.py` sends `SIGINT` to the process group of a real
+  `zoo capture` process; the stock-binary variant is a `needs_collector` test
+  in `tests/test_collector_real.py`.
+- **A sink binds and resolves no name** (`SPEC.md` §3.7; fixes 89b8dbf's
+  `check (macos-latest, 3.12)` leg). `http.server`'s bind follows with
+  `socket.getfqdn(host)`, a reverse lookup; on the macOS runner the first one
+  in a process took tens of seconds, during which the process's own signal
+  handlers could not run. A `zoo capture` run as its own process paid it on its first sink bind and the
+  stand-in Collector on its receiver bind, which overran the readiness wait.
+  The sink now binds without the lookup; so does the stand-in.
+  `tests/test_sink.py` fails if binding a sink resolves a name.
+
+## A4 — `zoo replay`: the capture's bytes, and its head, sent again
+
+`SPEC.md` §6, which was a heading. A capture is only worth recording if a
+receiver that was not there can be handed it, and the audit (§7) is the first
+caller: it sends the same capture to `spanweave-live serve` twice, once as the
+exporter's own bytes and once as the Collector's JSON.
+
+- **`zoo replay <run> --to http://host[:port] [--raw|--json] [--timing]`**
+  (`SPEC.md` §6): every body of the chosen side, in the order the manifest
+  recorded it — which is the journal's order, which is receipt order, read out
+  of the record rather than re-derived by sorting a directory.
+- **The head comes from `NNNN.headers.raw`, never from `NNNN.headers.json`**
+  (`SPEC.md` §6.2). That is what A3c kept the octets *for*: a bare CR in a
+  header value reaches the parse truncated, so a replayer built on the parse
+  sends a tidied request no exporter made — with the capture that says
+  otherwise sitting on disk beside it. A head the wire refuses is **not**
+  tidied into one it accepts: it is one line, a non-zero exit, and the rest of
+  the capture still sent.
+- **The send is the tee's own forward** (`forward.HttpForward`, `SPEC.md`
+  §4.3), pointed somewhere else. Re-sending captured bytes is one act, and a
+  second implementation of it would be a second chance to improve them. So the
+  two differences between the exporter's request and the replayer's are the two
+  §4.3 already names: `Host`, and the headers that described a connection that
+  no longer exists.
+- **A send that does not succeed never stops the rest** (`SPEC.md` §6.4). A
+  `415` on a protobuf body is an answer and a finding, not an error; a replay
+  that stopped at it would hide what the next body would have done. Exit **1**
+  if any answer was not a 2xx or any body could not be sent; **2** when nothing
+  was sent at all — not a capture, an unreadable manifest, no body on the
+  chosen side (`--json` on a capture whose Collector never ran), a `--to` that
+  is not an `http://host[:port]`.
+- **`--timing` sleeps the recorded gaps through the injected `sleep`**
+  (`SPEC.md` §6.3), from the `received_at` the sink wrote down — the one thing
+  in a headers file the request did not say. A gap it cannot compute is not
+  slept and not guessed: a missing or unparseable receipt time, or one that
+  went backwards, is a printed line and the send still happens. Nothing under
+  `spanweave_zoo/` sleeps outside the seam, so the suite waits for none of it.
+- **The replayer verifies nothing and records nothing** (`SPEC.md` §6.5):
+  `zoo verify` re-hashes bytes and `make verify` runs it on every gate.
+- `tests/test_replay.py` replays the **committed capture** under
+  `tests/fixtures/capture/` wherever it fits — the byte-identity claim is made
+  against bytes a real exporter sent — and crafts the rest by putting head
+  octets on a socket, which is the only way to get a head into a capture that
+  the stdlib cannot represent. A test may do that; `spanweave_zoo/` may not.
+- `manifest.received_at`, `manifest.recorded_bodies` and
+  `manifest.HEADERS_RAW_SUFFIX` are public now, because the octets have a
+  reader as well as a writer; `manifest.moment_of` is public for the same
+  reason — what is and is not a comparable moment has one home (§5.3, §6.3).
+
+## A0b — CI proves the Collector claim
+
+The claim is A2's: a real protobuf export through the tee comes back from the
+stock Collector as OTLP JSON carrying the same trace and span ids. Three tests
+check it, they need a gitignored ~100 MB binary, and they skip when it is
+absent — so for five CI legs the claim was green everywhere and *checked*
+nowhere but on the maintainer's machine (review thread T25).
+
+- **A sixth CI job, `collector (ubuntu-latest)`** (`SPEC.md` §4.9): one
+  interpreter, `make collector`, then `make collector-check`. It is the only
+  job that downloads the binary and the only one that can say the stock
+  Collector re-encoded anything. **Wall clock: 15 s** on a cold cache — 4 s of
+  it the 112 MB fetch, 1.6 s the three tests — measured on this tree
+  (run 38013503089); the five `check` legs it joins take 17 s and 58 s.
+- **`make collector-check` fails when a Collector test skips.** It runs exactly
+  `-m needs_collector`, reads pytest's own junit-xml report, and exits non-zero
+  on any skip, failure or error — *and* when the marker selects **no test at
+  all**, which is how a renamed marker or a dropped decorator would otherwise
+  turn the job into a no-op that passes. What it cannot use is the exit code:
+  **pytest exits `0` when every selected test skips**, which is the whole
+  reason a green tick said nothing. It is deliberately not a prerequisite of
+  `check`, which stays green on a machine with no binary.
+- **The tests carry a named `needs_collector` marker**, registered in
+  `pyproject.toml`, as well as the skip. A bare `skipif` has no name to select
+  by. `tests/test_collector_ci.py` asserts every test in
+  `tests/test_collector_real.py` carries the decorator *and* that `-m` selects
+  exactly those tests, because the marker is now part of a gate.
+- **The guard's verdict is a pure function of the report text**, run against
+  planted reports — a skip, all skipped, an empty run, a failure, an error — the
+  way the import gate is run against planted violations. A guard nobody has
+  watched fail is a guard nobody knows works.
+- **The downloaded archive is cached at `collector/.cache/<asset>`**
+  (`SPEC.md` §4.1), so a second `make collector` does not fetch 100 MB again
+  and CI restores it between runs, keyed on the **sha256 that pins it** —
+  printed by `collector/fetch.py --print-pin`, read from `collector/SHA256SUMS`
+  itself, so a `VERSION` or digest change is a miss and a fresh download rather
+  than a stale hit. The cache changes nothing about the check: the archive is
+  re-hashed every run, and **a cached archive whose digest is not the pin is
+  refused exactly as a bad download is**, naming the file to delete. The
+  download writes `<asset>.part` and renames it only once the digest matches,
+  so an interrupted fetch never becomes the cache.
+
+## A0a — the README is true, the licence exists, and the open question has a home
+
+Documentation only: no module under `spanweave_zoo/` changed, and `SPEC.md` is
+unchanged. What changed is what a stranger reads, plus the tests that hold it.
+
+- **Every command the README prints is complete and runnable as printed**, and
+  `tests/test_readme.py` parses each one with the CLI's own parser on every
+  `make check`. The first `zoo capture` an operator met did not run -- exit 2,
+  "the following arguments are required: --kind, --project-manifest", because
+  both flags were introduced sixty lines further down the page (review finding
+  F3). Every `zoo` command now carries the `uv run` prefix that makes it
+  typeable in a bare checkout, every `make` target is checked against the
+  `Makefile`, and every `uv sync --extra` against `pyproject.toml`. The pet
+  project's own `make run-real` / `make run-recorded` are exempt from the
+  target lookup and `EXPORT-CONTRACT.md` is asserted to be where they come
+  from.
+- **The operator flow is a numbered list of the commands themselves, starting
+  with `uv sync --extra dev`, and nothing counts them.** Three counts
+  disagreed: the plan's row said four commands and a `Ctrl-C`, the README said
+  five, and an operator had to type six because the `uv sync` was prose beside
+  the list rather than a step in it (review finding F15). The numbers are now
+  the count, a test fails on any "N commands" phrasing, and the explanation of
+  each step sits with the step rather than in a second list that could drift
+  from the first. The verified way for a supervisor to wait on the readiness
+  line is printed with it.
+- **`LICENSE` (MIT) and `license` / `license-files` in `pyproject.toml`**
+  (review thread T5). There was neither, so the built wheel carried no licence
+  at all. Declared exactly as `spanweave` and `spanweave-live` declare it, with
+  a `LICENSE` byte-identical to theirs; `make install-check` now asserts the
+  wheel ships it, and `tests/test_packaging.py` that the file, the metadata and
+  the README agree.
+- **`OPEN_QUESTIONS.md` exists** (review finding F14). `CLAUDE.md` says a batch
+  that would have to invent a rule stops and writes the options there, and
+  there was no such file -- A3 met that trigger and recorded the question in a
+  commit message instead. §1 is the manifest-timing question with the decision
+  that settled it (copied at the end, A3b), §2 the licence, §3 the one edge
+  that is still open as a preference. An answered question is kept with its
+  answer.
+
+## A3d — `verify` refuses what it did not check, and CI checks something
+
+- **`zoo verify <path>` on a path that is not a capture exits 2, naming the
+  path** (`SPEC.md` §5.6). An absent directory, a file, or a directory with no
+  `MANIFEST.json`, no `raw/` and no `<project>/<run-id>` under it used to print
+  "nothing to re-hash" and exit **0** — a typed path is a claim that a capture
+  is there, so that was the reassuring pass this command exists to refuse. Two
+  rather than one because nothing was checked, which is the distinction `zoo
+  capture` and `zoo sink` already draw between refusing to start and going
+  wrong. The **default** root keeps exiting 0 when it is empty: a repository
+  that has recorded no captures yet is nothing to re-hash. `cli.py`'s docstring
+  now lists the three exit statuses it actually produces.
+- **One real capture is committed, and `make verify` reads it**
+  (`SPEC.md` §5.6). `tests/fixtures/capture/` holds a single OTLP protobuf body
+  through the real tee — `tests/otlp.py`'s hand-built export into the raw sink,
+  the stock Collector behind it, its JSON re-encoding into the json sink — with
+  `NNNN.headers.raw` and `NNNN.headers.json` on both sides, both journals and
+  the manifest the run assembled, on a clock the run chose. `make verify` now
+  runs `zoo verify` over `captures/` *and* over that fixture, so every
+  `make check` and every CI leg re-hashes real bytes instead of reporting an
+  empty tree. The capture is never edited and never regenerated, and it is not
+  under `captures/`, which is for the zoo's own runs. A `.gitattributes` marks
+  it `-text`, because `NNNN.headers.raw` is CRLF on purpose and a clone that
+  converted line endings would fail verify for a reason that has nothing to do
+  with the capture.
+- **The README's two contract digests are recomputed on every `make check`**
+  (`tests/test_readme.py`). The Provenance section says the sha256s of
+  `EXPORT-CONTRACT.md` and `ZOO-BRIEFS.md` are how "byte-identical to the ones
+  handed to the project" is checked; nothing checked them. Now one appended
+  byte to either document fails the suite and names which file.
+- **The import gate's one exemption is a path, not a file name**
+  (`tests/gates.py`, `SPEC.md` §7). It was matched on the basename, so any
+  `audit.py` anywhere — `spanweave_zoo/replay/audit.py`, say — would have
+  inherited the exemption and the rule could have been switched off by a
+  `mkdir`. It is now `spanweave_zoo/audit.py` and nothing else.
+
+## A3c — the header octets are the record
+
+- **Every request leaves `NNNN.headers.raw`** beside its body and its
+  `NNNN.headers.json` (`SPEC.md` §2.3, §3.2, §3.4): the request line and the
+  header block as the octets arrived, CRLFs intact, up to and including the
+  blank line that ends them. The octets are kept as they are read off the
+  socket, before anything parses them; the body is not in the file. `SPEC.md`
+  §2.3 now says which of the two files is the unmodified record (`.raw`) and
+  which is the parse beside it (`.json`), on the same rule as the Collector's
+  `json/`: if they disagree, the octets are what arrived.
+- **A head the stdlib cannot represent is now in the capture.** `email`'s
+  header parser splits a header line on a **bare CR** — HTTP forbids one and
+  real clients emit one — so the value arrives truncated and every header
+  after the split is absent from the parse altogether. That head is now
+  recorded in full in `.raw`, while `.json` stays exactly what Python got: a
+  recorder whose record was the parse would hold what Python can represent
+  rather than what the exporter sent.
+- **Nothing was added to `zoo verify`**, which is the point of A3b's walk: the
+  manifest's `files` list is built by walking the run directory, so each
+  `NNNN.headers.raw` gets a digest of its own without a recorder announcing it,
+  and a bare CR tidied out of one fails verify (`SPEC.md` §5.6). The sink's
+  startup refusal counts headers files of either kind, so a run directory
+  holding only heads from an earlier capture is still refused (`SPEC.md` §3.1).
+
+## A3b — the manifest is written once, at the end, and covers every file
+
+- **Bodies are journalled, and the manifest is assembled when the run ends**
+  (`SPEC.md` §3.5, §5.5, §2). Each recorded body is written to `bodies.jsonl`
+  as one flushed line and each attempted forward to `forwards.jsonl`;
+  `MANIFEST.json` is labelled at the start (`kind`, the two versions,
+  `started_at`) and assembled once at the end from those journals plus a walk
+  of the run directory. Recording a body no longer costs more the longer the
+  run gets: rewriting a document that grows by an entry per POST is work that
+  climbs with the number of bodies, and appending a line is not. Measured over
+  1,600 bodies in one run: **301 us/body over the first 800, 307 us/body over
+  the last 800, ratio 1.02**.
+- **Every file in a run directory has a sha256 of its own** (`SPEC.md` §5.6).
+  Bodies are in `bodies`; the headers files, the journals and anything else the
+  capture holds are in the new `files` list, each file once, `MANIFEST.json`
+  excepted. `zoo verify` re-hashes both lists and accounts for every file by an
+  entry rather than by sitting beside one — so a rewritten `Content-Type` in a
+  `NNNN.headers.json` now fails verify, where before every body still hashed
+  correctly and the capture passed.
+- **`zoo verify` refuses three more things** (`SPEC.md` §5.6): a capture with
+  no `ended_at` (never completed — the line names the directory and the
+  command that removes it), a `kind` that is neither `recorded` nor `real`, and
+  any capture whose manifest records a `problem`. A3a wrote `problems` and
+  nothing read it; `verify` reads it now.
+- **The project's own `MANIFEST.json` is copied when the run ends**
+  (`SPEC.md` §5.3), per the manifest-timing decision. The contract has the
+  project write that file *while it runs*, so the copy a capture carries is now
+  the recorded run's and not its predecessor's. The path is still checked at
+  the start, so a typo is refused while nothing is on disk. The capture dates
+  the document against its own `started_at` — the one field of it the zoo
+  reads, for that and nothing else: a document written before the capture
+  started is an earlier run's, so the capture carries **none**, records a
+  `problem` naming both times, exits non-zero and does not verify. A document
+  that is gone by the end is the same. A document the zoo cannot date is kept
+  — it does not drop a record it was handed — with a problem recorded all the
+  same.
+- **Progress lines are flushed as they are written, and a closed stdout ends
+  the run rather than killing it** (`SPEC.md` §4.6). `zoo capture | head` used
+  to raise `BrokenPipeError` out of a recording thread and leave a capture
+  whose manifest was never assembled; the first broken pipe now asks the run to
+  stop the way Ctrl-C does, later lines go nowhere, and the exit status is what
+  the capture was.
+- **Degenerate cases covered**: a half-written line in `bodies.jsonl` (the body
+  it recorded is still hashed as a file and the capture records a problem —
+  nothing is dropped and nothing is claimed), a project manifest with no
+  `started_at`, a project manifest that vanished mid-run.
+
+## A3a — a capture exists only once it is ready
+
+- **Readiness is two things, and the run directory comes after both**
+  (`SPEC.md` §4.6). `zoo capture` now binds both sinks, starts the Collector
+  and waits for it, and only **then** creates `captures/<project>/<run-id>/`,
+  labels the manifest, sets the sinks serving and prints the single readiness
+  line `zoo capture: the raw bytes are the record. Ctrl-C to stop.` A refusal
+  for any reason -- a port held, the Collector exiting, a config it cannot
+  load, a binary that is not the pin -- happens before that line and leaves
+  **no run directory at all**, exiting 2 and naming the port or the cause. A
+  capture directory now means a capture was made.
+- **The Collector's readiness is its own ready line, not a port that accepts**
+  (`SPEC.md` §4.6, §4.2). The wait requires `Everything is ready. Begin
+  running and processing data.` in the Collector's own log **and** a connection
+  its receiver accepts. The old check only connected, so a stranger already
+  holding 4320 passed it: the probe reached the stranger, the Collector that
+  could not have the port exited, and the capture was recorded as if fine with
+  a `json/` that could only ever be empty. The child's output is piped and
+  drained by a thread instead of inherited, so a refusal quotes the
+  Collector's last lines -- `bind: address already in use` among them -- and
+  the operator still sees its log as it happens.
+- **`collector/config.yaml` leaves `service.telemetry.logs.level` at the stock
+  `info`** (`SPEC.md` §4.2), where it asked for `warn` before: the ready line
+  is logged at `info`, and at `warn` a healthy Collector says nothing at all
+  on startup. The metrics level stays `none` -- the Collector's own telemetry
+  is still not part of a capture.
+- **A Collector that exits during a run is recorded, not absorbed**
+  (`SPEC.md` §4.6, §4.5). The caller's wait notices it on its next hop and
+  writes `problems: ["collector exited: <code>"]` into `MANIFEST.json` there
+  and then, prints it, and `zoo capture` exits non-zero. Recorded once however
+  often it is looked at; the key is absent from a capture that had none. The
+  raw sink keeps recording, because the raw bytes are the record.
+- **`zoo sink`'s banner and the capture's readiness line are distinct**, each
+  naming its own command, neither a prefix of the other (`cli.SINK_BANNER`,
+  `capture.READY_LINE`).
+- Internals: `_Listener` binds at construction and serves later, so a port is
+  held before any directory exists and an unserved listener is closed without
+  waiting for a loop that never started. `sink.Recorder` takes
+  `create_directory` -- `zoo sink` still creates `--out` when it starts
+  (`SPEC.md` §3.1), `zoo capture` does not. The `launch` seam's handle can be
+  asked whether the child is still there (`SPEC.md` §4.8).
+- Tested against a **stand-in child process** rather than the 100 MB download
+  (`SPEC.md` §4.9): it binds the receiver endpoint it is handed through
+  `ZOO_COLLECTOR_OTLP_HTTP` and logs the way the Collector does, which is
+  enough to drive a held port, a Collector that holds a port and never reports
+  ready, and a config it cannot load. It claims no re-encoding, which stays
+  `test_collector_real.py`'s one job.
+
+## A3 — the capture is a manifest, immutable
+
+- **`zoo capture` ends by writing the whole `MANIFEST.json`** (`SPEC.md` §5):
+  the pet project's own `MANIFEST.json` copied **verbatim** from a path the
+  operator passes (`--project-manifest`), the zoo's `sink_version`, the pinned
+  `collector_version`, `kind`, `started_at` / `ended_at` from the injected
+  clock, and `bodies` entries carrying `content_type` / `content_encoding`
+  beside A1's `file`, `sha256` and `bytes` -- for `raw/`, for `json/` and for
+  rejected bodies alike. Nothing else: no span counts, no durations, no
+  judgement of a capture (`SPEC.md` §1.4).
+- **`--kind` is required, and is never inferred** (`SPEC.md` §5.2).
+  `recorded` | `real`, no default, nothing derived from the project's own
+  `mode`, the endpoint or the environment: a recorded capture and a real one
+  differ by that declaration alone and the audit reads it as the truth.
+  `zoo capture` refuses the command, and `manifest.label` refuses to write a
+  manifest it cannot label.
+- **The project's manifest is copied, not merged and not validated**
+  (`SPEC.md` §5.3). No field of it is read -- including `mode` -- and if it
+  disagrees with `kind`, both declarations sit in the record. The one thing
+  checked is that the path holds a readable JSON **document**, and a path that
+  is missing, unreadable or not JSON is a refusal **at the start** of the
+  capture, before any bytes are on disk: the alternative is a capture that can
+  only be completed by editing it.
+- **The content headers are carried across, not inspected** (`SPEC.md` §5.4,
+  and §1.1 is amended to say so in place). A1 deliberately left
+  `content_type` / `content_encoding` out because the sink does not look at a
+  content type except to echo it; the values were already verbatim in each
+  body's `NNNN.headers.json`, so the manifest writer copies them from the
+  record at the end of the run. No byte of a body is read to do it, the sink
+  is unchanged, and a header that legally repeats is carried once with
+  `headers.json` still the record of the repeat.
+- **`zoo verify` checks both directions** (`SPEC.md` §5.6): every body the
+  manifest lists is on disk with the digest and the length it recorded, **and
+  every file on disk is one the manifest accounts for**. A body present on
+  disk but absent from the manifest now fails -- A1 left that deliberately
+  unimplemented -- as does a headers file with no listed body beside it. The
+  check walks the **directory** as well as the list, because a check that
+  iterated the manifest can only confirm what the manifest already says.
+- `zoo verify [path]` now accepts **one run directory** as well as a capture
+  root, which is what an operator types after a run. It used to glob two
+  levels down from it, find nothing, say so and exit **zero** -- a reassuring
+  pass over a capture nobody checked. Each run's line also prints the `kind`
+  the capture declares, and `none declared` for a `zoo sink` run that declares
+  nothing.
+- `README.md` gains **"Running a pet project's real run"**: the five commands
+  an operator types, exercised end to end against the real Collector with a
+  real OTLP protobuf export and stopped with `SIGINT` the way the section says
+  to stop it.
+- **A defect the real run surfaced, fixed here** (`SPEC.md` §3.1): the sink's
+  refusal to start in a directory that already holds a capture globbed `*` +
+  its body suffix, and the json sink's bodies are `*.json` -- so it counted
+  `NNNN.headers.json` as a body and refused a re-used run id with "2 body
+  file(s), starting 0001.headers.json". Bodies and headers files are now
+  counted apart and named accurately, and a directory holding only a headers
+  file is still refused: half a capture is a capture to refuse.
+
+## A2 — the Collector re-encodes beside the raw
+
+- `collector/`: the **stock** OpenTelemetry Collector (contrib), pinned at
+  **0.162.0** in `collector/VERSION`, with the release's own sha256 for each
+  platform in `collector/SHA256SUMS` and its config checked in at
+  `collector/config.yaml` (`SPEC.md` §4.1, §4.2). `make collector` downloads
+  exactly that release, **refuses to unpack anything whose digest is not the
+  pinned one** -- or a platform with no line at all -- and extracts the
+  binary, which is **gitignored**: the pin is the record, the bytes are a
+  download. Nothing in `make check` fetches it.
+- The config is one `otlp` receiver, `batch` at its defaults, one `otlp_http`
+  exporter with `encoding: json`, one traces pipeline, and no components
+  beyond those. Its endpoints are `${env:NAME:-default}`, the stock confmap
+  form, so **the file checked in is the file that runs** and the ports are
+  supplied rather than edited. Two settings are not defaults and say why in
+  place: `compression: none` (the sink never decompresses, so a gzipped
+  re-encoding would make `json/NNNN.json` a gzip member rather than JSON) and
+  `service.telemetry.metrics.level: none` (a recorder should not open a fourth
+  listening port it never reads). The A2 row's `otlphttp` is a deprecated
+  alias at this version; `otlp_http` is the same component's current name.
+- `zoo capture --project z4 --run-id <id>` (`SPEC.md` §4.6): **two recorders
+  in one process on one run directory** -- the raw sink on **4318**, the port
+  every brief gave the pet projects, and the json sink on **4319** where the
+  Collector exports -- with the Collector itself behind the raw sink on a
+  third port. Start order is json sink, Collector, raw sink; stop order is the
+  reverse, so the Collector's last batch has somewhere to flush.
+- **The tee** (`SPEC.md` §4.3): the raw sink writes the body, its headers and
+  its digest to disk and **then** forwards the same bytes to the Collector.
+  Byte-identical -- still gzipped if it arrived gzipped, still protobuf if it
+  arrived as protobuf -- and header-identical, in order and with repeats,
+  minus only `Host` and the hop-by-hop headers of RFC 9110 §7.6.1, which name
+  the connection rather than the payload. A **rejected** POST (`SPEC.md` §3.4)
+  is recorded and *not* forwarded: forwarding it would invent traffic the
+  exporter never aimed at the Collector. The answer to the exporter is still
+  `200`, empty, its own content type echoed -- it does not depend on the bytes
+  and it does not depend on the forward.
+- **A forward that fails loses nothing and is never silent** (`SPEC.md` §4.4):
+  the body is already recorded and is untouched, the failure is written into
+  `MANIFEST.json` as a `forwards` entry, it is printed naming the body, and
+  `zoo capture` exits non-zero -- so a run whose `json/` is incomplete cannot
+  be mistaken for one that is complete.
+- **One manifest, two sinks** (`SPEC.md` §4.5), which is what A3 inherits:
+  one `MANIFEST.json` per run directory carrying `bodies` for raw *and* json,
+  written under **one lock per run directory** so two recorders cannot
+  interleave a read-modify-write. The two sinks get different `--out`
+  directories and different rejected directories (`rejected/` and
+  `rejected-json/`), because two recorders on one directory would share a
+  counter and overwrite each other. A2 added exactly two manifest fields:
+  `collector_version` (the pin, written before the first body) and `forwards`
+  (delivery, not bytes -- so A1's three-key `bodies` entries are untouched).
+- Refusals rather than reassurance (`SPEC.md` §4.6): no `VERSION` or no
+  `config.yaml`; no binary, naming `make collector`; a binary whose
+  `--version` is not the pin; a run directory that already holds a body, in
+  either sink; a `--run-id` that is not one path segment; a Collector that
+  does not accept a connection within the readiness budget. `make
+  install-check` asserts the last of these on the **shipped** wheel, where
+  `collector/` is absent by design.
+- **`SIGINT` and `SIGTERM` end a run cleanly** (`SPEC.md` §4.6), through a
+  handler that only asks it to stop, with the shutdown on the main thread.
+  Found by running the real thing rather than by reasoning about it: a capture
+  has three threads blocked in `select`, the kernel may deliver the signal to
+  any of them, and a main thread parked in an *untimed* wait never runs the
+  Python handler -- so Ctrl-C did nothing and the Collector stayed up holding
+  its port. The caller now waits in short hops, as
+  `socketserver.serve_forever` does and for the same reason.
+- `raw/NNNN` and `json/NNNN` are documented as a **convenience, not a
+  promise** (`SPEC.md` §4.7): the batch processor may coalesce or split, so
+  `json/NNNN.json` is the NNNN-th POST the *Collector* made. Nothing is
+  renumbered, merged or split to make the columns line up.
+- Seams, injected and named in `SPEC.md` §4.8: `forward`, `launch`, `sleep`
+  (the Collector's readiness wait -- a bounded number of connection attempts,
+  never a clock read) and `after_forward`. `cli.py` is still the only module
+  that reads the world, and now holds the one real `sleep` beside the one real
+  `now`.
+- Thirty-eight new tests. The tee's mechanics run everywhere, against the
+  `forward` seam, including the degenerate cases: a Collector that refuses the
+  connection, one that answers `503`, a rejected POST that is not forwarded,
+  two rejected directories that must not collide. The **real Collector**
+  integration test -- hand-built OTLP protobuf through the tee, asserted to
+  come back as `json/0001.json` with **the same trace and span ids**, plus a
+  gzipped second export -- runs when `collector/otelcol-contrib` is present
+  and is **skipped when it is absent**, so `make check` is green both ways and
+  CI never downloads 100 MB. It skips loudly rather than passing quietly.
+  There is no protobuf library here and there is not going to be one:
+  `tests/otlp.py` encodes the export by hand, field number by field number.
+  Mutation shown caught: a tee that forwards a decompressed body fails
+  `test_the_forwarded_body_is_the_bytes_that_arrived`, and one that forwards
+  before writing fails `test_the_body_is_on_disk_before_the_forward_is_attempted`.
+
+## A1 — the sink records bytes, and nothing else
+
+- `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` (`SPEC.md` §3),
+  on stdlib `http.server` and **no new dependency**: a `POST /v1/traces` with
+  any `Content-Type` and any `Content-Encoding` becomes `raw/NNNN.body` -- the
+  bytes exactly as received, still gzipped if they arrived gzipped -- beside
+  `raw/NNNN.headers.json` (method, path, **every** header as a list of
+  `[name, value]` pairs so a repeated header survives, body length, and a
+  receipt time from the injected `now`). Answered `200`, empty body, the
+  request's own content type echoed back.
+- A POST to any other path is answered `404` and **still recorded**, under
+  `rejected/` with its own counter (`SPEC.md` §3.4). An exporter aimed at the
+  wrong endpoint is a fact to hold, and a 404 that dropped the bytes would
+  lose it.
+- The sink never decodes, decompresses, parses or validates a body, and never
+  edits a capture: it **refuses to start** if `--out` already holds a body
+  (`SPEC.md` §3.1). A body that is empty, truncated, mislabelled or lying
+  about its encoding is recorded like any other; a POST with no
+  `Content-Length` is recorded as a zero-byte body rather than having its
+  framing guessed at (`SPEC.md` §3.7).
+- `MANIFEST.json`'s `bodies` entries -- `file`, `sha256`, `bytes` -- written
+  incrementally as the sink records (`SPEC.md` §3.5). This is the one part of
+  the manifest `CLAUDE.md` §0.6 rule 2 already mandated, and `zoo verify` had
+  nothing to re-hash against without it. The digest has exactly one home: it
+  is **not** also copied into `NNNN.headers.json`. Everything else the
+  manifest will carry is still A3's, added to this same file and these same
+  entries (`SPEC.md` §5, which now also records what A1 did *not* do: fail on
+  a body present on disk but absent from the manifest).
+- `zoo verify` therefore stops refusing every capture and re-hashes: non-zero
+  on a changed byte, a wrong length, a listed body that is missing, or a
+  manifest it cannot read. A run with no readable manifest is still a refusal.
+- Seams, all injected and all named in `SPEC.md` §3.6: `now` (the one real
+  clock in the package lives in `cli.py`), the listener factory (tests bind
+  `127.0.0.1` on port `0`, so the suite cannot collide with a port in use),
+  and `before_record` / `after_record` -- which is how the receipt-order test
+  holds two POSTs genuinely in flight **without sleeping**.
+- Twenty new tests over a real socket, plus one in `tests/test_cli.py`
+  asserting that no module but `cli.py` reads a clock: a protobuf, a JSON and
+  a gzip body each round-tripping byte for byte; two POSTs in flight numbered
+  in receipt order; `zoo verify` passing on a sink-written capture and failing
+  after one bit of one byte changes. Mutation shown caught: a sink that
+  decompresses before writing fails the gzip case.
 
 ## A0 — the repository skeleton
 

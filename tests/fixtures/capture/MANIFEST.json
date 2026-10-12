@@ -1,0 +1,74 @@
+{
+  "bodies": [
+    {
+      "bytes": 128,
+      "content_encoding": null,
+      "content_type": "application/x-protobuf",
+      "file": "raw/0001.body",
+      "sha256": "abb3460ed37754be26ec3c77a0b3b97e9a03a3560b85d8cea737e581ff24c69a"
+    },
+    {
+      "bytes": 391,
+      "content_encoding": null,
+      "content_type": "application/json",
+      "file": "json/0001.json",
+      "sha256": "403f27e12d2675757446edc02feb4cd680e55db7879fb276ad288d0123dd86d2"
+    }
+  ],
+  "collector_version": "0.162.0",
+  "ended_at": "2026-10-12T09:00:04+00:00",
+  "files": [
+    {
+      "bytes": 237,
+      "file": "bodies.jsonl",
+      "sha256": "259be4afe074e0dcf18da17e3f3288dddb6f4ea5b6921b501302134473fcce10"
+    },
+    {
+      "bytes": 2863,
+      "file": "collector.log",
+      "sha256": "f660dd2a8071a9183fd8e3654700f8423d6a078c040192243c06ad322afd9e18"
+    },
+    {
+      "bytes": 41,
+      "file": "forwards.jsonl",
+      "sha256": "8abd636f60e4823845cfb3b0ff6b3612ec20e2e542773650f5e22a9bf5f5f734"
+    },
+    {
+      "bytes": 480,
+      "file": "json/0001.headers.json",
+      "sha256": "1b5eec683a86f1d327f9f14f491ff0c5e6c6a4d20206e365aa9eb56fd079847e"
+    },
+    {
+      "bytes": 194,
+      "file": "json/0001.headers.raw",
+      "sha256": "7eb92215ae4f42f301b98bcfcb3124c6176f8aac8adb2bf66c8633a76c2b1126"
+    },
+    {
+      "bytes": 395,
+      "file": "raw/0001.headers.json",
+      "sha256": "6e3d516a6737878a654f84cb71bd0c5bb1c06a406f90b6c13cd2dd1fa7b376d2"
+    },
+    {
+      "bytes": 137,
+      "file": "raw/0001.headers.raw",
+      "sha256": "17fc2cb1a6e37a6ad4d8742a7377ebe681e0ea447d40e8a8965ec0d1839e88a1"
+    }
+  ],
+  "forwards": [
+    {
+      "file": "raw/0001.body",
+      "status": 200
+    }
+  ],
+  "kind": "recorded",
+  "project_manifest": {
+    "contract_version": "1.1",
+    "framework": "none: tests/otlp.py hand-built this export",
+    "mode": "recorded",
+    "project": "fixture",
+    "started_at": "2026-10-12T09:00:02+00:00"
+  },
+  "seal": "d76c40b9c59e8a941f288bd4d1da2b6caa1261f012d4e3f43c046c963f766ada",
+  "sink_version": "0.0.1",
+  "started_at": "2026-10-12T09:00:01+00:00"
+}

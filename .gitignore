@@ -15,6 +15,9 @@ patches/
 # are checked in; the ~100MB binary is not.
 collector/otelcol-contrib
 collector/*.tar.gz
+# ... and the archive `make collector` caches so a second run does not fetch
+# 100MB again. CI restores it keyed on the pinned sha256 (ci.yml, `collector`).
+collector/.cache/
 
 # `captures/` is deliberately NOT ignored: a capture is the record, and the
 # record is what this repository is for.

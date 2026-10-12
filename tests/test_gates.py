@@ -31,7 +31,13 @@ PLANTED = [
         "if TYPE_CHECKING:\n"
         "    from spanweave import Graph",
         "spanweave",
-    ),
+    ),  # The third name (decided 2026-10-12, `OPEN_QUESTIONS.md` §5): agentgolden
+    # is the consumer the audit smokes in its step 5 (`SPEC.md` §7.3), and it
+    # is confined to the audit module exactly as the other two are.
+    ("import agentgolden", "agentgolden"),
+    ("import agentgolden as ag", "agentgolden"),
+    ("from agentgolden.signature import signature", "agentgolden.signature"),
+    ("def smoke():\n    from agentgolden import signature", "agentgolden"),
 ]
 
 
@@ -48,6 +54,21 @@ def test_gate_exempts_the_audit_module(source, expected):
     # capture (SPEC.md section 7). Every shape the gate catches elsewhere is
     # allowed there -- including the nested and aliased ones.
     assert gates.check_source("spanweave_zoo/audit.py", source) == []
+
+
+def test_the_exemption_is_one_path_and_not_a_file_name():
+    # The exemption is `spanweave_zoo/audit.py` -- that path (SPEC.md section
+    # 7). A gate that matched the *name* would exempt any file called
+    # `audit.py` anywhere, so a module could be moved one directory down and
+    # keep an exemption nobody granted it.
+    for path in (
+        "spanweave_zoo/sink/audit.py",
+        "spanweave_zoo/replay/audit.py",
+        "tests/audit.py",
+        "audit.py",
+    ):
+        found = gates.check_source(path, "import spanweave")
+        assert [v.rule for v in found] == ["no-analyser-imports"], path
 
 
 def test_the_exemption_is_by_file_not_by_directory():
@@ -72,13 +93,21 @@ def test_gate_passes_on_things_that_merely_look_alike():
             "# from spanweave import build  -- deliberately not done here",
             "import spanweave_zoo",
             "from spanweave_zoo.cli import verify",
-            'LIBRARIES = ("spanweave", "spanweave_live")',
+            'LIBRARIES = ("spanweave", "spanweave_live", "agentgolden")',
+            "import agentgolden_notes  # a name that merely starts alike",
         ]
     )
     assert gates.check_source("spanweave_zoo/sink.py", innocent) == []
 
 
-def test_the_package_imports_neither_analyser():
+def test_the_gate_names_all_three_libraries():
+    # The audit extra pins three libraries, and the gate confines all three to
+    # `spanweave_zoo/audit.py` (SPEC.md section 7.1). A name dropped from the
+    # tuple would be a library any module could import unseen.
+    assert set(gates.ANALYSER_MODULES) == {"spanweave", "spanweave_live", "agentgolden"}
+
+
+def test_the_package_imports_none_of_the_three():
     found = gates.check_package()
     assert found == [], "\n".join(str(v) for v in found)
 
