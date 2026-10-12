@@ -50,13 +50,20 @@ COLLECTOR_READY = "Everything is ready. Begin running and processing data."
 # How long a test waits on another process before calling it hung. Generous,
 # because CI machines are slow; a pass never waits this long.
 PATIENCE = 60.0
+# How long the `slow` stand-in takes to say it is ready after binding its port:
+# long enough that a signal sent once it has bound lands in the readiness wait,
+# short enough that a zoo which waited it out would still see it ready -- the
+# readiness budget is 150 looks a tenth of a second apart (`collector.py`).
+SLOW_READY = 5.0
 
 # A stand-in for the Collector's *lifecycle* (`SPEC.md` §4.9): it binds the
 # receiver port it is given, answers every forward 200, logs the stock ready
 # line, and on `SIGINT` or `SIGTERM` logs which one it got and exits 0 -- as
 # the stock Collector does. `stubborn` ignores `SIGTERM`, which is the child
-# `zoo capture` has to `SIGKILL`. It writes its pid beside itself so a test can
-# kill it by hand.
+# `zoo capture` has to `SIGKILL`; `slow` binds its port and then takes `SLOW`
+# seconds -- well inside the readiness budget -- to log its ready line, which
+# is the window B2 signals into. It writes its pid beside itself, once its
+# port is bound, so a test can kill it by hand or see whether it is alive.
 STUB_BODY = """
 import os
 import signal
@@ -109,8 +116,12 @@ signal.signal(
 host, _, port = os.environ["ZOO_COLLECTOR_OTLP_HTTP"].rpartition(":")
 server = Server((host, int(port)), Answer)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pid"), "w") as f:
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "pid.tmp"), "w") as f:
     f.write(str(os.getpid()))
+os.replace(os.path.join(here, "pid.tmp"), os.path.join(here, "pid"))
+if BEHAVIOUR == "slow":
+    time.sleep(SLOW)
 sys.stderr.write("info\\tservice.go:256\\t" + READY + "\\n")
 sys.stderr.flush()
 while True:
@@ -135,7 +146,8 @@ def stand_in(tmp_path: Path, behaviour: str = "obliging") -> Path:
         f"#!{sys.executable}\n"
         f"VERSION = {pinned_version()!r}\n"
         f"BEHAVIOUR = {behaviour!r}\n"
-        f"READY = {COLLECTOR_READY!r}\n" + STUB_BODY,
+        f"READY = {COLLECTOR_READY!r}\n"
+        f"SLOW = {SLOW_READY!r}\n" + STUB_BODY,
         encoding="utf-8",
     )
     script.chmod(0o755)
@@ -181,6 +193,13 @@ class ZooCapture:
     Collector's two ports -- which it must be told before it exists -- are
     picked, the whole start retried, bounded, when the refusal names an
     address in use (`tests/ports.py`). `tried` is every pair picked.
+
+    `becoming_ready=True` (B2) returns earlier: as soon as the stand-in
+    Collector has bound its port and written its pid -- the `slow` one then
+    takes `SLOW_READY` seconds to say it is ready, so `zoo capture` is in its
+    readiness wait -- with the pid in `collector_pid`. A port taken under the
+    pick is retried the same way, because the stand-in that could not bind
+    exits before it writes a pid, and `zoo capture` refuses naming the port.
     """
 
     def __init__(
@@ -190,8 +209,11 @@ class ZooCapture:
         *,
         pick: Callable[[], int] = ports.free_port,
         log: Callable[[str], object] = print,
+        becoming_ready: bool = False,
     ) -> None:
         self.run = tmp_path / "captures" / "z4" / "run-1"
+        self._pid = collector_dir / "pid"
+        self._becoming_ready = becoming_ready
         self._base = [
             sys.executable,
             "-m",
@@ -227,6 +249,8 @@ class ZooCapture:
             "--collector-grpc-port",
             str(grpc_port),
         ]
+        if self._becoming_ready:
+            self._pid.unlink(missing_ok=True)
         self.process = subprocess.Popen(
             self.command,
             cwd=REPO,
@@ -239,6 +263,11 @@ class ZooCapture:
         self._lines: queue.Queue[str] = queue.Queue()
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
+        if self._becoming_ready:
+            if not self._pid_written():
+                self._refused()
+            self.collector_pid = int(self._pid.read_text(encoding="utf-8"))
+            return
         if self._next(READY_LINE) is None:
             self._refused()
         raw = self._next("zoo capture: recording POST ")
@@ -263,6 +292,17 @@ class ZooCapture:
         pytest.fail(
             f"zoo capture exited {self.process.returncode} before it was up:\n" + output
         )
+
+    def _pid_written(self) -> bool:
+        """Whether the stand-in wrote its pid before `zoo capture` exited."""
+        deadline = time.monotonic() + PATIENCE
+        while time.monotonic() < deadline:
+            if self._pid.exists():
+                return True
+            if self.process.poll() is not None:
+                return self._pid.exists()
+            time.sleep(0.02)
+        return False
 
     def _output(self) -> str:
         return "\n".join(self.printed)
@@ -306,6 +346,18 @@ class ZooCapture:
         except subprocess.TimeoutExpired:
             self.kill()
             pytest.fail(f"zoo capture did not end on {signal.Signals(number).name}")
+
+    def signal_process(self, number: int) -> int:
+        """`number` to `zoo capture` alone, as a supervisor sends it, and the
+        exit status that follows."""
+        self.process.send_signal(number)
+        try:
+            status = self.process.wait(timeout=PATIENCE)
+        except subprocess.TimeoutExpired:
+            self.kill()
+            pytest.fail(f"zoo capture did not end on {signal.Signals(number).name}")
+        self._reader.join(timeout=PATIENCE)
+        return status
 
     def kill(self) -> None:
         with contextlib.suppress(ProcessLookupError):
@@ -518,6 +570,38 @@ def test_the_collector_killed_by_hand_mid_capture_is_a_problem(tmp_path):
     assert cli.verify(zoo.run) == 1
 
 
+# --- B2: signals cover the whole life of a capture --------------------------
+
+
+@pytest.mark.parametrize("number", cli.STOP_SIGNALS, ids=lambda n: n.name)
+def test_a_stop_signal_while_the_collector_becomes_ready_leaves_nothing_behind(
+    tmp_path, number
+):
+    # B2 (a), Qodo Q1. `zoo capture` installed its stop handlers only once
+    # `start()` had returned, and the readiness wait can last most of a
+    # minute: a supervisor's SIGTERM or a terminal's SIGHUP in that window
+    # killed it by the default action, and the Collector -- in a session of
+    # its own (A3e) -- outlived it, holding its port. Signalled while the
+    # stand-in is bound and not yet ready, the zoo now stops the Collector,
+    # writes nothing, and exits as a refusal does (SPEC.md section 4.6).
+    collector_dir = stand_in(tmp_path, "slow")
+    zoo = ZooCapture(tmp_path, collector_dir, becoming_ready=True)
+    pid = zoo.collector_pid
+    try:
+        status = zoo.signal_process(number)
+        printed = "\n".join(zoo.printed)
+        assert not alive(pid), f"the Collector outlived {number.name}:\n{printed}"
+        assert not zoo.run.exists(), sorted(zoo.run.rglob("*"))
+        assert status == 2, printed
+        assert "zoo capture: refusing to start: " in printed
+        assert number.name in printed
+        assert READY_LINE not in printed
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        zoo.kill()
+
+
 # --- the shutdown sequence, in process --------------------------------------
 
 
@@ -699,6 +783,74 @@ def test_the_wait_for_a_forward_under_way_is_bounded(tmp_path):
     finally:
         forward.release.set()
         poster.join(timeout=PATIENCE)
+
+
+class Broken(Exception):
+    """What a failing step of `start()`'s tail raises, in the tests below."""
+
+
+def test_a_start_that_fails_after_the_collector_is_up_stops_it(tmp_path, monkeypatch):
+    # B2 (b), Qodo Q8. Everything in `start()` after the Collector was up and
+    # the run directory made -- the clock, the label, setting the sinks
+    # serving, the readiness line -- was outside the `try` that stops the
+    # Collector on the way out. A label that cannot be written left the child
+    # running and both sinks bound (SPEC.md section 4.6).
+    def unwritable(*args, **kwargs):
+        raise Broken("the manifest could not be labelled")
+
+    monkeypatch.setattr(capture.manifest, "label", unwritable)
+    launcher = Launcher()
+    started = capture.Capture(
+        tmp_path / "captures" / "z4" / "run-1",
+        now=Clock(),
+        launcher=launcher,
+        forward=lambda head, body: 200,
+        pin=collector.pin(COLLECTOR_DIR),
+        kind="recorded",
+        project_manifest=project_manifest(tmp_path),
+        raw_port=0,
+        json_port=0,
+        log=lambda line: None,
+    )
+    with pytest.raises(Broken):
+        started.start()
+    assert launcher.running.stopped == 1, "the Collector was left running"
+    assert started.raw is not None and started.json is not None
+    assert started.raw.server.socket.fileno() == -1, "the raw sink is still bound"
+    assert started.json.server.socket.fileno() == -1, "the json sink is still bound"
+    # Nothing was labelled, so there is no capture to close (SPEC.md 5.5).
+    assert not (started.run / manifest.MANIFEST_NAME).exists()
+
+
+def test_a_readiness_line_that_cannot_be_printed_still_ends_in_a_sealed_capture(
+    tmp_path,
+):
+    # Degenerate, B2 (b): the very last step of the tail fails -- the label is
+    # on disk and the sinks are serving -- and the run unwinds through the
+    # whole stop path: the Collector stopped, and the manifest closed rather
+    # than left without `ended_at`.
+    def log(line: str) -> None:
+        if line == READY_LINE:
+            raise Broken("the readiness line could not be printed")
+
+    launcher = Launcher()
+    started = capture.Capture(
+        tmp_path / "captures" / "z4" / "run-1",
+        now=Clock(),
+        launcher=launcher,
+        forward=lambda head, body: 200,
+        pin=collector.pin(COLLECTOR_DIR),
+        kind="recorded",
+        project_manifest=project_manifest(tmp_path),
+        raw_port=0,
+        json_port=0,
+        log=log,
+    )
+    with pytest.raises(Broken):
+        started.start()
+    assert launcher.running.stopped == 1, "the Collector was left running"
+    assert manifest.ENDED_AT in manifest.read(started.run)
+    assert cli.verify(started.run) == 0
 
 
 def test_the_summary_counts_bodies_by_where_they_are(tmp_path):

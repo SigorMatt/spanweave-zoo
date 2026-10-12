@@ -4,6 +4,31 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B2 — signals cover the whole life of a capture, and of the sink
+
+Qodo Q1, Q6, Q8 (`TASKS.md`, "Series 2").
+
+- **`SPEC.md` §4.6**: `zoo capture` installs its stop handlers **before** it
+  starts anything. A `SIGINT`, `SIGTERM` or `SIGHUP` during the readiness wait
+  ends the start as a refusal does — the Collector (its own session, A3e)
+  stopped, both sinks closed, `refusing to start: <signal> arrived before the
+  capture was ready …`, exit 2, no run directory. From the moment the run
+  directory is made a signal only asks the run to stop. Every step of the
+  start after the Collector is up — its log, the clock, the label, serving,
+  the readiness line — is inside the same unwind that stops it (Q8). The
+  launcher stops the child on any way out from the moment it exists, not only
+  from its readiness wait.
+- **`SPEC.md` §3.7**: `zoo sink` stops on `SIGTERM` and `SIGHUP` as on Ctrl-C:
+  `serve_forever` returns, and the manifest is assembled and sealed (Q6).
+  §5.5 says a failure anywhere in the start unwinds through `stop()`.
+- **Tests**: a stop signal (each of the three) while the stand-in Collector is
+  bound and not yet ready leaves no Collector process and no run directory,
+  exit 2; a `manifest.label` that raises stops the Collector and closes both
+  sinks; a readiness line that cannot be printed still ends in a sealed
+  capture; `SIGTERM`/`SIGHUP` to a standalone `zoo sink` give a sealed,
+  verified manifest. The `slow` stand-in and `ZooCapture(becoming_ready=True)`
+  are the harness for the readiness window.
+
 ## B1 — the test harness does not lose a port race
 
 `OPEN_QUESTIONS.md` §6, option 4: no product change. `zoo capture` still picks

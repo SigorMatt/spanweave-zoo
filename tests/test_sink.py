@@ -20,7 +20,11 @@ from __future__ import annotations
 import gzip
 import http.client
 import json
+import re
+import signal
 import socket
+import subprocess
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -719,3 +723,57 @@ def test_binding_a_sink_resolves_no_name(tmp_path, monkeypatch):
         assert server.server_port == server.server_address[1]
     finally:
         server.server_close()
+
+
+# --- B2 (c): a sink stopped by a signal still seals its capture --------------
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+@pytest.mark.parametrize(
+    "number", [signal.SIGTERM, signal.SIGHUP], ids=lambda n: n.name
+)
+def test_a_standalone_sink_stopped_by_a_signal_seals_its_manifest(tmp_path, number):
+    # Qodo Q6. `zoo sink` stopped only on Ctrl-C: a supervisor's SIGTERM, or
+    # the SIGHUP of a terminal that went away, killed it by the default
+    # action, and `manifest.finish` never ran -- a capture with bodies and no
+    # `ended_at`, which `zoo verify` rightly fails. Both now end
+    # `serve_forever` as Ctrl-C does, and the manifest is sealed (SPEC.md
+    # section 3.1). The sink binds port 0 and says which it got: no pick.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "spanweave_zoo.cli",
+            "sink",
+            "--port",
+            "0",
+            "--out",
+            str(raw),
+        ],
+        cwd=REPO,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        assert process.stdout is not None
+        first = process.stdout.readline().decode("utf-8")
+        found = re.search(r" on http://[^ ]+:(\d+)$", first.rstrip("\n"))
+        assert found is not None, first
+        assert post(int(found.group(1)), "/v1/traces", PROTOBUF)[0] == 200
+        process.send_signal(number)
+        output, _ = process.communicate(timeout=60)
+    except BaseException:
+        process.kill()
+        process.wait(timeout=60)
+        raise
+    printed = first + output.decode("utf-8", "replace")
+    assert process.returncode == 0, printed
+    assert "zoo sink: stopped. 1 body/bodies." in printed
+    document = manifest.read(raw.parent)
+    assert manifest.ENDED_AT in document, document
+    assert body_of(raw) == PROTOBUF
+    assert cli.verify(raw.parent) == 0

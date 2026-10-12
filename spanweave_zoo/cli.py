@@ -59,7 +59,9 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import socketserver
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -271,11 +273,13 @@ def run_sink(host: str, port: int, out: Path) -> int:
     print(f"zoo sink: recording POST {sink.TRACES_PATH} on http://{host}:{bound_port}")
     print(f"zoo sink: bodies to {recorder.raw}/, anything else to {recorder.rejected}/")
     print(SINK_BANNER, flush=True)
+    previous = _shut_down_on_signal(server)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        _restore_signals(previous)
         server.server_close()
         # The run is over, so the manifest is assembled from the journal
         # (`SPEC.md` §5.5). `zoo sink` declares no `kind` and carries no
@@ -287,21 +291,75 @@ def run_sink(host: str, port: int, out: Path) -> int:
     return 0
 
 
+class StoppedBeforeReady(Exception):
+    """A stop signal that arrived while `zoo capture` was still starting.
+
+    Raised out of the signal handler into `Capture.start`, which unwinds the
+    way a refusal does: the Collector stopped, both sinks closed, and nothing
+    on disk (`SPEC.md` §4.6; B2, Q1).
+    """
+
+    def __init__(self, number: int) -> None:
+        self.name = signal.Signals(number).name
+        super().__init__(
+            f"{self.name} arrived before the capture was ready -- the Collector "
+            f"was stopped and nothing was written (SPEC.md section 4.6)"
+        )
+
+
 def _stop_on_signal(running: capture.Capture) -> dict[int, Any]:
     """Make `SIGINT`, `SIGTERM` and `SIGHUP` end the run cleanly. `SPEC.md` §4.6.
 
     Installed rather than relied upon: the pending-signal machinery runs a
     Python handler only when the main thread executes bytecode, and a capture
     has three threads blocked in `select` for the kernel to deliver the signal
-    to instead. The handler only sets an event (`Capture.request_stop`); the
-    actual shutdown happens on the main thread, which is where the Collector
-    gets stopped rather than orphaned holding its port.
+    to instead. Once the run directory exists the handler only sets an event
+    (`Capture.request_stop`); the actual shutdown happens on the main thread,
+    which is where the Collector gets stopped rather than orphaned holding its
+    port.
+
+    Installed **before** the capture starts (B2, Q1), so it covers the
+    readiness wait too. Until the run directory is about to be made, the
+    first signal raises `StoppedBeforeReady` instead -- the readiness wait has
+    no event to look at, and a start that goes on to make a directory is a
+    capture the operator asked not to make -- and `Capture.start` unwinds it
+    like a refusal, stopping the Collector it already started. It raises
+    once: a second signal while that unwind is stopping the Collector only
+    asks again, rather than interrupting the stop and orphaning the child.
+
+    Returns the handlers it replaced, so a caller can put them back.
+    """
+    raised = False
+
+    def handler(number: int, frame: FrameType | None) -> None:
+        nonlocal raised
+        if not running.committed and not raised:
+            raised = True
+            raise StoppedBeforeReady(number)
+        running.request_stop()
+
+    previous: dict[int, Any] = {}
+    for number in STOP_SIGNALS:
+        previous[number] = signal.getsignal(number)
+        signal.signal(number, handler)
+    return previous
+
+
+def _shut_down_on_signal(server: socketserver.BaseServer) -> dict[int, Any]:
+    """Make `zoo sink` end on `SIGINT`, `SIGTERM` and `SIGHUP` alike (B2, Q6).
+
+    `SPEC.md` §3.7. A supervisor's `SIGTERM` or a terminal's `SIGHUP`, left to
+    the default action, killed the sink before its manifest was assembled.
+    The handler asks the server to shut down from a thread of its own --
+    `shutdown()` waits for `serve_forever` to return, and `serve_forever` is
+    running on the very thread the handler interrupted -- so the loop returns
+    as it would on its own, and the caller's `finally` seals the manifest.
 
     Returns the handlers it replaced, so a caller can put them back.
     """
 
     def handler(number: int, frame: FrameType | None) -> None:
-        running.request_stop()
+        threading.Thread(target=server.shutdown, daemon=True).start()
 
     previous: dict[int, Any] = {}
     for number in STOP_SIGNALS:
@@ -378,30 +436,42 @@ def run_capture(args: argparse.Namespace) -> int:
         log=progress,
     )
     progress.on_broken = running.request_stop
+    # Before `start()`, not after it (B2, Q1): the readiness wait can last most
+    # of a minute, and a SIGTERM or SIGHUP in it, left to the default action,
+    # killed `zoo capture` and left the Collector -- in its own session -- up
+    # and holding its port (`SPEC.md` §4.6).
+    previous = _stop_on_signal(running)
     try:
-        running.start()
-    except (collector.CollectorRefused, sink.CaptureExists, OSError) as refused:
-        # Every refusal is before readiness and has written nothing: no run
-        # directory, no manifest, no bytes (`SPEC.md` §4.6). `OSError` is the
-        # port one -- "address already in use" names the port it is about.
-        print(f"zoo capture: refusing to start: {refused}", file=sys.stderr)
-        return 2
-    # The readiness line is `capture.READY_LINE`, printed by `start()` itself
-    # once the directory exists, so that there is one place where "a capture is
-    # up" is said and it cannot be said by a run that refused.
-    previous: dict[int, Any] = {}
-    try:
-        # Inside the `try`, so that the `finally` stops the Collector however
-        # the run ends: it is in its own session (`SPEC.md` §4.6) and no
-        # longer dies with the terminal's process group, so a run that left
-        # without stopping it would leave it holding its port.
-        previous = _stop_on_signal(running)
-        running.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        try:
+            running.start()
+        except (
+            collector.CollectorRefused,
+            sink.CaptureExists,
+            OSError,
+            StoppedBeforeReady,
+        ) as refused:
+            # Every refusal is before readiness and has written nothing: no
+            # run directory, no manifest, no bytes (`SPEC.md` §4.6). `OSError`
+            # is the port one -- "address already in use" names the port it
+            # is about -- and a stop signal during the start is one too.
+            print(f"zoo capture: refusing to start: {refused}", file=sys.stderr)
+            return 2
+        # The readiness line is `capture.READY_LINE`, printed by `start()`
+        # itself once the directory exists, so that there is one place where
+        # "a capture is up" is said and it cannot be said by a run that
+        # refused.
+        try:
+            running.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            # However the run ends: the Collector is in its own session
+            # (`SPEC.md` §4.6) and does not die with the terminal's process
+            # group, so a run that left without stopping it would leave it
+            # holding its port.
+            progress("\nzoo capture: stopping")
+            running.stop()
     finally:
-        progress("\nzoo capture: stopping")
-        running.stop()
         _restore_signals(previous)
     progress(running.summary())
     return _exit_status(running)

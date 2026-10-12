@@ -220,6 +220,11 @@ class Capture:
         # end of a run, and `ended_at` is written exactly once.
         self._labelled = False
         self._finished = False
+        # Set the moment before the run directory is made, and never unset
+        # (`SPEC.md` §4.6). Until then a stop signal ends the start as a
+        # refusal does, because nothing is on disk; from then on it only asks
+        # the run to stop, so the directory it made ends with a manifest.
+        self.committed = False
         # What the manifest says the capture started at, kept so that the
         # project's own manifest can be dated against it when the run ends
         # (`SPEC.md` §5.3). The value is the injected clock's, never read again
@@ -277,41 +282,43 @@ class Capture:
         Nothing before step 4 writes a byte. A refusal anywhere above it leaves
         no directory, which is what makes "there is a capture" mean "there was
         a capture to make".
+
+        Every step is inside one unwind (`SPEC.md` §4.6; B2, Q8): whatever
+        raises -- a refusal, a signal during the readiness wait, a label that
+        cannot be written, a readiness line that cannot be printed -- stops
+        the Collector and closes both sinks before it propagates.
         """
-        version = collector.check_version(self._launcher, self._pin)
         try:
-            self.json = self._listener(
-                self.run / JSON_DIR,
-                port=self._json_port,
-                rejected=self.run / sink.REJECTED_JSON_DIR,
-                body_suffix=sink.JSON_SUFFIX,
-                forward=None,
-            )
-            self.raw = self._listener(
-                self.run / RAW_DIR,
-                port=self._raw_port,
-                rejected=self.run / sink.REJECTED_DIR,
-                body_suffix=sink.BODY_SUFFIX,
-                forward=self._forward,
-            )
-            self.collector = self._launcher.start(
-                f"http://{self.host}:{self.json.port}"
-            )
+            self._start()
         except BaseException:
             self.stop()
             raise
 
+    def _start(self) -> None:
+        version = collector.check_version(self._launcher, self._pin)
+        self.json = self._listener(
+            self.run / JSON_DIR,
+            port=self._json_port,
+            rejected=self.run / sink.REJECTED_JSON_DIR,
+            body_suffix=sink.JSON_SUFFIX,
+            forward=None,
+        )
+        self.raw = self._listener(
+            self.run / RAW_DIR,
+            port=self._raw_port,
+            rejected=self.run / sink.REJECTED_DIR,
+            body_suffix=sink.BODY_SUFFIX,
+            forward=self._forward,
+        )
+        self.collector = self._launcher.start(f"http://{self.host}:{self.json.port}")
+
+        self.committed = True
         self.run.mkdir(parents=True, exist_ok=True)
-        try:
-            # The Collector's log, from its first line -- the ones written
-            # before this directory existed included -- goes here and not to
-            # the operator's terminal (`SPEC.md` §4.2). A file already there
-            # is not overwritten: that is a refusal, and it unwinds like one.
-            assert self.collector is not None
-            self.collector.keep_log(self.run / collector.LOG_NAME)
-        except BaseException:
-            self.stop()
-            raise
+        # The Collector's log, from its first line -- the ones written before
+        # this directory existed included -- goes here and not to the
+        # operator's terminal (`SPEC.md` §4.2). A file already there is not
+        # overwritten: that is a refusal, and it unwinds like one.
+        self.collector.keep_log(self.run / collector.LOG_NAME)
         self._started_at = self._now()
         manifest.label(
             self.run,

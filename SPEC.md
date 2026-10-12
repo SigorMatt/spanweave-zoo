@@ -460,6 +460,15 @@ handlers could not run, so a `zoo capture` started as its own process sat
 silent past its first bind. `tests/test_sink.py` fails if binding a sink
 resolves a name.
 
+It **stops on `SIGINT`, `SIGTERM` and `SIGHUP` alike** (B2, Q6), the three
+`zoo capture` stops on (§4.6): a supervisor ending a pet project's run sends
+the second, a terminal going away the third, and left to their default action
+either killed the sink before its manifest was assembled — bodies on disk and
+no `ended_at`, a capture `zoo verify` rightly fails. Each ends the serving loop
+the way Ctrl-C does: the handler only asks the server to shut down, the loop
+returns, the listening socket is closed, and the manifest is assembled and
+sealed (§5.5) before `zoo sink` exits 0.
+
 ## 4. The Collector, and the tee
 
 The sink records bytes (§3). The Collector makes those same bytes readable as
@@ -943,15 +952,36 @@ Collector, in its own session, is not in. Left to its default action it killed
 left running, holding its port (run-2b review, N-2). It is handled as Ctrl-C
 is, and a line written to the terminal that hung up — which fails with `EIO`
 rather than `EPIPE` — is the closed stdout above by another errno: the run is
-already ending, and the line goes nowhere. A Ctrl-C during
-the readiness wait, before the handler is installed, still stops the child the
-launcher started before it propagates. This is installed
+already ending, and the line goes nowhere. This is installed
 rather than relied upon, and the caller waits in short hops rather than once
 and forever: a capture has three threads blocked in `select`, the kernel may
 hand the signal to any of them, and a main thread parked in an untimed wait
 never runs the Python handler that would have noticed. A run that cannot be
 stopped with Ctrl-C is not a detail — it is a Collector left holding 4320 and
 an operator who has to find it.
+
+**The handler is installed before `zoo capture` starts anything**, and so
+covers the readiness wait, which can last most of a minute (B2, Q1). Until the
+run directory is about to be made, a stop signal **ends the start**: the
+readiness wait is abandoned, the Collector child — already started, in its own
+session, and so deaf to whatever ended its parent — is stopped as it would be
+at the end of a run, both sinks are closed, and `zoo capture` exits **2**
+with `zoo capture: refusing to start: <signal> arrived before the capture was
+ready …` and **no run directory**: a start that was stopped is a refusal, and
+writes nothing a refusal would not. From the moment the directory is made the
+handler only asks the run to stop, as it does during the run: the start
+finishes, the readiness line is printed, and the shutdown above follows
+straight away, so a stop signal never leaves a run directory behind whose
+manifest was not completed. A second signal while the first is still unwinding the
+start only asks again; it does not interrupt the stopping of the Collector.
+
+**Every step of the start after the Collector is up is inside the same unwind**
+(B2, Q8): keeping its log, reading the clock, labelling the manifest, setting
+the sinks serving and printing the readiness line. Any of them failing stops
+the Collector and closes both sinks before the failure propagates, and a
+manifest that was already labelled is completed (§5.5). A directory made before
+the failure is left as it is — the zoo deletes nothing it wrote — and a run
+directory with no `ended_at` is one `zoo verify` fails (§5.6).
 
 | Option | Default | |
 |---|---|---|
@@ -1317,7 +1347,8 @@ stopped the hard way has neither. `zoo sink` assembles its manifest the same
 way when it stops, so its captures are sealed too.
 
 The assembly runs once per capture: `stop()` is also what a failed `start()`
-unwinds through, and a capture that never got as far as a labelled manifest is
+unwinds through — a failure at any step of it, the steps after the label
+included (§4.6), and a capture that never got as far as a labelled manifest is
 left with nothing written at all.
 
 Both timestamps come from the injected `now` (§3.6) and from nowhere else, so a
