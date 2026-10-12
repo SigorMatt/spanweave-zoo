@@ -8,7 +8,7 @@ captures land, extending `PROBES.md` until all six are in. One batch = one
 sub-agent = one commit = one concern. This file plus git is the only state;
 any session can resume cold from it.
 
-Last updated: 2026-10-13 (run 2 confirmed; B4a and B5a added; run 3 = B4a → B5a → B7-Z3 → B7-Z5.)
+Last updated: 2026-10-13 (run 3 stopped at B4a, awaiting decision.)
 
 ---
 
@@ -157,7 +157,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | B3 | **Nothing writes to a capture after its seal.** Q2, Q7. (a) `Capture.stop` seals only once every POST handler has returned: after the Collector is stopped (which fails any forward still waiting), settle again with a bound; a handler still running at that bound is recorded as a `problems` entry naming the body, and the journals are **closed** — an append after closing is refused by the recorder and recorded nowhere, so the sealed manifest's hashes hold. (b) A journal that does not decode as UTF-8 is a `problems` entry, and `finish` still writes `ended_at` and the seal. Tests red on the parent: a forward whose completion is held past the flush bound (injected) completes after the seal, every sealed file is byte-identical, and `zoo verify` fails **only** on the one recorded problem (§5.6), never on a digest or the seal (corrected 2026-10-12, §4); a journal with an invalid byte yields a sealed manifest with the problem listed. SPEC §5.5/§5.6 say what the seal covers and when writing ends. | done (12de782) | 7 |
 | B3a | **Standalone `zoo sink` seals only once nothing can write.** B3's rule extended to `run_sink`: on a stop signal the server stops accepting, every POST handler has returned or is bounded out and recorded as a problem, the journals are closed, then `manifest.finish`. Test red on the parent: a POST handler held past the bound (standalone `zoo sink` has no forward; corrected 2026-10-13, §4) completes after the seal and `zoo verify` fails only on the recorded problem; mutation shown. SPEC §3 says the sink and the capture seal the same way. | done (cae8168) | 4 |
 | B4 | **`verify` trusts nothing a manifest says about where a file is.** Q10, Q12. A manifest field that should be a list and is not → a problem, not a `TypeError` (`_listed`, `_incomplete`, as `_rehashed` already does); a file entry that is absolute, contains `..`, or resolves (symlinks followed) outside `run.resolve()` → a problem naming the entry, and the file is not read. SPEC §5.4: entries are normalized relative paths under the run directory. Tests red on the parent for `"files": 1`, `"problems": 1`, an absolute entry, a `..` entry, and a symlink out; mutation shown. The seal decision of 2026-10-11 stands: a resealed manifest still verifies — within the run directory. | done (99edcbd) | 5 |
-| B4a | **The replayer and the audit refuse a path outside the run.** B4's rule, applied where `replay` and `audit` read `files`/`bodies` entries: one shared check (the function `verify` uses), a refusal naming the entry, no read. Tests red on the parent: a manifest with an absolute entry and one with `..` make `zoo replay` refuse before sending and `zoo audit` write an incomplete report naming the entry; mutation shown. SPEC §5.4 says the check is every reader's. | todo | 4 |
+| B4a | **The replayer and the audit refuse a path outside the run.** B4's rule, applied where `replay` and `audit` read `files`/`bodies` entries: one shared check (the function `verify` uses), a refusal naming the entry, no read. Tests red on the parent: a manifest with an absolute entry and one with `..` make `zoo replay` refuse before sending and `zoo audit` write an incomplete report naming the entry; mutation shown. SPEC §5.4 says the check is every reader's. | awaiting decision (7275b12) | 4 |
 | B5 | **The wire is honest at its edges.** Q9, Q11, Q3. (a) A POST the sink cannot frame — no `Content-Length`, a non-numeric one, or a non-positive one with `Transfer-Encoding` present — is still recorded as a zero-byte body (SPEC §3.7), **and the connection is closed** after the answer (`close_connection`, `Connection: close`), so leftover framing can never be parsed as the next request; test red on the parent: a chunked POST followed on the same connection by a well-formed one yields exactly one recorded body and no stray 400. (b) A `Host` value for an IPv6 literal is bracketed, in `replay` and in `HttpForward`; test: `--to http://[::1]:<port>` sends `Host: [::1]:<port>`. (c) `replay --timing` advances `previous` past an unreadable head using the body's own `received_at`, so the next gap is measured from the right receipt; tests for a skipped first and a skipped middle request. | done (cafb8cd) | 7 |
 | B5a | **A request with `Transfer-Encoding` is never read by its `Content-Length`, and a negative length closes.** Review of B5's remainder. Any `Transfer-Encoding` header: zero-byte body, the answer, `Connection: close`, connection closed — regardless of `Content-Length`. A negative `Content-Length` with no `Transfer-Encoding`: zero-byte body, the answer, closed. Tests red on the parent: a POST with both headers followed on the same connection by a well-formed POST yields one recorded zero-byte body, no second request parsed from the chunk frames; a negative length likewise; mutation shown. SPEC §3.7's table lists every framing case and its outcome. | todo | 4 |
 | B6 | **The audit says "not run" when it cannot vouch.** Q4, Q5. (a) When step 3's in-process re-read does not match `serve` (statuses or routed count), step 3 is incomplete **and** its partition comparisons and steps 4–5 are not run and rendered as such — as SPEC §7.3 already says; today the findings are emitted anyway. (b) A `serve` command that cannot start (`OSError` from `Popen`) is `served.problem = "serve did not start: …"`, the report is still written, exit 1 — as SPEC §7.5 lists it. Tests red on the parent: a mismatch injected through the `reread` seam yields a report with steps 3–5 "not run" and no library finding; a nonexistent serve command yields a written report and exit 1. | done (290fc1b) | 5 |
@@ -286,6 +286,18 @@ batch: CI green on the pushed tip before `done`.
 - 2026-10-13: run 2 confirmed (B3a's two points, B5's `Connection: close`,
   B6's reading); B4a and B5a added from run 2's open items and placed
   before the audits, because B4a changes how the audit reads a capture.
+- 2026-10-13 B4a (7275b12): awaiting decision, `OPEN_QUESTIONS.md` §7.
+  Premise wrong for the audit half: since B4 a manifest with an absolute
+  or `..` entry fails `verify`, and SPEC §7.2 refuses an unverified run
+  (exit 2, no report) — tried on fixture copies, the refusal names the
+  entry. The live defect is `zoo replay`: it never runs the check, and
+  `raw/../../../outside.body` passes its `raw/` prefix filter. Options in
+  §7; the sub-agent recommends 1 (keep §7.2, the audit test asserts the
+  refusal; `replay.planned` gets B4's check). Run 3 stopped here per 0.1
+  step 6; B5a does not depend on B4a. CI 38322519071 on the docs-only
+  tip: macOS 3.12 failed `test_sixteen_hundred_bodies_cost_the_same_each`
+  (510 vs 1333 us/body CPU, bound 2.0) — B2a's CPU-time fix does not hold
+  on the macOS runner; a candidate row. The six other jobs passed.
 
 ## 5. Origins
 
