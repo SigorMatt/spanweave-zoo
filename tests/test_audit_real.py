@@ -284,6 +284,72 @@ def test_a_serve_that_never_starts_leaves_the_audit_incomplete(tmp_path):
     assert any("listening" in reason for reason in result.incomplete)
 
 
+def test_a_serve_command_that_cannot_be_executed_still_writes_the_report(
+    tmp_path, monkeypatch
+):
+    # SPEC.md sections 7.5 and 7.6: `Popen` raising `OSError` is `serve did
+    # not start`, an incomplete step -- the report is still written and the
+    # exit is 1, not a traceback and no report (Qodo Q5, B6 (b)).
+    missing = (str(tmp_path / "no-such-serve"),)
+    out = tmp_path / "audit"
+    result = audit.audit(FIXTURE, out=out, serve_command=missing)
+    assert result.exit == 1
+    started = [r for r in result.incomplete if "serve did not start: " in r]
+    assert [r.split(":", 1)[0] for r in started] == ["step 1", "step 2"]
+    assert result.findings == []
+    text = result.path.read_text(encoding="utf-8")
+    assert "Incomplete: serve did not start: " in text
+    for number in (3, 4, 5):
+        section = text.split(f"## Step {number} ", 1)[1]
+        assert section.split("\n\n", 2)[1].startswith("Not run: "), number
+    # And through the CLI, which passes no seam: exit 1, the report written.
+    monkeypatch.setitem(audit.audit.__kwdefaults__, "serve_command", missing)
+    again = tmp_path / "cli"
+    assert cli.main(["audit", str(FIXTURE), "--out", str(again)]) == 1
+    assert (again / "fixtures-capture.md").is_file()
+
+
+def test_a_reread_that_does_not_match_serve_runs_no_step_after_it(tmp_path):
+    # SPEC.md section 7.3: the reconstruction is checked before it is
+    # believed, and when it does not match what serve reported step 3 is
+    # incomplete -- no partition is compared, steps 4 and 5 are not run, and
+    # no finding is made from any of them (Qodo Q4, B6 (a)). The mismatch is
+    # driven through the `reread` seam (section 7.6), on the Z4 capture whose
+    # honest audit has step-3 findings and runs steps 4 and 5.
+    def short(run, files):
+        found = audit.reread(run, files)
+        found.statuses = [599 for _ in found.statuses]
+        return found
+
+    result = audit.audit(RECORDED, out=tmp_path, reread=short)
+    assert result.exit == 1
+    [mismatch] = [r for r in result.incomplete if r.startswith("step 3")]
+    assert "does not match serve" in mismatch
+    assert [f for f in result.findings if f.step >= 3] == []
+    assert result.partitions == []
+    text = result.path.read_text(encoding="utf-8")
+    for number in (3, 4, 5):
+        section = text.split(f"## Step {number} ", 1)[1]
+        assert section.split("\n\n", 2)[1].startswith("Not run: "), number
+    assert "spanweave inspect graphs/" not in text
+    assert "does not match serve" in text.split("## Step 3 ", 1)[1]
+
+
+def test_a_routed_count_that_does_not_match_is_the_same_refusal(tmp_path):
+    # The other half of the check: statuses equal, one record fewer than
+    # serve's `routed`.
+    def fewer(run, files):
+        found = audit.reread(run, files)
+        found.partitions[0].feed.pop()
+        found.partitions[0].origins.pop()
+        return found
+
+    result = audit.audit(RECORDED, out=tmp_path, reread=fewer)
+    assert result.exit == 1
+    assert any("routed" in r for r in result.incomplete if r.startswith("step 3"))
+    assert [f for f in result.findings if f.step >= 3] == []
+
+
 def test_a_capture_that_does_not_verify_is_refused(tmp_path, capsys):
     run = tmp_path / "fixtures" / "capture"
     shutil.copytree(FIXTURE, run)

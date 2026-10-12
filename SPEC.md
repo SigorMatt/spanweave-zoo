@@ -1918,7 +1918,14 @@ written `<port>` because the audit lets the kernel choose one.
    The reconstruction is checked before it is believed: the in-process status
    of each body must be the status `serve` answered, and the number of records
    must be the `routed` count in `serve`'s `finished` event. If either differs,
-   step 3 is **incomplete** rather than a finding about anyone.
+   step 3 is **incomplete** rather than a finding about anyone: a
+   reconstruction that is not what `serve` read vouches for nothing built from
+   it, so no partition is compared, steps 4 and 5 are not run, and none of the
+   three yields a finding. The report renders each of steps 3, 4 and 5 as
+   *not run*, step 3 naming the difference (the statuses against `serve`'s,
+   the records against `routed`), and the audit exits **1** (§7.5). Steps 1
+   and 2's findings stand: they are what `serve` answered and wrote, observed
+   directly.
 4. **`spanweave inspect` on each graph.** `spanweave inspect graphs/<trace_id>.json`
    on each live file (run as `python -m spanweave.cli`), its output recorded
    verbatim; and from the graph itself, through the public API: every
@@ -1978,6 +1985,14 @@ Written whole at the end; a second audit of the same capture overwrites it.
 |---|---|
 | **0** | every step ran; the report is written (findings or not) |
 | **1** | the report is written and a step could not be completed: `serve` did not start, did not finish within its bound, the capture has no `json/` body, or step 3's reconstruction did not match what `serve` reported |
+
+`serve` did not start covers both a child that exits before its `listening`
+event and a command that cannot be executed at all — `Popen` raising
+`OSError` (a missing or non-executable program): that step's problem is
+`serve did not start: <the error>`, nothing is replayed, and the audit goes on
+to write the report. A step that could not be completed, and every later step
+that reads what it would have produced, is rendered in the report as *not
+run* with its reason; none of them yields a finding.
 | **2** | refused (§7.2): nothing was audited and no report was written |
 
 ### 7.6 The audit's seams
@@ -1990,7 +2005,8 @@ seam of §6's, named here:
 
 | Seam | What it is | Why |
 |---|---|---|
-| `serve_command` | the argv prefix that runs `spanweave-live`; the audit appends `serve --port 0 --out graphs --requests N` (§7.3). Default `SERVE_COMMAND`, `python -m spanweave_live.cli` on this interpreter | starting a process is touching the world. A test passes a command that never starts, or one that wraps the real `serve` and changes what it writes — which is how a live ≠ batch divergence is driven to the report |
+| `serve_command` | the argv prefix that runs `spanweave-live`; the audit appends `serve --port 0 --out graphs --requests N` (§7.3). Default `SERVE_COMMAND`, `python -m spanweave_live.cli` on this interpreter | starting a process is touching the world. A test passes a command that never starts or cannot be executed, or one that wraps the real `serve` and changes what it writes — which is how a live ≠ batch divergence is driven to the report |
+| `reread` | called with the run and its `json/` files; returns the in-process reconstruction step 3 checks against `serve` (the statuses, and the records by partition). Default `reread`, the pinned `Endpoint` and `trace_id_of` as above | a test passes one that returns statuses or records other than `serve`'s, so step 3's mismatch (§7.3) is driven without a defect in spanweave-live |
 | `inspect_command` | the argv prefix that runs `spanweave`; the audit appends `inspect graphs/<trace_id>.json`. Default `INSPECT_COMMAND`, `python -m spanweave.cli` | the same, for step 4 |
 | `signature` | called with each step-3 graph; returns agentgolden's `Signature` or raises. Default `agentgolden.signature.signature` | a test passes one that raises, so a step-5 finding and its owner (§7.4) are driven without a defect in agentgolden |
 | `installed` | called with a distribution name; returns the commit installed (its PEP 610 `direct_url.json`) or `None`. Default `installed_sha` | a test passes one that reports a sha other than the pin, so §7.2's refusal is driven without reinstalling anything |

@@ -4,6 +4,35 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B6 — the audit says "not run" when it cannot vouch
+
+Qodo Q4, Q5 (`TASKS.md`, "Series 2"). `SPEC.md` §7.3, §7.5, §7.6.
+
+- **(a) A step-3 reconstruction that does not match `serve` runs nothing
+  after it** (`SPEC.md` §7.3). When the in-process re-read's statuses are not
+  `serve`'s answers, or its record count is not `serve`'s `routed`, no
+  partition is compared and steps 4 and 5 are not run: the report renders
+  steps 3, 4 and 5 as *Not run*, step 3 naming the difference, and none of
+  them yields a finding; exit 1. Before, step 3 was marked incomplete and its
+  findings, `inspect` and the signature smoke were emitted anyway. Steps 1
+  and 2's findings stand.
+- **(b) A `serve` command that cannot be executed is `serve did not start`**
+  (`SPEC.md` §7.5): `Popen` raising `OSError` becomes that step's problem
+  (`serve did not start: FileNotFoundError: …`), the report is still written,
+  exit 1. Before, the `OSError` escaped and no report was written.
+- **A `reread` seam** on `audit.audit()` (`SPEC.md` §7.6), default the
+  module's `reread`, so a test drives the mismatch without a defect in
+  spanweave-live.
+- **Tests** (`tests/test_audit_real.py`, `needs_audit`): statuses that do not
+  match, and one record fewer than `routed`, each through the seam on the Z4
+  `recorded` capture — exit 1, no step ≥ 3 finding, steps 3–5 *Not run*, no
+  `inspect` in the report; a nonexistent serve command — exit 1, both serve
+  steps `serve did not start: `, steps 3–5 *Not run*, the report written, and
+  `zoo audit` through the CLI exits 1 with the report on disk. All three red
+  on the parent.
+- **Mutation shown caught**: `found = None` in the mismatch branch replaced by
+  `pass` — both mismatch tests are red (step-3 findings emitted).
+
 ## B5 — the wire is honest at its edges
 
 Qodo Q9, Q11, Q3 (`TASKS.md`, "Series 2"). `SPEC.md` §3.3, §3.7, §4.3, §6.2,

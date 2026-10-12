@@ -249,13 +249,19 @@ def serve(run: Path, source: str, workdir: Path, command: Sequence[str]) -> Serv
         str(len(files)),
     ]
     served = Served(source=source, files=files, command=argv)
-    process = subprocess.Popen(
-        argv,
-        cwd=here,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=here,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as error:
+        # A command that cannot be executed at all: the step is incomplete
+        # and the report is still written (`SPEC.md` section 7.5).
+        served.problem = f"serve did not start: {type(error).__name__}: {error}"
+        return served
     assert process.stderr is not None
     lines = _Lines(process.stderr)
     port, problem = _port(lines)
@@ -948,6 +954,7 @@ def audit(
     inspect_command: Sequence[str] = INSPECT_COMMAND,
     signature: Callable[[spanweave.Graph], Any] = agentgolden_signature,
     installed: Callable[[str], str | None] = installed_sha,
+    reread: Callable[[Path, Sequence[str]], Reread] = reread,
 ) -> Audit:
     """Audit one run and write its report. Raises `AuditRefused` (exit 2)."""
     if not (run / manifest.MANIFEST_NAME).is_file():
@@ -965,6 +972,7 @@ def audit(
     steps: dict[int, Served | None] = {}
     not_run: dict[int, str] = {}
     found: Reread | None = None
+    routed: object = None
     with tempfile.TemporaryDirectory(prefix="zoo-audit-") as scratch:
         workdir = Path(scratch)
         for number, source in ((1, replay.RAW), (2, replay.JSON)):
@@ -992,11 +1000,19 @@ def audit(
             routed = None if finished is None else finished.get("routed")
             fed = sum(p.records for p in found.partitions)
             if found.statuses != answered or routed != fed:
-                result.incomplete.append(
-                    f"step 3: the in-process re-read does not match serve "
+                # The reconstruction vouches for nothing built from it: no
+                # partition is compared and steps 4 and 5 are not run
+                # (`SPEC.md` section 7.3).
+                mismatch = (
+                    f"the in-process re-read does not match serve "
                     f"(statuses {found.statuses} against {answered}; "
                     f"{fed} records against routed {routed})"
                 )
+                result.incomplete.append(f"step 3: {mismatch}")
+                not_run[3] = mismatch
+                not_run[4] = not_run[5] = "step 3 did not complete"
+                found = None
+        if found is not None and json_side is not None:
             for partition in found.partitions:
                 if partition.trace_id is not None:
                     partition.live = json_side.graphs.get(partition.file)
