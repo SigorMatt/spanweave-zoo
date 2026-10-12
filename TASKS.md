@@ -640,5 +640,5 @@ All twelve were accepted (`WORKPLAN.md` §3, 2026-10-12, "series").
 
 Carried from series 1's close (`ROADMAP.md`, "Threads for zoo series 2"):
 
-- **The port race**: `test_the_collector_killed_by_hand_mid_capture_is_a_problem` failed once in CI (`e50a56e`, PR run attempt 1) with the Collector's port taken between the zoo's pick and the Collector's bind; green on re-run with no code change. **B1** (a bounded retry on bind failure).
+- **The port race**: `test_the_collector_killed_by_hand_mid_capture_is_a_problem` failed once in CI (`e50a56e`, PR run attempt 1) with the Collector's port taken between the **harness's** pick and the Collector's bind; `zoo capture` picks no port (`OPEN_QUESTIONS.md` §6); green on re-run with no code change. **B1** (a bounded retry on bind failure).
 - **The PR wording**: PR #1's body says the merge is a fast-forward; `--merge` wrote `ebe12cf`. **B8** (the closing PR `zoo` → `main` is a merge commit, as PR #1 was, and its text says so).

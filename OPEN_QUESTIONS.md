@@ -376,4 +376,10 @@ all four ports and passes them on the command line.
    port tried is named") then describes the harness, not `zoo capture`, and
    §4.6 does not change.
 
-**The decision.** Pending.
+**The decision (2026-10-12, maintainer).** Option 4. `zoo capture` is
+unchanged: it names its ports and a held one is §4.6's refusal. The harness
+stops picking for the two sinks (`0`, read back from the ready lines; `0`
+made acceptable for them if it is not) and retries its own start, bounded,
+when the refusal names an address in use. The series-1 thread and the
+2026-10-12 decision log entry are corrected to say "harness". Options 1–3
+are declined: each adds a product rule for a race only the test suite runs.
