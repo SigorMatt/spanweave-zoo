@@ -604,3 +604,41 @@ because a batch never edits this file:
   port and the `completed` clock readings, stated in their method
   section; (4) CLAUDE.md rules 6 and 8 and §0.6 still name only spanweave
   and spanweave_live — the third name decided in §3 is not yet in either.
+
+---
+
+## Series 2 — the hardening series, and the five audits (opened 2026-10-12)
+
+Branch `zoo`, opened from `main` at `25b2ef2`. While the series is open its
+batches are `WORKPLAN.md` §1; this section registers what the series was opened
+to close, each item with the batch that closes it. The registry and the folded
+logs land here at the close (B8).
+
+The review that opened it is Qodo's of PR #1 (comment `6127903067`,
+2026-10-12, `qodo-code-review[bot]`: 12 bugs, 0 rule violations), kept byte for
+byte as `reviews/QODO-2026-10-12.md` — the comment's `body` exactly as the API
+returns it, without the trailing newline `gh api --jq .body` adds
+(`reviews/SHA256SUMS`, now 26 files; `cd reviews && sha256sum -c SHA256SUMS`).
+All twelve were accepted (`WORKPLAN.md` §3, 2026-10-12, "series").
+
+### Qodo's twelve items
+
+- Q1 Startup signals leave a Collector running (`run_capture` installs its stop handlers after `running.start()` returns). **B2** (a).
+- Q2 A slow export invalidates its capture (a forward outcome appended to `forwards.jsonl` after the seal). **B3** (a).
+- Q3 Skipped exports distort replay timing (`previous` not advanced past an unreadable request). **B5** (c).
+- Q4 Unmatched records still produce findings (step 3 incomplete, its findings emitted anyway). **B6** (a).
+- Q5 The audit writes no report if `serve` cannot launch (`OSError` from `Popen` uncaught). **B6** (b).
+- Q6 Terminating the sink skips its manifest (no SIGTERM/SIGHUP handler in `run_sink`). **B2** (c).
+- Q7 Invalid journal bytes prevent completion (`UnicodeDecodeError` in `_journalled`). **B3** (b).
+- Q8 A failed start can leave the Collector running (`Capture.start`'s tail outside its `try/except`). **B2** (b).
+- Q9 Chunked exports get a stray 400 on the same connection (unframed body left on a keep-alive connection). **B5** (a).
+- Q10 `verify` crashes on some malformed manifests (`"files": 1`, `"problems": 1` → `TypeError`). **B4**.
+- Q11 Replay to an IPv6 address sends a bad `Host` (literal not bracketed). **B5** (b).
+- Q12 `verify` accepts files outside the capture (absolute, `..` or symlinked entries). **B4**.
+
+### The close review's carried threads
+
+Carried from series 1's close (`ROADMAP.md`, "Threads for zoo series 2"):
+
+- **The port race**: `test_the_collector_killed_by_hand_mid_capture_is_a_problem` failed once in CI (`e50a56e`, PR run attempt 1) with the Collector's port taken between the zoo's pick and the Collector's bind; green on re-run with no code change. **B1** (a bounded retry on bind failure).
+- **The PR wording**: PR #1's body says the merge is a fast-forward; `--merge` wrote `ebe12cf`. **B8** (the closing PR `zoo` → `main` is a merge commit, as PR #1 was, and its text says so).

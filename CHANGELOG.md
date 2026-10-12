@@ -4,6 +4,18 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B0 — the two reviews of the close, archived and dispositioned
+
+Docs only: no behaviour change, no capture touched, no `SPEC.md` section.
+
+- **`reviews/QODO-2026-10-12.md`** (new): Qodo's review of PR #1 (comment
+  `6127903067`), byte for byte — the API's `body` without the trailing newline
+  `gh api --jq .body` adds. Its sha256 appended to `reviews/SHA256SUMS`, now
+  26 files, `sha256sum -c` green.
+- **`TASKS.md`, "Series 2"**: Qodo's twelve items Q1–Q12 and the close
+  review's two carried threads (the port race, the PR wording), each pointing
+  at the batch that closes it.
+
 ## Between series: export contract 1.2 and ROADMAP.md
 
 Docs only: no behaviour change, no capture touched.
