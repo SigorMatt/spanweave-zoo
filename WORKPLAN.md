@@ -8,7 +8,7 @@ captures land, extending `PROBES.md` until all six are in. One batch = one
 sub-agent = one commit = one concern. This file plus git is the only state;
 any session can resume cold from it.
 
-Last updated: 2026-10-13 (run 2 done: B2a, B3a, B4, B5, B6 done.)
+Last updated: 2026-10-13 (run 2 confirmed; B4a and B5a added; run 3 = B4a → B5a → B7-Z3 → B7-Z5.)
 
 ---
 
@@ -157,7 +157,9 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | B3 | **Nothing writes to a capture after its seal.** Q2, Q7. (a) `Capture.stop` seals only once every POST handler has returned: after the Collector is stopped (which fails any forward still waiting), settle again with a bound; a handler still running at that bound is recorded as a `problems` entry naming the body, and the journals are **closed** — an append after closing is refused by the recorder and recorded nowhere, so the sealed manifest's hashes hold. (b) A journal that does not decode as UTF-8 is a `problems` entry, and `finish` still writes `ended_at` and the seal. Tests red on the parent: a forward whose completion is held past the flush bound (injected) completes after the seal, every sealed file is byte-identical, and `zoo verify` fails **only** on the one recorded problem (§5.6), never on a digest or the seal (corrected 2026-10-12, §4); a journal with an invalid byte yields a sealed manifest with the problem listed. SPEC §5.5/§5.6 say what the seal covers and when writing ends. | done (12de782) | 7 |
 | B3a | **Standalone `zoo sink` seals only once nothing can write.** B3's rule extended to `run_sink`: on a stop signal the server stops accepting, every POST handler has returned or is bounded out and recorded as a problem, the journals are closed, then `manifest.finish`. Test red on the parent: a POST handler held past the bound (standalone `zoo sink` has no forward; corrected 2026-10-13, §4) completes after the seal and `zoo verify` fails only on the recorded problem; mutation shown. SPEC §3 says the sink and the capture seal the same way. | done (cae8168) | 4 |
 | B4 | **`verify` trusts nothing a manifest says about where a file is.** Q10, Q12. A manifest field that should be a list and is not → a problem, not a `TypeError` (`_listed`, `_incomplete`, as `_rehashed` already does); a file entry that is absolute, contains `..`, or resolves (symlinks followed) outside `run.resolve()` → a problem naming the entry, and the file is not read. SPEC §5.4: entries are normalized relative paths under the run directory. Tests red on the parent for `"files": 1`, `"problems": 1`, an absolute entry, a `..` entry, and a symlink out; mutation shown. The seal decision of 2026-10-11 stands: a resealed manifest still verifies — within the run directory. | done (99edcbd) | 5 |
+| B4a | **The replayer and the audit refuse a path outside the run.** B4's rule, applied where `replay` and `audit` read `files`/`bodies` entries: one shared check (the function `verify` uses), a refusal naming the entry, no read. Tests red on the parent: a manifest with an absolute entry and one with `..` make `zoo replay` refuse before sending and `zoo audit` write an incomplete report naming the entry; mutation shown. SPEC §5.4 says the check is every reader's. | todo | 4 |
 | B5 | **The wire is honest at its edges.** Q9, Q11, Q3. (a) A POST the sink cannot frame — no `Content-Length`, a non-numeric one, or a non-positive one with `Transfer-Encoding` present — is still recorded as a zero-byte body (SPEC §3.7), **and the connection is closed** after the answer (`close_connection`, `Connection: close`), so leftover framing can never be parsed as the next request; test red on the parent: a chunked POST followed on the same connection by a well-formed one yields exactly one recorded body and no stray 400. (b) A `Host` value for an IPv6 literal is bracketed, in `replay` and in `HttpForward`; test: `--to http://[::1]:<port>` sends `Host: [::1]:<port>`. (c) `replay --timing` advances `previous` past an unreadable head using the body's own `received_at`, so the next gap is measured from the right receipt; tests for a skipped first and a skipped middle request. | done (cafb8cd) | 7 |
+| B5a | **A request with `Transfer-Encoding` is never read by its `Content-Length`, and a negative length closes.** Review of B5's remainder. Any `Transfer-Encoding` header: zero-byte body, the answer, `Connection: close`, connection closed — regardless of `Content-Length`. A negative `Content-Length` with no `Transfer-Encoding`: zero-byte body, the answer, closed. Tests red on the parent: a POST with both headers followed on the same connection by a well-formed POST yields one recorded zero-byte body, no second request parsed from the chunk frames; a negative length likewise; mutation shown. SPEC §3.7's table lists every framing case and its outcome. | todo | 4 |
 | B6 | **The audit says "not run" when it cannot vouch.** Q4, Q5. (a) When step 3's in-process re-read does not match `serve` (statuses or routed count), step 3 is incomplete **and** its partition comparisons and steps 4–5 are not run and rendered as such — as SPEC §7.3 already says; today the findings are emitted anyway. (b) A `serve` command that cannot start (`OSError` from `Popen`) is `served.problem = "serve did not start: …"`, the report is still written, exit 1 — as SPEC §7.5 lists it. Tests red on the parent: a mismatch injected through the `reread` seam yields a report with steps 3–5 "not run" and no library finding; a nonexistent serve command yields a written report and exit 1. | done (290fc1b) | 5 |
 | B7 | **Per-project audit, one row per capture pair.** Template, instantiated by a `plan:` commit when a project's captures land on `zoo` (operator commit `captures: zN real and recorded, <date>`): `zoo audit` on both captures, reports under `audit/zN-<date>-{real,recorded}.md`, `PROBES.md` extended with every new probe (owner, capture, command, observed, expected or "to establish"), `ROADMAP.md`'s row for Zn updated, CI's `audit` job still green with the new reports. Findings are never fixed here. First instance: **B7-Z3** or **B7-Z5**, whichever lands first. | template | 6 each |
 | B7-Z3 | **Audit Z3 (`echo-planner`): `captures/z3/2026-10-13-real` (4 bodies, the root in the last) and `-recorded` (1 body).** As the B7 template. Of particular interest, to be reported as observed and never asserted: the real capture's root span arriving in the fourth body (what `serve`'s completion did with a trace whose root came last); the 599 `Attributes dict is full` lines (which attributes the SDK dropped, visible as `unmapped_attributes` or as absence); two instrumentors on one client (`generation` and `ChatCompletion` for every turn — whether spanweave claims both, one, or neither). `PROBES.md` extended; `ROADMAP.md`'s Z3 row reads audited. | awaiting B6 | 6 |
@@ -166,10 +168,10 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 
 ## 2. Execution order
 
-Run 1 = B0 → B1 → B2 → B3, done (`8c5941a`). Z3 and Z5 captured
-(`9b0268f`, `f081997`). Run 2 = B2a → B3a → B4 → B5 → B6. Run 3 = B7-Z3 →
-B7-Z5. Then B7 rows for Z1, Z2, Z6 as their captures land, and B8 when the
-sixth is audited. Every batch: CI green on the pushed tip before `done`.
+Run 1 = B0 → B1 → B2 → B3, done (`8c5941a`). Run 2 = B2a → B3a → B4 → B5 →
+B6, done (`4c021c7`). Run 3 = B4a → B5a → B7-Z3 → B7-Z5. Then B7 rows for
+Z1, Z2, Z6 as their captures land, and B8 when the sixth is audited. Every
+batch: CI green on the pushed tip before `done`.
 
 ## 3. Decisions log
 
@@ -188,6 +190,12 @@ sixth is audited. Every batch: CI green on the pushed tip before `done`.
 | 2026-10-13 | B2a | `test_sixteen_hundred_bodies_cost_the_same_each` failed on the macOS leg again (B2's first CI run) and the series-1 ratification covered series 1 only. It is fixed now, as the registry names: the per-body cost measured by CPU time (`time.process_time`) or by the count of writes per body, never by wall clock; the bound and the method stated in the test. | maintainer |
 | 2026-10-13 | patches | `patches/` is gitignored and holds series 1's 63 files beside series 2's. At the next close-out step the builder clears `patches/*.patch` once before writing (review files stay); series 2's set then numbers from 0001 without overlap. | maintainer |
 | 2026-10-13 | B7 | Z3 (`SigorMatt/echo-planner` at `71bc477`, captures `9b0268f`) and Z5 (`SigorMatt/flaky-fetcher` at `2a3e778`, captures `f081997`) are captured; their audit rows are instantiated below and run as run 3, after run 2's hardening, so the audit code they exercise is the hardened one (B6). | maintainer |
+| 2026-10-13 | B3a | Confirmed: the row's test is a slow POST held past the bound (the standalone sink has no forward); `zoo sink` exits 1 when its sealed manifest records a problem, as `zoo capture` does. | maintainer |
+| 2026-10-13 | B5 | Confirmed: a POST the sink cannot frame is answered as every POST is and the connection is then closed, with `Connection: close` on that answer. Standing rule 3 reads: the **answer** — status and body — is the same for every POST; what happens to the connection after the answer is not part of the answer, and a request the sink could not frame must end its connection or the next request is a guess (SPEC §3.3). | maintainer |
+| 2026-10-13 | B6 | Confirmed: a step-3 mismatch withholds the findings of steps 3–5 only. Steps 1 and 2 report the receiver's answers to real bytes and stand on their own; the 415 of step 1 is never withheld. | maintainer |
+| 2026-10-13 | B4a | The replayer and the audit read manifest file paths with the same check as `verify` (B4): a path that is absolute, contains `..`, or resolves outside the run directory is refused and named. The manifest is the only thing between a capture's claims and a reader's filesystem. | maintainer |
+| 2026-10-13 | B5a | Two framing cases closed the same way as B5: a request carrying `Transfer-Encoding` is never read by `Content-Length`, whatever that header says — the sink decodes no framing, records a zero-byte body, answers, and closes the connection (that pair of headers is the request-smuggling shape, and the record says what the sink could see); a negative `Content-Length` is a zero-byte body and a closed connection too. | maintainer |
+| 2026-10-13 | B2a | Confirmed as built: median of the first and last hundred bodies by CPU time, bound 2.0. No re-run ratification remains. | maintainer |
 
 ## 4. Resume note
 
@@ -275,6 +283,9 @@ sixth is audited. Every batch: CI green on the pushed tip before `done`.
   reports were not regenerated (no Z4 capture hits a mismatch). Audit
   tests ran locally (24, none skipped). CI 38321569193 green. Run 2 done;
   run 3 (B7-Z3 → B7-Z5) is unblocked.
+- 2026-10-13: run 2 confirmed (B3a's two points, B5's `Connection: close`,
+  B6's reading); B4a and B5a added from run 2's open items and placed
+  before the audits, because B4a changes how the audit reads a capture.
 
 ## 5. Origins
 
