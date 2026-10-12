@@ -4,6 +4,20 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## Between series: export contract 1.2 and ROADMAP.md
+
+Docs only: no behaviour change, no capture touched.
+
+- **`EXPORT-CONTRACT.md` 1.1 → 1.2**: the manifest gains `base_url`, and
+  `started_at` is UTC with `Z`, taken before the first model call; §3 adds
+  that a real run the gateway breaks is not the capture, and that a manual span
+  carries only the attributes its brief lists; §4's credentials bullet names
+  `OPENAI_API_KEY`/`OPENAI_BASE_URL` and `MODEL=` against a named
+  OpenAI-compatible gateway; a closing "Changes from 1.1" paragraph.
+- **`README.md`, Provenance**: the contract's new sha256, "contract version
+  1.2", and Z4's 1.0 described as 1.2 minus both closing change sections.
+- **`ROADMAP.md`** (new): the pet-project roadmap.
+
 ## Close review R-2, R-4, R-5, R-7 — the review archived, its dispositions registered
 
 From `patches/decisions-zoo-2026-10-12b.md`, Commit 3. Docs and one test

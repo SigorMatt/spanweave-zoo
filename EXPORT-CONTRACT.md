@@ -1,6 +1,6 @@
 # Export contract — for every telemetry pet project
 
-Contract version **1.1** (1.0 was given to Z4; the changes are listed at the
+Contract version **1.2** (1.0 was given to Z4; 1.1 and 1.2 are listed at the
 end). Put the version you were given in `MANIFEST.json`.
 
 You are building a small, ordinary AI agent. Its only job beyond working is
@@ -25,13 +25,17 @@ A repository with:
   exact versions**, the model used for the real run, and a one-paragraph
   description of what the agent does;
 - a `MANIFEST.json` written by `make run` next to nothing else:
-  `{"contract_version": "1.1", "framework": "...", "framework_version": "...",
+  `{"contract_version": "1.2", "framework": "...", "framework_version": "...",
   "instrumentation": ["pkg==ver", ...], "sdk": {"opentelemetry-sdk": "...",
   "exporter": "pkg==ver"}, "python": "3.x.y", "platform": "...",
-  "model": "...", "mode": "recorded" | "real", "endpoint": "...",
-  "started_at": "<ISO-8601>"}`. When there is no agent framework (a bare
-  client), `framework` is the client library and `framework_version` its
-  version.
+  "model": "...", "base_url": "...", "mode": "recorded" | "real",
+  "endpoint": "...", "started_at": "<ISO-8601, UTC, with Z>"}`. When there
+  is no agent framework (a bare client), `framework` is the client library
+  and `framework_version` its version. `base_url` is the API base the model
+  client actually used — the stub's URL under `recorded`, the gateway's under
+  `real` — because a model name alone does not say who served it.
+  `started_at` is taken from the clock when the run starts, before the first
+  model call.
 - `make run` with no arguments is the recorded mode, so the default works
   with no credentials. A full lock of the dependency tree installed with
   `--no-deps` is the recommended way to keep the pins exact.
@@ -75,6 +79,14 @@ A repository with:
   fixed stub model name. Randomness in the real run is fine.
 - Do not catch and hide errors the scenario is meant to produce; let them
   reach the instrumentor.
+- If the real model or gateway breaks the scenario before it completes (a
+  crash, a malformed stream, a refused tool call), **that run is not the
+  capture**: do not code around the gateway's behaviour, report it under §6,
+  and we choose another model. The agent's handling of the model's output
+  stays the plain, documented way the client library expects it.
+- A manual span your brief asks for carries exactly the attributes the
+  brief lists — none, when it lists none. Do not add attributes to make it
+  look like the instrumentor's spans.
 
 ## 4. What you must not do
 
@@ -82,8 +94,12 @@ A repository with:
 - No custom exporter, no custom span processor, no manual `start_span` around
   framework calls the instrumentor already covers (manual spans are allowed
   only where your brief asks for them, and then only with the SDK's own API).
-- No secrets in the repository. `make run-real` reads the key from the
-  environment.
+- No secrets in the repository. `make run-real` reads `OPENAI_API_KEY` and
+  `OPENAI_BASE_URL` from the environment — or your framework's documented
+  equivalents, named in `README.md` — and takes the model as `MODEL=<id>` on
+  the make command line, so one credential set and one gateway drive every
+  pet project. The real run is made against an OpenAI-compatible gateway we
+  name, not necessarily OpenAI; nothing in the agent may assume which.
 
 ## 5. Definition of done
 
@@ -103,6 +119,15 @@ where this contract or your brief left you guessing** — what you guessed and
 why. Those guesses are how the contract improves.
 
 ---
+
+Changes from 1.1 (after Z4's captures): manifest gains `base_url`, and
+`started_at` is UTC with `Z`, taken before the first model call; `make
+run-real` reads `OPENAI_API_KEY`/`OPENAI_BASE_URL` (or the framework's named
+equivalents) and `MODEL=` — the real run goes to an OpenAI-compatible gateway
+we name; a real run the gateway breaks is not the capture and is reported,
+never coded around (Z4's first real run crashed on a gateway that split one
+streamed tool call across two indices; the capture was taken with another
+model); a manual span carries only what the brief lists.
 
 Changes from 1.0 (after the Z4 pilot's ten recorded assumptions): newest
 compatible pair with the incompatibility recorded; content capture on spans

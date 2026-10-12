@@ -394,16 +394,16 @@ to the pet projects, byte for byte. They are the record: nothing here reflows
 them, re-indents them or fixes them.
 
 ```
-aeadb64bb5fa31495d63c397200f58a9696a5f47e44d458ec27f035c2ae302b4  EXPORT-CONTRACT.md
+90c08f000eb0fe7a68a6eed179900e652312a8c572dab40da3b45425582184b9  EXPORT-CONTRACT.md
 c82487fd275d1a0d365ff43134f03ff527e201091a39154f336bd01548095a70  ZOO-BRIEFS.md
 ```
 
-Both root copies are **contract version 1.1**.
+Both root copies are **contract version 1.2**.
 
 The pilot project **Z4 (`streaming-concierge`) was built against version 1.0**,
-which is 1.1 minus the changes the contract lists in its own closing
-*"Changes from 1.0"* section -- read that section for the difference rather
-than any paraphrase of it, here or elsewhere. So for Z4, and for Z4 only, the
+which is 1.2 minus the changes the contract lists in its own closing
+*"Changes from 1.0"* and *"Changes from 1.1"* sections -- read those for the
+difference rather than any paraphrase of it, here or elsewhere. So for Z4, and for Z4 only, the
 root copy is a later revision than the one its implementer held; its own
 `MANIFEST.json` records `1.0`, which is the contract's instruction ("Put the
 version you were given in `MANIFEST.json`") and is how a capture stays
