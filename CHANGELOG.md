@@ -3,6 +3,41 @@
 Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`WORKPLAN.md` §1).
 
+## A5 — the audit: every capture through spanweave-live and spanweave
+
+`WORKPLAN.md` §1 row A5; the decisions of 2026-10-12 (`OPEN_QUESTIONS.md` §5).
+
+- **`zoo audit <run> [--out audit]`** (`SPEC.md` §7): replays the capture's
+  raw bytes, then the Collector's JSON, into a real `spanweave-live serve
+  --requests N` (whose end of input runs `Run.finish()`, the `Cap(0)`-at-end);
+  compares every graph `serve` wrote with `spanweave.build` and with a
+  `spanweave.Builder` fed the same records, re-read in-process by the pinned
+  `Endpoint` and partitioned by the pinned `trace_id_of`; runs `spanweave
+  inspect` and tables diagnostics, unmapped keys and `unknown` nodes; computes
+  `agentgolden.signature.signature(graph)` as a smoke. Writes
+  `audit/<project>-<run-id>.md`, every finding a reproduction naming its owner
+  by the rules of §7.4. Exit 0 written, 1 written but a step incomplete, 2
+  refused (not a run, does not verify, extra missing, an installed sha that is
+  not the pin).
+- **`agentgolden` pinned** in the `audit` extra at
+  `aa1847f2a2ad51a95b98ab3e180bc5d211e6b138`, beside the two existing pins;
+  `uv.lock` relocked (it adds agentgolden alone: its `spanweave>=0.9.1,<1.0`
+  is met by the pinned 0.9.1). The report header records all three shas,
+  pinned and installed.
+- **The import gate names three libraries**: `agentgolden` joins
+  `ANALYSER_MODULES`, confined to `spanweave_zoo/audit.py` like the other two.
+  `cli.py` imports the audit module only when `zoo audit` runs, so the bare
+  wheel and every other subcommand work without the extra; without it `zoo
+  audit` refuses, exit 2, naming `uv sync --extra dev --extra audit`.
+- **A seventh CI leg, `audit`**, installs the extra and runs `make
+  audit-check`: `mypy --strict` with the three libraries present, then the
+  `needs_audit` tests, failing if any skipped (they skip on every `check`
+  leg, by design).
+- **The Z4 captures audited**: `audit/z4-2026-10-12-real.md` and
+  `audit/z4-2026-10-12-recorded.md`, three findings each (spanweave-live 2,
+  spanweave 1, agentgolden 0). The live graph equals the batch graph byte for
+  byte on every trace `serve` wrote.
+
 ## A3g — the run-2b review's `next batch` items, closed
 
 Run-2b review (`patches/REVIEW-2026-10-11.md`) N-2 to N-12; the decisions of

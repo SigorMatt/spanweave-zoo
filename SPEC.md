@@ -19,8 +19,9 @@ split records the request line whole, the tee forwards the recorded head
 octets rather than the stdlib's parse, and `SIGHUP` ends a capture as Ctrl-C
 does); §6 is specified and implemented (A4: `zoo replay`, which re-sends a
 capture's bytes and its captured head octets to another receiver and adds
-nothing). §7 is a heading naming what A5 will fill; nothing in it is
-implemented today.
+nothing); §7 is specified and implemented (A5: `zoo audit`, which runs
+`spanweave-live serve`, `spanweave.build` and `agentgolden`'s signature over a
+capture and writes down what happened, naming the owner of every finding).
 
 ---
 
@@ -86,8 +87,9 @@ through the report-back the contract's §6 asks for.
   of every body in the manifest. `zoo verify` re-hashes the tree and `make
   check` fails on any difference (`CLAUDE.md` §0.6).
 - **The zoo is read-only toward the libraries it captures for.** `spanweave`
-  and `spanweave_live` are pinned by git sha in `pyproject.toml`'s `audit`
-  extra, imported only by §7's module, and never changed from here.
+  and `spanweave_live` -- and `agentgolden`, the consumer the audit smokes
+  (§7) -- are pinned by git sha in `pyproject.toml`'s `audit` extra, imported
+  only by §7's module, and never changed from here.
 - **No semantics.** The zoo assigns no roles, no severity, no risk, no
   judgement of a capture's quality. It counts bodies and bytes.
 
@@ -1623,14 +1625,155 @@ reading what the exporter said.
 
 ## 7. The audit — A5
 
-`zoo audit`: every capture through `spanweave_live serve` and `spanweave.build`,
-with every divergence written up as a reproduction naming the repository that
-owns it. Not specified yet.
+```bash
+zoo audit captures/z4/2026-10-12-real                 # writes audit/z4-2026-10-12-real.md
+zoo audit captures/z4/2026-10-12-recorded --out audit
+```
 
-What is already fixed is **where it lives**: `spanweave_zoo/audit.py`, and the
-gate's exemption is that **path** and nothing else (`tests/gates.py`,
-`CLAUDE.md` §0.6 rule 6). A gate that matched the file *name* would hand the
-exemption to any `audit.py` anywhere under the package — a module moved one
-directory down would keep an exemption nobody granted it, and the rule could be
-switched off by a `mkdir`. There is one audit module, it is at that path, and
-every other file under `spanweave_zoo/` imports neither library.
+Every capture through `spanweave-live serve` and `spanweave.build`, and
+`agentgolden`'s signature over what came out, with every divergence written up
+as a **reproduction** naming the repository that owns it (§1.2). The audit
+runs the three libraries; it repairs nothing, retries nothing and works around
+nothing, and a finding is the product rather than a failure (`CLAUDE.md` §0.6
+rule 7).
+
+### 7.1 Where it lives, and what it may import
+
+`spanweave_zoo/audit.py`, and the gate's exemption is that **path** and
+nothing else (`tests/gates.py`, `CLAUDE.md` §0.6 rule 6). A gate that matched
+the file *name* would hand the exemption to any `audit.py` anywhere under the
+package — a module moved one directory down would keep an exemption nobody
+granted it, and the rule could be switched off by a `mkdir`. There is one audit
+module, it is at that path, and every other file under `spanweave_zoo/`
+imports none of the three libraries the gate names: `spanweave`,
+`spanweave_live` and `agentgolden` (decided 2026-10-12; `OPEN_QUESTIONS.md`
+§5).
+
+The three are the `audit` extra's, pinned by git sha in `pyproject.toml`, and
+nothing else in the package needs them. `cli.py` imports the audit module only
+when `zoo audit` runs, so the bare wheel's `zoo --version`, `sink`, `capture`,
+`replay` and `verify` work with the extra uninstalled (`make install-check`
+installs no extra and proves it). `zoo audit` without the extra is a refusal,
+exit **2**, naming the command that installs it.
+
+### 7.2 What it refuses, and the pins it records
+
+`zoo audit <run>` refuses — one line naming the cause, exit **2**, no report
+written — when it could check nothing honestly:
+
+- `<run>` is not one run directory holding a readable `MANIFEST.json`;
+- the run does not verify (§5.6) — an audit of bytes that are not the bytes
+  recorded would be a reproduction of nothing;
+- the `audit` extra is not installed;
+- for any of the three libraries, the commit that is installed is not the
+  commit `pyproject.toml` pins, or cannot be read. The pinned sha is read from
+  the zoo's own installed metadata (the `audit` extra's `Requires-Dist`), the
+  installed one from the library's PEP 610 `direct_url.json`. A finding cites
+  a sha, and a sha the run did not use would make it irreproducible.
+
+The report's header records, for each of the three, its version, the pinned
+sha and the installed sha — so every finding, step 5's included, carries the
+commit of the library it is about.
+
+### 7.3 The five steps
+
+The capture's bodies are the manifest's, in receipt order (§6.1). Each step's
+command is printed in the report as an operator would type it, with the port
+written `<port>` because the audit lets the kernel choose one.
+
+1. **The exporter's bytes into `serve`.** `spanweave-live serve --port 0 --out
+   graphs --requests N`, where *N* is the number of `raw/` bodies, started as a
+   child process of the same interpreter (`python -m spanweave_live.cli`), and
+   `zoo replay <run> --raw` into it (§6, in-process, through the same `send`).
+   Recorded: every answer's status and every event line `serve` wrote to
+   stderr, verbatim, and its exit status. A `415` on protobuf is a finding,
+   not an error.
+2. **The Collector's JSON into `serve`.** The same, with `--json` and *N* the
+   number of `json/` bodies. **Completion** is `serve --requests N`: after the
+   *N*th request the input has ended, and the end of input runs
+   spanweave-live's `Run.finish()`, which replaces the completion with `Cap(0)`
+   and ticks once, so every trace still held completes and is written as
+   `graphs/<trace_id>.json` (its `SPEC.md` §8.5 at the pinned sha). That is the
+   `Cap(0)`-at-end the plan names, chosen by the receiver's own CLI and not by
+   the audit; the report says so once, in its method section. Recorded: the
+   statuses, every event, the exit status and every graph file's bytes.
+3. **Live against batch.** For each trace, the records the receiver fed, in
+   order, through `spanweave.build` — the live graph must equal the batch graph
+   byte for byte (spanweave's `SPEC.md` §10.1, prefix consistency, on a
+   stranger's trace). The records are re-read in-process by the pinned
+   receiver's own code — each `json/` body handed, in receipt order, to
+   `spanweave_live.Endpoint.handle` as the request `serve` received (its
+   method, path, `Content-Type`, `Content-Encoding` and `Transfer-Encoding`
+   taken from `json/NNNN.headers.json`, §2.3), and each record partitioned by
+   `spanweave_live.routing.trace_id_of`. Three graphs per partition, each
+   serialized with `spanweave.dumps`:
+   - **live**: the file `serve` wrote in step 2;
+   - **batch**: `spanweave.build` of the partition's records as JSON lines,
+     with `meta.source_digest` removed — the one field a builder fed records
+     cannot carry (spanweave's `SPEC.md` §10.4);
+   - **incremental**: a `spanweave.Builder` fed the same records in order.
+
+   The reconstruction is checked before it is believed: the in-process status
+   of each body must be the status `serve` answered, and the number of records
+   must be the `routed` count in `serve`'s `finished` event. If either differs,
+   step 3 is **incomplete** rather than a finding about anyone.
+4. **`spanweave inspect` on each graph.** `spanweave inspect graphs/<trace_id>.json`
+   on each live file (run as `python -m spanweave.cli`), its output recorded
+   verbatim; and from the graph itself, through the public API: every
+   diagnostic code with its count, the keys of the `unmapped_attributes`
+   diagnostics by size (the number of diagnostics naming each key, largest
+   first, and the bytes those diagnostics take in the graph document as
+   compact sorted JSON), and every node of kind `unknown` by name.
+5. **`agentgolden`'s signature on each graph.** `agentgolden.signature.signature(graph)`,
+   as a smoke, no rules evaluated. Recorded: the number of steps and their
+   tokens, or the exception it raised.
+
+Steps 4 and 5 read the graph a `Builder` produced from the partition's records
+(step 3's *incremental*): spanweave has no public reader from a graph document
+back to a `Graph`, and step 3 has just compared that graph's bytes with the
+live file's. Where the two differ, the report says which one steps 4 and 5
+read.
+
+The audit parses no payload of its own (§1.1): bodies are read only by the
+pinned receiver and the pinned library, and the graphs only through their
+public API. The `listening` event's port and the clock readings a `completed`
+event carries (`seconds`, and the two readings in its `detail`) are the
+receiver's and differ from run to run; nothing else in a report does.
+
+### 7.4 Findings, and who owns them
+
+A finding is a reproduction: the capture path, the commands, the observed
+result and the expected one, and the repository that owns it. The audit's rules
+for naming the owner are these, and nothing is fixed here:
+
+| Observed | Owner |
+|---|---|
+| a body answered other than 2xx by `serve` (steps 1, 2) | spanweave-live |
+| `serve` exited other than 0, or wrote a stderr line that is not one JSON object | spanweave-live |
+| records `serve` routed that reached no graph it wrote (its no-trace builder is never completed or written, its `SPEC.md` §5.4, §8.5) | spanweave-live |
+| a record `spanweave.adapters.classify` claimed for no adapter | spanweave |
+| a trace whose live file is missing, or a live file no partition explains | spanweave-live |
+| live ≠ batch, where incremental = batch | spanweave-live |
+| live ≠ batch, where incremental ≠ batch, or either raised | spanweave (its §10.1) |
+| `spanweave inspect` exited other than 0 | spanweave |
+| `signature(graph)` raised, on a graph `spanweave.validate` finds well-formed | agentgolden |
+| `signature(graph)` raised, on a graph `spanweave.validate` finds malformed | spanweave |
+
+Diagnostics, unmapped attributes and `unknown` nodes are recorded in step 4's
+tables and are not findings: they are spanweave saying what it did not
+understand, which is its job (`A6` turns the tables into probes).
+
+### 7.5 The report
+
+`<out>/<project>-<run-id>.md` (`--out` defaults to `audit/`), where
+`<project>` and `<run-id>` are the run directory's parent's name and its own.
+In order: the header (the capture, its `kind` and seal, the zoo's version, the
+three libraries' versions and shas), the method, the findings with a count per
+owner, then one section per step with its command, a table and every event.
+Written whole at the end; a second audit of the same capture overwrites it.
+
+| Exit | When |
+|---|---|
+| **0** | every step ran; the report is written (findings or not) |
+| **1** | the report is written and a step could not be completed: `serve` did not start, did not finish within its bound, the capture has no `json/` body, or step 3's reconstruction did not match what `serve` reported |
+| **2** | refused (§7.2): nothing was audited and no report was written |

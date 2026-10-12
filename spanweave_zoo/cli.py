@@ -1,6 +1,6 @@
 """The `zoo` command line.
 
-Four subcommands today:
+Five subcommands today:
 
 - `zoo sink --port 4318 --out captures/<project>/<run-id>/raw` records what an
   exporter POSTs, byte for byte (`SPEC.md` §3, A1);
@@ -15,8 +15,11 @@ Four subcommands today:
 - `zoo verify [path]` re-hashes every capture against its manifest -- a whole
   capture root, or one run directory (`SPEC.md` §3.5, §5).
 
-`audit` (A5) is not here and is not stubbed; `SPEC.md` §7 is the heading it
-will fill.
+- `zoo audit <run> [--out audit]` runs a capture through `spanweave-live
+  serve`, `spanweave.build` and `agentgolden`'s signature and writes
+  `audit/<project>-<run-id>.md`, every finding naming its owner (`SPEC.md` §7,
+  A5). It needs the `audit` extra, and is the one subcommand that does: its
+  module is imported only when it runs (`run_audit`).
 
 This module is also where the **clock** lives, and the **sleep**. No other
 module under `spanweave_zoo/` reads either: the sink takes `now` as an argument
@@ -463,6 +466,42 @@ def run_replay(args: argparse.Namespace) -> int:
     return 1 if undelivered else 0
 
 
+def run_audit(args: argparse.Namespace) -> int:
+    """Audit one capture. `SPEC.md` §7.
+
+    The audit module imports `spanweave`, `spanweave_live` and `agentgolden`,
+    which are the `audit` extra's and nobody else's, so it is imported here and
+    only here: every other subcommand -- and the bare wheel `make
+    install-check` installs -- works without them (`SPEC.md` §7.1). Without
+    the extra this is a refusal naming the command that installs it, exit 2.
+    """
+    try:
+        from spanweave_zoo import audit
+    except ImportError as missing:
+        print(
+            f"zoo audit: refusing: the audit needs the `audit` extra, and it is "
+            f"not installed ({missing}). Install it with: uv sync --extra dev "
+            f"--extra audit",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        result = audit.audit(Path(args.run), out=Path(args.out))
+    except audit.AuditRefused as refused:
+        print(f"zoo audit: refusing: {refused}", file=sys.stderr)
+        return 2
+    owners = ", ".join(
+        f"{owner} {sum(1 for f in result.findings if f.owner == owner)}"
+        for owner in audit.OWNERS
+    )
+    print(
+        f"zoo audit: wrote {result.path}: {len(result.findings)} finding(s) ({owners})"
+    )
+    for reason in result.incomplete:
+        print(f"  ! incomplete: {reason}")
+    return result.exit
+
+
 def _announce(entry: manifest.BodyEntry) -> None:
     """The `after_record` seam, in production: one line per recorded body.
 
@@ -631,6 +670,22 @@ def _parser() -> argparse.ArgumentParser:
         help=f"seconds per send (default: {forward.DEFAULT_TIMEOUT})",
     )
 
+    audit_parser = subcommands.add_parser(
+        "audit",
+        help=(
+            "run a capture through spanweave-live serve, spanweave and "
+            "agentgolden, and write down what happened (needs the audit extra)"
+        ),
+    )
+    audit_parser.add_argument(
+        "run", help="one run directory: captures/<project>/<run-id>"
+    )
+    audit_parser.add_argument(
+        "--out",
+        default="audit",
+        help="where <project>-<run-id>.md is written (default: audit)",
+    )
+
     verify_parser = subcommands.add_parser(
         "verify",
         help="re-hash every capture against its manifest",
@@ -664,6 +719,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_capture(args)
     if args.command == "replay":
         return run_replay(args)
+    if args.command == "audit":
+        return run_audit(args)
     parser.print_help()
     return 0
 

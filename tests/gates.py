@@ -1,13 +1,15 @@
 """The invariant gate, as a reusable check over source text.
 
 One gate (`CLAUDE.md` §0.6): **no module under `spanweave_zoo/` imports
-`spanweave` or `spanweave_live` except `spanweave_zoo/audit.py`.** The sink
-records bytes and
-the replayer re-sends them; neither may learn what a span means, and the
-separation is what keeps a capture a record rather than an interpretation. The
-audit is the one module whose whole job is to run the two libraries over a
-capture, so it is the one exemption -- and the exemption is that **path**, not
-the file name `audit.py` (`EXEMPT_PATHS`).
+`spanweave`, `spanweave_live` or `agentgolden` except
+`spanweave_zoo/audit.py`.** The sink records bytes and the replayer re-sends
+them; neither may learn what a span means, and the separation is what keeps a
+capture a record rather than an interpretation. The audit is the one module
+whose whole job is to run the libraries over a capture, so it is the one
+exemption -- and the exemption is that **path**, not the file name `audit.py`
+(`EXEMPT_PATHS`). `agentgolden` is the third name since 2026-10-12: the audit
+smokes its signature on every graph (`SPEC.md` §7.3), and it is confined
+exactly as the other two are (`OPEN_QUESTIONS.md` §5).
 
 It is an AST check, not a grep: a grep is fooled by a comment, a docstring and
 a line it never thought of, while the AST sees `import spanweave` wherever it
@@ -32,12 +34,12 @@ from dataclasses import dataclass
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "spanweave_zoo"
 
 # The libraries the zoo is a capture harness *for*, and must not become a
-# consumer of. Submodules count: `spanweave.adapters` is `spanweave`.
-ANALYSER_MODULES = ("spanweave", "spanweave_live")
+# consumer of -- the two it captures for, and the consumer the audit smokes.
+# Submodules count: `spanweave.adapters` is `spanweave`.
+ANALYSER_MODULES = ("spanweave", "spanweave_live", "agentgolden")
 
 # The one exemption, as a **path** relative to the repository root
-# (`SPEC.md` §7). Written by A5; absent until then, which the gate does not
-# mind -- an exemption for a file that does not exist yet exempts nothing.
+# (`SPEC.md` §7.1).
 #
 # A path and not a file name, because a name is not an identity: matched on the
 # basename, `spanweave_zoo/replay/audit.py` -- or any future module that

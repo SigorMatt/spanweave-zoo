@@ -2,7 +2,7 @@
 # counts as done (CONTRIBUTING.md, "The bar"): it wraps the exact toolchain
 # commands plus the invariant gate and the capture re-hash as runnable checks.
 
-.PHONY: check lint types test gates verify collector collector-check install-check clean
+.PHONY: check lint types test gates verify collector collector-check audit-check install-check clean
 
 check: lint types test gates verify
 	uv run zoo --version
@@ -71,6 +71,17 @@ collector:
 # binary you just fetched actually re-encodes.
 collector-check:
 	uv run python -m tests.collector_check
+
+# The audit's tests RAN, and not one of them skipped (SPEC.md section 7). They
+# need the `audit` extra -- spanweave, spanweave-live and agentgolden, pinned by
+# git sha -- which no `check` leg installs, so on those legs they skip; this
+# target installs the extra, runs mypy --strict with the three libraries
+# present, then exactly the `needs_audit` tests, and fails if any skipped.
+# CI's `audit` leg runs it. Not a prerequisite of `check`, for the reason the
+# extra is not: everything else must keep working without it.
+audit-check:
+	uv sync --extra dev --extra audit
+	uv run python -m tests.audit_check
 
 # Prove that what SHIPS works: builds the sdist and the wheel, installs the
 # wheel into a throwaway venv, and runs `zoo --help` from a working directory

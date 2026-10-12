@@ -32,12 +32,10 @@ are all unfrozen and will change. The one thing meant to be durable is the
 | `zoo capture` | the tee: the raw sink, the stock Collector behind it, the json sink |
 | `zoo replay` | sends a capture's bodies to another receiver, exactly as captured |
 | `zoo verify` | re-hashes a capture against its `MANIFEST.json`, both directions |
+| `zoo audit` | runs a capture through `spanweave-live serve`, `spanweave` and `agentgolden`, and writes down what broke |
 | `collector/` | the pinned Collector's version, digests and config -- `make collector` fetches the binary |
-| `SPEC.md` §1-§6 | the non-goals, the layout, the sink, the Collector and the tee, the manifest, the replayer |
-| `SPEC.md` §7 | a heading only: the audit |
-
-The subcommand that later section names (`audit`) is not implemented and is
-not stubbed.
+| `audit/` | one report per audited capture, `<project>-<run-id>.md` |
+| `SPEC.md` §1-§7 | the non-goals, the layout, the sink, the Collector and the tee, the manifest, the replayer, the audit |
 
 Every command printed in this README is **complete as printed**: no block here
 needs a flag the prose introduces later, and the `uv run` prefix is what makes
@@ -126,6 +124,24 @@ protobuf body is an answer and a finding, not an error, and what it *means* is
 the audit's to write down. The last line counts the bodies a receiver answered
 as sent, and the rest as not sent: `zoo replay: 1 sent, 1 that did not answer
 2xx, 1 not sent`.
+
+### The audit
+
+```bash
+uv sync --extra dev --extra audit
+uv run zoo audit captures/z4/2026-10-12-real
+```
+
+The only subcommand that needs the `audit` extra: `spanweave`, `spanweave-live`
+and `agentgolden`, each pinned by git sha in `pyproject.toml` (`SPEC.md` §7).
+It refuses a capture that does not verify and a library installed at any
+commit but its pin, then replays the capture into a real `spanweave-live
+serve` -- the exporter's bytes, then the Collector's JSON -- compares every
+graph `serve` wrote with `spanweave.build` of the same records, runs
+`spanweave inspect` and `agentgolden`'s signature on each, and writes
+`audit/<project>-<run-id>.md`. Every finding in it is a reproduction -- the
+capture, the commands, what was observed and what was expected -- and names
+the repository that owns it. Nothing is fixed here.
 
 ### The manifest, and `zoo verify`
 
@@ -345,6 +361,7 @@ make verify                # re-hash every capture on its own
 make install-check         # build the wheel, install it, run `zoo --help` from outside the repo
 make collector             # fetch the pinned Collector (not a prerequisite of anything)
 make collector-check       # the Collector tests ran, and not one of them skipped
+make audit-check           # install the audit extra; the audit tests ran, none skipped
 ```
 
 `make check` is green **with and without** `collector/otelcol-contrib` on
@@ -361,11 +378,13 @@ sha256 that pins it) and then `make collector-check`, which runs exactly those
 tests and **fails if any of them skipped** -- so the claim is proved on a
 machine that is not the maintainer's.
 
-`make check` never installs the `audit` extra, and neither does CI. That extra
-pins `spanweave` and `spanweave-live` by git sha and is needed by the audit
-alone; everything else in this repository works without them, and a gate
-(`tests/gates.py`) fails the build if any module under `spanweave_zoo/` other
-than `audit.py` imports either.
+`make check` never installs the `audit` extra, and neither do CI's `check`
+legs. That extra pins `spanweave`, `spanweave-live` and `agentgolden` by git
+sha and is needed by the audit alone; everything else in this repository works
+without them, and a gate (`tests/gates.py`) fails the build if any module
+under `spanweave_zoo/` other than `audit.py` imports any of the three. The
+audit's own tests skip without the extra, so a **seventh CI leg, `audit`**,
+installs it and runs `make audit-check`, which fails if any of them skipped.
 
 ## Provenance of the contract and the briefs
 

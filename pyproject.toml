@@ -49,11 +49,12 @@ dev = [
     "mypy>=1.11",
     "pytest>=8",
 ]
-# A5 ONLY (`SPEC.md` §7). The audit runs both libraries over a capture and
+# A5 ONLY (`SPEC.md` §7). The audit runs these libraries over a capture and
 # writes down what they did with it; every other batch -- the sink, the
 # Collector config, the replayer, `zoo verify` -- works with this extra
-# uninstalled, which is why CI never installs it and `make install-check`
-# installs the bare wheel.
+# uninstalled, which is why CI's `check` legs never install it and `make
+# install-check` installs the bare wheel. CI's one `audit` leg installs it and
+# runs `make audit-check`.
 #
 # Pinned by git sha, not by version range, because an audit finding is a
 # reproduction: "this capture, this command, this result". A floating
@@ -62,6 +63,12 @@ dev = [
 audit = [
     "spanweave @ git+https://github.com/SigorMatt/spanweave@fec7da27af517ad8b58ae3ec57827916aae60674",
     "spanweave-live @ git+https://github.com/SigorMatt/spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d",
+    # The audit's step 5 (`SPEC.md` §7.6): agentgolden's `signature` on each
+    # final graph, as a smoke, no rules evaluated. Pinned like the other two,
+    # decided 2026-10-12 (`OPEN_QUESTIONS.md` §5). It requires
+    # `spanweave>=0.9.1,<1.0`, which the pin above (0.9.1) satisfies, so the
+    # resolver adds no second spanweave.
+    "agentgolden @ git+https://github.com/SigorMatt/agentgolden@aa1847f2a2ad51a95b98ab3e180bc5d211e6b138",
 ]
 
 [project.urls]
@@ -69,7 +76,7 @@ Homepage = "https://github.com/SigorMatt/spanweave-zoo"
 Issues = "https://github.com/SigorMatt/spanweave-zoo/issues"
 
 [tool.hatch.metadata]
-# The `audit` extra's two entries are direct references, and hatchling refuses
+# The `audit` extra's three entries are direct references, and hatchling refuses
 # to build metadata containing one unless this says so. It is deliberate, not
 # a convenience: a sha is only expressible this way.
 allow-direct-references = true
@@ -129,6 +136,16 @@ disallow_any_explicit = false
 module = ["tests.*"]
 strict = false
 
+# The `audit` extra's three libraries (`SPEC.md` §7.1). `spanweave` ships
+# `py.typed` and is checked when installed; `spanweave_live` and `agentgolden`
+# ship no marker at their pinned shas. And on a leg synced with `--extra dev`
+# alone none of the three is installed at all -- which is every `check` leg,
+# by design -- so `mypy --strict spanweave_zoo` must pass there too. `make
+# audit-check` re-runs mypy with the extra installed.
+[[tool.mypy.overrides]]
+module = ["spanweave", "spanweave.*", "spanweave_live", "spanweave_live.*", "agentgolden", "agentgolden.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
@@ -138,4 +155,8 @@ markers = [
     # them skipped (`make collector-check`, `SPEC.md` §4.9). The name is part
     # of a gate, so it is registered here rather than left to a warning.
     "needs_collector: needs collector/otelcol-contrib (run `make collector`)",
+    # The audit's tests need the `audit` extra's three pinned libraries. They
+    # skip without it -- every `check` leg -- and `make audit-check` (CI's
+    # `audit` leg) runs exactly these and fails if any skipped (SPEC.md §7).
+    "needs_audit: needs the audit extra (uv sync --extra dev --extra audit)",
 ]
