@@ -785,6 +785,63 @@ def test_the_wait_for_a_forward_under_way_is_bounded(tmp_path):
         poster.join(timeout=PATIENCE)
 
 
+def snapshot(run: Path) -> dict[str, bytes]:
+    """Every file in a run directory, by its path under it, and its bytes."""
+    return {
+        path.relative_to(run).as_posix(): path.read_bytes()
+        for path in sorted(run.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_a_forward_that_completes_after_the_seal_writes_nothing_into_the_capture(
+    tmp_path,
+):
+    # B3 (a), Qodo Q2. A forward the Collector holds past every bounded wait
+    # of the shutdown (injected: `flush_wait`, and a forward a test releases)
+    # finishes after the manifest was sealed. Its outcome used to be appended
+    # to `forwards.jsonl` then, so the journal no longer hashed to what the
+    # sealed manifest said and the capture failed `zoo verify` for good. Now
+    # the journals are closed before the seal: the late outcome is refused and
+    # recorded nowhere, and the handler that was still running is the one
+    # thing the capture says went wrong (SPEC.md sections 5.5, 5.6).
+    forward = Held()
+    started, _ = held_capture(tmp_path, forward, flush_wait=0.05)
+    assert started.raw is not None
+    answers: list[int] = []
+    poster = threading.Thread(
+        target=lambda: answers.append(post(started.raw.port, PROTOBUF))
+    )
+    poster.start()
+    try:
+        assert forward.entered.wait(timeout=PATIENCE)
+        started.stop()
+        sealed = snapshot(started.run)
+    finally:
+        forward.release.set()
+        poster.join(timeout=PATIENCE)
+    # The forward has completed and its POST has been answered -- after the
+    # seal, since `stop()` returned before it was released.
+    assert answers == [200]
+
+    assert snapshot(started.run) == sealed, "something was written after the seal"
+    assert manifest.FORWARD_JOURNAL_NAME not in sealed
+    document = manifest.read(started.run)
+    assert manifest.FORWARDS not in document
+    late = [
+        problem for problem in document[manifest.PROBLEMS] if "raw/0001.body" in problem
+    ]
+    assert len(late) == 1, document[manifest.PROBLEMS]
+    assert late[0] in started.problems
+    # Every digest and the seal hold: `zoo verify`'s one complaint is the
+    # problem the run itself recorded (§5.6 fails any recorded problem).
+    assert manifest.problems(started.run) == [
+        f"{started.run}: {manifest.MANIFEST_NAME} records a problem from the run: "
+        f"{problem}"
+        for problem in document[manifest.PROBLEMS]
+    ]
+
+
 class Broken(Exception):
     """What a failing step of `start()`'s tail raises, in the tests below."""
 

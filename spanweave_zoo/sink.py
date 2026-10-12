@@ -206,6 +206,24 @@ class CaptureExists(Exception):
     """
 
 
+# What `close()` says of a POST still being handled as the journals close
+# (`SPEC.md` §4.2, §5.5): the body it names, or this when it had recorded none.
+NOT_YET_RECORDED = "a POST not yet recorded"
+STILL_HANDLED = (
+    "still being handled when the journals closed; what its handler had not "
+    "yet written is not in this capture"
+)
+
+
+class RecorderClosed(Exception):
+    """A POST that reached a recorder after its journals were closed.
+
+    The capture is sealed or about to be (`SPEC.md` §5.5): nothing more may be
+    written into it, so the body is recorded nowhere, and the handler answers
+    nothing rather than a status that would claim it was.
+    """
+
+
 class Recorder:
     """Writes one capture: bodies, headers, and the manifest's digests.
 
@@ -251,6 +269,15 @@ class Recorder:
         # before it stops the Collector (`SPEC.md` §4.6).
         self._busy = 0
         self._quiet = threading.Condition()
+        # The POSTs under way, by handling thread, and the body each has
+        # recorded so far (`None` until it has): what `close()` names when a
+        # handler is still running as the journals close (`SPEC.md` §5.5). The
+        # key is the thread's identity, used for nothing but finding its slot.
+        self._open: dict[int, str | None] = {}
+        # Set once by `close()`, under `_lock`: from then on nothing this
+        # recorder holds is written into the run directory -- no body, no
+        # journal line -- so the manifest sealed after it stays true.
+        self._closed = False
 
         for directory, suffix in (
             (self.raw, body_suffix),
@@ -288,13 +315,16 @@ class Recorder:
     @contextmanager
     def handling(self) -> Iterator[None]:
         """Count one POST as under way for as long as the block runs."""
+        handler = threading.get_ident()
         with self._quiet:
             self._busy += 1
+            self._open[handler] = None
         try:
             yield
         finally:
             with self._quiet:
                 self._busy -= 1
+                self._open.pop(handler, None)
                 self._quiet.notify_all()
 
     def settle(self, timeout: float) -> bool:
@@ -305,6 +335,30 @@ class Recorder:
         """
         with self._quiet:
             return self._quiet.wait_for(lambda: self._busy == 0, timeout=timeout)
+
+    def close(self) -> list[str]:
+        """Close the journals: nothing is written into the run after this.
+
+        What `zoo capture` calls once every bounded wait of its shutdown is
+        over and before the manifest is sealed (`SPEC.md` §4.6, §5.5). A body
+        that arrives afterwards, or a forward that completes afterwards, is
+        refused and recorded nowhere -- so a handler the waits gave up on can
+        no longer append to a journal the sealed manifest has already hashed.
+
+        Returns one line per POST still being handled at the close, naming the
+        body it had recorded, or saying it had recorded none: each is a
+        `problems` entry, because what that handler had yet to write -- a
+        forward's outcome, or the whole body -- is not in the capture.
+        """
+        with self._lock, self._quiet:
+            self._closed = True
+            still = sorted(
+                self._open.values(), key=lambda file: (file is None, file or "")
+            )
+        return [
+            f"{file if file is not None else NOT_YET_RECORDED}: {STILL_HANDLED}"
+            for file in still
+        ]
 
     def accepts(self, path: str) -> bool:
         """Whether `path` is the traces endpoint, compared exactly.
@@ -340,6 +394,10 @@ class Recorder:
         # path, and naming it `.json` would be a claim about its contents.
         suffix = self.body_suffix if accepted else BODY_SUFFIX
         with self._lock:
+            if self._closed:
+                raise RecorderClosed(
+                    f"{self.run}: the journals are closed; this POST is not recorded"
+                )
             number = self._counters[directory] + 1
             self._counters[directory] = number
             stem = f"{number:04d}"
@@ -359,6 +417,10 @@ class Recorder:
                 bytes=len(body),
             )
             manifest.journal_body(self.run, entry)
+            with self._quiet:
+                handler = threading.get_ident()
+                if handler in self._open:
+                    self._open[handler] = entry.file
 
         if self._after_record is not None:
             self._after_record(entry)
@@ -391,8 +453,15 @@ class Recorder:
         else:
             outcome = manifest.ForwardEntry(file=entry.file, status=status)
         with self._lock:
+            # A forward that outlived every bounded wait of the shutdown
+            # completes after the journals closed: its outcome is refused and
+            # recorded nowhere, and `close()` already named its body as a
+            # problem (`SPEC.md` §5.5). Checked and journalled under one lock,
+            # so a close cannot fall between the two.
+            if self._closed:
+                return
             self.forwards.append(outcome)
-        manifest.journal_forward(self.run, outcome)
+            manifest.journal_forward(self.run, outcome)
         if self._after_forward is not None:
             self._after_forward(outcome)
 
@@ -503,11 +572,18 @@ class _Handler(BaseHTTPRequestHandler):
         with recorder.handling():
             body = self._read_body()
             accepted = recorder.accepts(self.path)
-            recorder.record(
-                head=self._head,
-                body=body,
-                accepted=accepted,
-            )
+            try:
+                recorder.record(
+                    head=self._head,
+                    body=body,
+                    accepted=accepted,
+                )
+            except RecorderClosed:
+                # The capture is sealed (`SPEC.md` §5.5): no answer, and the
+                # connection closed, because any status would say the body
+                # was received into a capture that does not hold it.
+                self.close_connection = True
+                return
             self._answer(HTTPStatus.OK if accepted else HTTPStatus.NOT_FOUND)
 
     def _read_body(self) -> bytes:

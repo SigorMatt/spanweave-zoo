@@ -363,6 +363,11 @@ for JSON, for gzip, for a truncated body and for a body no receiver would
 accept. The sink is not a receiver and its `200` means "recorded", never
 "understood".
 
+A POST that reaches `zoo capture`'s sinks after their journals have closed
+(§5.5) is not recorded, so it is **not answered**: the connection is closed
+with no status, since a `200` there would say "recorded" of a body the
+capture does not hold.
+
 ### 3.4 Any other path: `404`, and still recorded
 
 A POST to any other path is answered **`404`** — empty body, same echoed
@@ -595,6 +600,7 @@ zoo capture: collector <version> re-encoding to JSON into <run>/json/, via http:
   ! <file> forwarded, collector said <status>
   ! collector exited: <code> -- the raw bytes are still being recorded, json/ is not (SPEC.md section 4.6)
   ! a forward was still waiting on the Collector after <seconds>s; stopping it anyway
+  ! <the body, or a POST not yet recorded>: still being handled when the journals closed; what its handler had not yet written is not in this capture
   ! the Collector did not stop on SIGTERM and was sent SIGKILL: its last batch may not have reached json/
 zoo capture: stopping
 zoo capture: <n> body/bodies in raw/<, n in each other directory>, under <run>/, MANIFEST.json written: kind=<kind><what went wrong>
@@ -612,8 +618,9 @@ zoo capture: refusing to start: <why>
   `json/`.
 - The **`!` lines** are the run's failures as they happen: a forward that did
   not happen or that the Collector answered with anything but a 2xx (§4.4), the
-  Collector exiting on its own (§4.6), and the two bounded waits of the
-  shutdown running out (§4.6).
+  Collector exiting on its own (§4.6), the two bounded waits of the
+  shutdown running out (§4.6), and a POST still being handled when the
+  journals closed (§5.5), which is also a `problems` entry.
 - **`zoo capture: stopping`** is printed when the run is asked to end, after an
   empty line, so that it does not share a line with the `^C` a terminal
   echoes.
@@ -890,10 +897,17 @@ which is the order that lets the Collector's last batch land:
    serving. It is given a bounded wait (10 seconds) to exit, then **`SIGKILL`**
    and another bounded wait. A `SIGKILL` is said, because a killed Collector
    may not have flushed;
-4. **the json sink stops**, once the requests it is handling have finished;
-5. **the manifest is assembled** (§5.5) — the journals, a digest for every
-   other file, `collector.log` included, the project's own manifest copied as
-   it stands now (§5.3), `ended_at` last.
+4. **every POST the raw sink is still handling is waited for again**, for at
+   most the same bounded wait: the Collector's stop has just failed every
+   forward still waiting on it, and this is where those failures reach
+   `forwards.jsonl`. Then **the json sink stops**, once the requests it is
+   handling have finished (the same bound);
+5. **both recorders close their journals**, and **the manifest is assembled**
+   (§5.5) — the journals, a digest for every other file, `collector.log`
+   included, the project's own manifest copied as it stands now (§5.3),
+   `ended_at` last. A POST still being handled at the close — one every
+   bounded wait gave up on — is a `problems` entry naming its body, and
+   nothing it does afterwards is written anywhere (§5.5).
 
 It then prints what it recorded — the bodies **counted by the directory they
 are in**, `1 body/bodies in raw/, 1 in json/`, `raw/` first and never summed
@@ -1327,7 +1341,7 @@ exactly one home for a digest (§3.5).
 | each forward, as it completes (§4.5) | `forwards.jsonl` | one line |
 | the Collector child is seen to have exited (§4.6) | `MANIFEST.json` | one `problems` entry |
 | the run directory is made, before the manifest is labelled (§4.2) | `collector.log` | the Collector's output so far, and then each line as it is written |
-| `zoo capture` stops, after both sinks and the Collector have (§4.6) | `MANIFEST.json` | `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
+| `zoo capture` stops, after both sinks and the Collector have (§4.6) | `MANIFEST.json` | one `problems` entry per POST still being handled when the journals close (below); then `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
 
 The declaration is written **first** so that a run stopped the hard way still
 says what it was. The bodies go to a journal rather than into the document, so
@@ -1345,6 +1359,33 @@ goes into the same write. That is what lets `zoo verify` read the absence of
 somebody forgot, and the seal as covering everything the run wrote. A run
 stopped the hard way has neither. `zoo sink` assembles its manifest the same
 way when it stops, so its captures are sealed too.
+
+**Writing ends before the seal, not at it.** The seal covers the files as the
+run left them, so nothing may be written into the run directory once the
+assembly has read them. `zoo capture` therefore **closes both recorders'
+journals** after the last bounded wait of its shutdown (§4.6) and before it
+assembles: from then on a recorder refuses every write — a body that arrives
+on a connection still open is recorded nowhere and answered nothing, the
+connection closed, because any status would say it was received into a
+capture that does not hold it; a forward that completes is journalled nowhere
+and is in no list. A POST still being handled at the close — a forward the
+Collector held past every bound — is one `problems` entry, written before the
+assembly, naming the body it had recorded (`raw/0001.body: still being handled
+when the journals closed; …`), or `a POST not yet recorded` when it had
+recorded none: what that handler had yet to write is not in the capture, and
+the capture says so rather than letting a late line break every digest after
+the fact. So a capture whose forward outlived the shutdown is sealed, every
+digest holds, and `zoo verify` (§5.6) names the one problem the run recorded.
+
+**A journal line that cannot be read is a problem, not an abort.** The
+journals are decoded a line at a time: a line that is not UTF-8, or not a JSON
+object, is a `problems` entry naming the journal and the line (`bodies.jsonl
+line 2 is not UTF-8, so what it recorded is not listed in MANIFEST.json`), the
+lines around it are read as usual, and the assembly goes on to write
+`ended_at` and the seal. The file it was the record of is still on disk and is
+covered by `files` (§5.6), so nothing is unaccounted for and nothing is
+claimed; a capture whose own note could not be read is a reportable outcome,
+and one left without `ended_at` by it would not be.
 
 The assembly runs once per capture: `stop()` is also what a failed `start()`
 unwinds through — a failure at any step of it, the steps after the label
@@ -1426,7 +1467,10 @@ It then checks the manifest itself, and three things it says about itself:
 - **`problems` is empty or absent.** A run that recorded something going wrong
   which the capture could not fix does not pass a check whose whole job is
   trust. `zoo capture` already exited non-zero saying so; `verify` says it
-  again, every time.
+  again, every time. This is also how a capture whose forward outlived the
+  shutdown fails (§5.5): by the one problem the run recorded, and never by a
+  digest or a seal, because nothing was written after the seal for either to
+  disagree with.
 
 It exits non-zero, printing one line per problem, on any of those: a digest
 that differs, a length that differs, a listed file that is missing, a **file on

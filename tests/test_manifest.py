@@ -493,6 +493,47 @@ def test_a_journal_line_that_cannot_be_read_is_a_problem_not_a_dropped_body(
     assert "is not a JSON object" in out
 
 
+@pytest.mark.parametrize(
+    "journal", [manifest.JOURNAL_NAME, manifest.FORWARD_JOURNAL_NAME]
+)
+def test_a_journal_byte_that_is_not_utf8_is_a_problem_and_the_manifest_is_sealed(
+    tmp_path, journal
+):
+    # B3 (b), Qodo Q7. A journal is decoded line by line, so a byte that is
+    # not UTF-8 is a problem naming its line -- like a line that is not a JSON
+    # object -- and `finish` still writes `ended_at` and the seal, rather than
+    # raising before either and leaving a capture that was never completed
+    # (SPEC.md sections 5.5, 5.6). The lines around it are still read.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    (run / "raw").mkdir(parents=True)
+    (run / "raw" / "0001.body").write_bytes(BODY)
+    manifest.label(run, kind="real", collector_version="0.162.0", started_at=STARTED)
+    entry = manifest.BodyEntry(
+        file="raw/0001.body", sha256=manifest.digest(BODY), bytes=len(BODY)
+    )
+    manifest.journal_body(run, entry)
+    manifest.journal_forward(run, manifest.ForwardEntry(file=entry.file, status=200))
+    with (run / journal).open("ab") as written:
+        written.write(b'{"file": "raw/0002.b\xffdy"}\n')
+
+    found = manifest.finish(run, ended_at=ENDED)
+
+    assert found == [
+        f"{journal} line 2 is not UTF-8, so what it recorded is not "
+        f"listed in {manifest.MANIFEST_NAME}"
+    ]
+    document = manifest.read(run)
+    assert document[manifest.ENDED_AT] == ENDED
+    assert document[manifest.SEAL] == manifest.seal_of(document)
+    assert document[manifest.PROBLEMS] == found
+    assert [listed["file"] for listed in document[manifest.BODIES]] == [entry.file]
+    assert document[manifest.FORWARDS] == [{"file": entry.file, "status": 200}]
+    # Sealed and complete: the only thing `verify` has to say is the problem.
+    assert manifest.problems(run) == [
+        f"{run}: {manifest.MANIFEST_NAME} records a problem from the run: {found[0]}"
+    ]
+
+
 # --- A3b: the project's own manifest is copied at the end (`SPEC.md` §5.3) --
 
 

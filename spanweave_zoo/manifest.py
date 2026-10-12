@@ -348,14 +348,28 @@ def _journalled(run: Path, name: str) -> tuple[list[dict[str, Any]], list[str]]:
     loudly rather than silently. A half-written last line is what a run killed
     mid-write leaves, and "we could not read our own note" is a reportable
     outcome (`CLAUDE.md`, "Honest refusal beats a reassuring pass").
+
+    Decoded **line by line** (B3, Qodo Q7): a byte that is not UTF-8 is a
+    problem naming its line, like a line that is not JSON, and the lines around
+    it are still read. Decoding the whole file at once raised out of `finish`
+    before `ended_at` and the seal were written, so one bad byte left a capture
+    that was never completed (`SPEC.md` §5.5).
     """
     try:
-        text = (run / name).read_text(encoding="utf-8")
+        data = (run / name).read_bytes()
     except OSError:
         return [], []
     entries: list[dict[str, Any]] = []
     found: list[str] = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, octets in enumerate(data.splitlines(), start=1):
+        try:
+            line = octets.decode("utf-8")
+        except UnicodeDecodeError:
+            found.append(
+                f"{name} line {number} is not UTF-8, so what it recorded is "
+                f"not listed in {MANIFEST_NAME}"
+            )
+            continue
         if not line.strip():
             continue
         try:

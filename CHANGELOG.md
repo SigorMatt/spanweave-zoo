@@ -4,6 +4,32 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B3 — nothing writes to a capture after its seal
+
+Qodo Q2, Q7 (`TASKS.md`, "Series 2").
+
+- **`SPEC.md` §4.6, §5.5**: `zoo capture`'s shutdown waits for the raw sink's
+  handlers a second time, as long, after the Collector's stop has failed the
+  forwards still waiting on it, and then **closes both recorders' journals**
+  before it assembles the manifest. A recorder that is closed writes nothing:
+  a forward that completes afterwards is journalled nowhere and is in no list
+  (Q2), and a body that arrives afterwards is recorded nowhere. A POST still
+  being handled at the close is one `problems` entry naming its body (or
+  `a POST not yet recorded`) and one `!` line (§4.2). So a capture whose
+  forward outlived every bound is sealed, every digest holds, and `zoo
+  verify` names the one problem the run recorded.
+- **`SPEC.md` §3.3**: a POST that reaches a closed recorder is not answered —
+  the connection is closed with no status, since `200` means "recorded".
+- **`SPEC.md` §5.5, §5.6**: the journals are decoded a line at a time; a line
+  that is not UTF-8 is a `problems` entry naming the journal and the line,
+  like a line that is not a JSON object, and `finish` still writes `ended_at`
+  and the seal (Q7).
+- **Tests**: a forward held past the flush bound (injected `flush_wait` and a
+  forward the test releases) completes after the seal and leaves every file
+  byte-identical, `verify`'s only line the recorded problem; a byte `0xff` in
+  either journal yields a sealed, complete manifest listing the problem; a
+  POST to a closed recorder writes nothing and is not answered.
+
 ## B2 — signals cover the whole life of a capture, and of the sink
 
 Qodo Q1, Q6, Q8 (`TASKS.md`, "Series 2").

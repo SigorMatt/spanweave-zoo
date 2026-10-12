@@ -777,3 +777,23 @@ def test_a_standalone_sink_stopped_by_a_signal_seals_its_manifest(tmp_path, numb
     assert manifest.ENDED_AT in document, document
     assert body_of(raw) == PROTOBUF
     assert cli.verify(raw.parent) == 0
+
+
+def test_a_post_after_the_journals_close_is_recorded_nowhere_and_not_answered(
+    tmp_path,
+):
+    # B3 (a), degenerate. A keep-alive connection can still deliver a POST
+    # once the recorder's journals are closed (SPEC.md section 5.5): it writes
+    # nothing into the run, and it is answered nothing -- a 200 would say
+    # "recorded" (section 3.3) of a body the capture does not hold.
+    raw = tmp_path / "run" / "raw"
+    with running(raw) as (recorder, port):
+        assert recorder.close() == []
+        head = (
+            b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(PROTOBUF)
+        )
+        assert send_octets(port, head, PROTOBUF) == b""
+    assert list(raw.iterdir()) == []
+    assert not (raw.parent / manifest.JOURNAL_NAME).exists()
+    assert manifest.read(raw.parent)[manifest.BODIES] == []

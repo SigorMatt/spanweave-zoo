@@ -375,11 +375,16 @@ class Capture:
         3. the Collector is looked at one last time, and then sent `SIGTERM`:
            its own shutdown flushes its last batch into the json sink, which
            is still serving; `SIGKILL` follows a bounded wait;
-        4. the json sink stops, once what it is handling has finished;
-        5. the manifest is closed (`SPEC.md` §5): `ended_at` is the end of the
-           run, and the content headers are carried across from the headers
-           files of every body -- including the ones the Collector's last flush
-           only just landed -- and `collector.log` is hashed whole.
+        4. the raw sink's handlers are waited for again, as long, since the
+           Collector's stop has just failed every forward still waiting on it;
+           then the json sink stops, once what it is handling has finished;
+        5. both recorders close their journals -- a handler still running is a
+           `problems` entry, and nothing it does afterwards is written
+           anywhere -- and the manifest is closed (`SPEC.md` §5): `ended_at`
+           is the end of the run, and the content headers are carried across
+           from the headers files of every body -- including the ones the
+           Collector's last flush only just landed -- and `collector.log` is
+           hashed whole.
 
         An exit noticed at step 3's last look, or at any look before it, is a
         Collector that went on its own and is a problem. Once `SIGTERM` is
@@ -403,6 +408,11 @@ class Capture:
                     "  ! the Collector did not stop on SIGTERM and was sent "
                     "SIGKILL: its last batch may not have reached json/"
                 )
+        # The Collector's stop fails every forward still waiting on it; a
+        # second bounded wait lets those failures reach `forwards.jsonl`
+        # before the journals close (`SPEC.md` §4.6, §5.5; B3).
+        if self.raw is not None:
+            self.raw.settle(self._flush_wait)
         if self.json is not None:
             self.json.stop()
             self.json.settle(self._flush_wait)
@@ -454,6 +464,17 @@ class Capture:
         if not self._labelled or self._finished:
             return
         self._finished = True
+        # Nothing is written into the run after this but the manifest itself
+        # (`SPEC.md` §5.5; B3, Qodo Q2): a handler the bounded waits gave up on
+        # can no longer append to a journal the seal is about to cover. Each
+        # one still running is a problem, named by the body it had recorded.
+        for listener in (self.raw, self.json):
+            if listener is None:
+                continue
+            for problem in listener.recorder.close():
+                self.problems.append(problem)
+                manifest.append_problem(self.run, problem)
+                self._log(f"  ! {problem}")
         self.problems += manifest.finish(
             self.run,
             ended_at=self._now(),
