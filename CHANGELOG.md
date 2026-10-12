@@ -4,6 +4,21 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B2a — the per-body cost test measures the recorder, not the runner
+
+The registry's "macOS wall-clock cost test" (`TASKS.md`, series 1), failed
+again at B2's first CI run. Tests only: no behaviour change, `SPEC.md` §3.5
+(the claim under test) unchanged, no capture touched.
+
+- **`test_sixteen_hundred_bodies_cost_the_same_each`** times each body's
+  `record` call by **CPU time** (`time.process_time`), not by wall clock, and
+  compares the **median** of the first hundred bodies of a 1,600-body run with
+  the median of the last hundred. The bound stays (last < 2.0 × first); the
+  method and the bound are stated in the test's docstring.
+- **Mutation shown caught**: an O(n) rescan of the journal per body (each
+  append first re-reads and parses every line already written) — median
+  561 → 3,870 µs/body, ratio 6.89, red. Unmutated: ratio 1.04–1.16.
+
 ## Between runs: export contract 1.3, the Z5 brief amendment, ROADMAP rows for Z3 and Z5
 
 Docs only: no behaviour change, no capture touched.

@@ -601,45 +601,72 @@ BODIES = 1600
 SAMPLE = 100
 # Generous on purpose, and still nowhere near what it catches. What is under
 # test is that the cost of recording a body does not GROW with the length of
-# the run: the first hundred bodies of a run and its last hundred are timed,
-# and a manifest rewritten after every POST makes the last hundred cost many
-# times the first because each one re-serializes a document with fifteen
-# hundred entries in it. Journalling makes the two the same within noise, so
-# the bound has to hold on a machine running four other jobs in CI -- not to be
-# tight.
+# the run: a manifest rewritten after every POST, or a journal re-read after
+# every POST, makes the last hundred bodies cost many times the first because
+# each one handles a document with fifteen hundred entries in it. Journalling
+# makes the two the same within noise, so the bound has to hold on a shared CI
+# runner -- not to be tight.
 BOUND = 2.0
 
 
-def _record(recorder: sink.Recorder, first: int, last: int) -> float:
-    """Record bodies `first`..`last` and return the seconds it took."""
-    started = time.perf_counter()
+def _record(recorder: sink.Recorder, first: int, last: int) -> list[float]:
+    """Record bodies `first`..`last`; return each one's CPU seconds.
+
+    CPU time (`time.process_time`: this process's user and system time), not
+    wall-clock time: what the recorder costs is the work it does, and that is
+    what CPU time counts. A wall clock also counts every moment the process was
+    not running -- a neighbour on a shared runner, a disk that made it wait --
+    and on the macOS leg that alone took the last hundred from 675 to 2,168
+    us/body with no code change (`TASKS.md`, "macOS wall-clock cost test").
+    """
+    costs = []
     for number in range(first, last):
+        started = time.process_time()
         recorder.record(
             head=HEAD,
             body=b"body %04d" % number,
             accepted=True,
         )
-    return time.perf_counter() - started
+        costs.append(time.process_time() - started)
+    return costs
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 
 def test_sixteen_hundred_bodies_cost_the_same_each(tmp_path):
-    # The A3b row's fifth acceptance test. Writing the run directory is the
-    # only expensive thing a capture does per POST, so the measurement is of
-    # the recorder itself: one 1,600-body run, with its first hundred bodies
-    # and its last hundred timed.
+    """The A3b row's fifth acceptance test (`SPEC.md` §3.5), measured by CPU.
+
+    Writing the run directory is the only expensive thing a capture does per
+    POST, so the measurement is of the recorder itself: one 1,600-body run, and
+    the CPU time of each of its first hundred bodies and its last hundred.
+
+    The method: each body's cost is `time.process_time()` around its one
+    `record` call, and a hundred bodies' cost is the MEDIAN of their hundred,
+    so a body that a scheduler tick or a page fault happened to land on does
+    not decide the run. The bound: the last hundred's median is under
+    `BOUND` times the first hundred's. A recorder whose per-body work grows
+    with the run -- an O(n) rescan of the journal, a manifest rewritten per
+    POST -- costs the last hundred bodies many times that, in CPU, on any
+    machine however loaded.
+    """
     recorder = sink.Recorder(
         tmp_path / "captures" / "z4" / "run-1" / "raw", now=lambda: STARTED
     )
-    first = _record(recorder, 0, SAMPLE) / SAMPLE * 1e6
+    first = _median(_record(recorder, 0, SAMPLE)) * 1e6
     _record(recorder, SAMPLE, BODIES - SAMPLE)
-    last = _record(recorder, BODIES - SAMPLE, BODIES) / SAMPLE * 1e6
+    last = _median(_record(recorder, BODIES - SAMPLE, BODIES)) * 1e6
     print(
-        f"\n{BODIES} bodies: first {SAMPLE} {first:.0f} us/body, "
-        f"last {SAMPLE} {last:.0f} us/body, ratio {last / first:.2f}"
+        f"\n{BODIES} bodies, CPU time: first {SAMPLE} median {first:.0f} us/body, "
+        f"last {SAMPLE} median {last:.0f} us/body, ratio {last / first:.2f}"
     )
     assert last < BOUND * first, (
-        f"per-body cost grew with the run: {first:.0f} us/body over the first "
-        f"{SAMPLE} bodies, {last:.0f} us/body over the last {SAMPLE} of 1,600"
+        f"per-body CPU cost grew with the run: median {first:.0f} us/body over "
+        f"the first {SAMPLE} bodies, {last:.0f} us/body over the last {SAMPLE} "
+        f"of {BODIES}"
     )
     # And the digests are all there, in the journal, waiting for the end of the
     # run: nothing was traded away for the cost.
