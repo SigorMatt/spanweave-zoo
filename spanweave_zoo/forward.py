@@ -23,8 +23,11 @@ It is byte-identical on purpose, and that is a stronger claim than it looks:
 
 The two exceptions name the connection rather than the payload, and each is a
 whole line of §2.3's split (`collector_head`): the `Host` line, substituted,
-because the destination has changed, and the hop-by-hop header lines of RFC
-9110 §7.6.1, dropped, because they describe a connection this is not.
+because the destination has changed, and the hop-by-hop header lines,
+dropped, because they describe a connection this is not: the zoo's own list
+(`HOP_BY_HOP`) and every field the head's `Connection` lines name
+(`connection_options`). Only the forwarded copy changes; the recorded head
+keeps every line.
 `Content-Type`, `Content-Encoding`, `Content-Length` and `User-Agent` go
 through untouched -- they are what the Collector needs in order to read what
 the exporter sent.
@@ -41,19 +44,36 @@ import socket
 
 from spanweave_zoo import sink
 
-# RFC 9110 §7.6.1. A hop-by-hop header describes the connection it arrived on,
-# and the forward is a different connection: passing them on would be passing
-# on a claim about something that no longer exists.
+# The zoo's own list (`SPEC.md` §4.3, R-3): no source carries these nine names
+# as one list. A hop-by-hop header describes the connection it arrived on, and
+# the forward is a different connection: passing one on would be passing on a
+# claim about something that no longer exists. One reason per name:
 HOP_BY_HOP = frozenset(
     {
+        # RFC 9110 §7.6.1: names this connection's options; an intermediary
+        # removes it once read (`connection_options` reads it first).
         "connection",
+        # RFC 9110 §7.6.1 names the next five among the fields an intermediary
+        # removes whether or not `Connection` lists them.
+        # Non-standard; no origin should see it.
+        "proxy-connection",
+        # Parameters of the exporter's persistent connection.
         "keep-alive",
+        # The transfer codings the exporter would accept on its connection.
+        "te",
+        # A framing the forward does not use: the sink decodes none, so a
+        # chunked POST is recorded, and forwarded, as a zero-byte body.
+        "transfer-encoding",
+        # A protocol switch on a connection the forward is not.
+        "upgrade",
+        # The next three are from RFC 2616 §13.5.1's list ("Trailers" there),
+        # which RFC 9110 does not repeat.
+        # Announces a trailer section; with `Transfer-Encoding` gone none follows.
+        "trailer",
+        # Authentication between the exporter and a proxy; the Collector is not
+        # one.
         "proxy-authenticate",
         "proxy-authorization",
-        "te",
-        "trailer",
-        "transfer-encoding",
-        "upgrade",
     }
 )
 
@@ -95,13 +115,52 @@ def rewrite_head(
     return b"\r\n".join(kept)
 
 
+def header_lines(octets: bytes) -> list[tuple[str, bytes]]:
+    """Each header line of the head, as (field name as sent, the line).
+
+    `rewrite_head`'s walk: `SPEC.md` §2.3's split on CRLF, the lines after the
+    request line and before the empty line whose field name is a token.
+    """
+    found: list[tuple[str, bytes]] = []
+    for line in octets.split(b"\r\n")[1:]:
+        if not line:
+            break
+        name = sink.field_name(line.decode("latin-1"))
+        if name is not None:
+            found.append((name, line))
+    return found
+
+
+def connection_options(octets: bytes) -> frozenset[str]:
+    """The field names the head's `Connection` lines list, folded to lower case.
+
+    RFC 9110 §7.6.1: an intermediary removes every field named as a
+    connection-option. Every `Connection` header line counts; each value is a
+    comma-separated list whose items are stripped of spaces and tabs, and an
+    empty item names nothing (`SPEC.md` §4.3). A `Connection:` inside another
+    line is not a header line, so it names nothing either.
+    """
+    options: set[str] = set()
+    for name, line in header_lines(octets):
+        if name.lower() != "connection":
+            continue
+        value = line.decode("latin-1").partition(":")[2]
+        for item in value.split(","):
+            option = item.strip(" \t").lower()
+            if option:
+                options.add(option)
+    return frozenset(options)
+
+
 def collector_head(octets: bytes, host: str) -> bytes:
     """What the tee sends the Collector for a recorded head (`SPEC.md` §4.3).
 
     The recorded octets with the `Host` line naming the Collector and the
-    hop-by-hop header lines dropped; nothing else changed.
+    hop-by-hop header lines dropped -- `HOP_BY_HOP`'s and the fields the
+    `Connection` lines name; nothing else changed. `octets` is not touched:
+    the record keeps every line.
     """
-    return rewrite_head(octets, host, drop=HOP_BY_HOP)
+    return rewrite_head(octets, host, drop=HOP_BY_HOP | connection_options(octets))
 
 
 class HttpForward:

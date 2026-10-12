@@ -228,6 +228,111 @@ def test_a_head_with_no_crlf_goes_to_the_collector_as_it_arrived():
     assert forward.collector_head(head, "b:1") == head
 
 
+def test_proxy_connection_does_not_reach_the_collector():
+    # R-3: a non-standard hop-by-hop field (RFC 9110 §7.6.1 names it among
+    # the fields an intermediary removes) that no origin should see.
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: a\r\n"
+        b"Proxy-Connection: keep-alive\r\nContent-Length: 0\r\n\r\n"
+    )
+    assert forward.collector_head(head, "b:1") == (
+        b"POST /v1/traces HTTP/1.1\r\nHost: b:1\r\nContent-Length: 0\r\n\r\n"
+    )
+
+
+def test_fields_named_in_connection_are_dropped_across_lines_in_any_case():
+    # R-3, RFC 9110 §7.6.1: an intermediary removes every field a
+    # `Connection` value names as a connection-option. The value is a comma
+    # list of tokens, matched in any case, with empty items and whitespace
+    # around them ignored, and every `Connection` line counts. A field no
+    # `Connection` line names stays; a `Connection:` inside another line
+    # (after a bare LF) is not a header line and names nothing.
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\n"
+        b"Host: a\r\n"
+        b"Connection: X-Foo, keep-alive\r\n"
+        b"X-Foo: one\r\n"
+        b"connection: ,x-BAR ,\t\r\n"
+        b"x-bar: two\r\n"
+        b"X-Baz: three\r\n"
+        b"User-Agent: otel\nConnection: X-Baz\r\n"
+        b"X-FOO: four\r\n"
+        b"Content-Length: 0\r\n"
+        b"\r\n"
+    )
+    assert forward.collector_head(head, "b:1") == (
+        b"POST /v1/traces HTTP/1.1\r\n"
+        b"Host: b:1\r\n"
+        b"X-Baz: three\r\n"
+        b"User-Agent: otel\nConnection: X-Baz\r\n"
+        b"Content-Length: 0\r\n"
+        b"\r\n"
+    )
+
+
+def test_a_field_named_in_connection_does_not_reach_the_collector(tmp_path):
+    """R-3, `SPEC.md` §4.3: `Connection: X-Foo, keep-alive` plus an `X-Foo`.
+
+    Through a real tee and a real forward into a downstream sink standing in
+    for the Collector, whose `.headers.raw` is what crossed the socket: the
+    record keeps `X-Foo` (the head is the record), the Collector never sees it.
+    """
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\n"
+        b"Host: 127.0.0.1:4318\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Connection: X-Foo, keep-alive\r\n"
+        b"X-Foo: hop\r\n"
+        b"Content-Length: 5\r\n"
+        b"\r\n"
+    )
+    run = tmp_path / "captures" / "z4" / "run-1"
+    recorded, delivered = through_a_downstream_sink(run, head + b"hello")
+    assert recorded == head
+    split = json.loads((run / "json" / "0001.headers.json").read_text())
+    names = [name.lower() for name, _ in split["headers"]]
+    assert "x-foo" not in names, delivered
+    assert "connection" not in names
+    assert names == ["host", "content-type", "content-length"]
+    assert (run / "json" / "0001.json").read_bytes() == b"hello"
+
+
+def through_a_downstream_sink(run: Path, request: bytes) -> tuple[bytes, bytes]:
+    """Send `request` to a tee forwarding to a json sink; both heads it left."""
+    downstream = sink.Recorder(
+        run / "json",
+        now=Clock(),
+        rejected=run / sink.REJECTED_JSON_DIR,
+        body_suffix=sink.JSON_SUFFIX,
+    )
+    server = sink.make_server(downstream, host="127.0.0.1", port=0)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+    )
+    thread.start()
+    try:
+        forwarder = forward.HttpForward("127.0.0.1", server.server_address[1])
+        with tee(run / "raw", forwarder) as (_, port):
+            with socket.create_connection(
+                ("127.0.0.1", port), timeout=TIMEOUT
+            ) as client:
+                client.sendall(request)
+                # A keep-alive request leaves the connection open: read the
+                # answer's head (its body is empty, `SPEC.md` §3.3), not to EOF.
+                answer = b""
+                while b"\r\n\r\n" not in answer and (chunk := client.recv(4096)):
+                    answer += chunk
+            assert answer.startswith(b"HTTP/1.1 200"), answer
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=TIMEOUT)
+    return (
+        (run / "raw" / "0001.headers.raw").read_bytes(),
+        (run / "json" / "0001.headers.raw").read_bytes(),
+    )
+
+
 def test_the_request_line_is_forwarded_as_received(tmp_path):
     raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
     spy = Spy(raw.parent)

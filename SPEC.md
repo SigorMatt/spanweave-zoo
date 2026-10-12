@@ -641,11 +641,46 @@ The raw sink forwards every body it **accepts** (§3.2 — a POST to
   - the **`Host` line** is substituted by §6.2's rule — the name as sent,
     `: `, and the Collector's `host:port` — because the destination has
     changed;
-  - the **hop-by-hop header lines** of RFC 9110 §7.6.1 — `Connection`,
-    `Keep-Alive`, `Transfer-Encoding`, `TE`, `Trailer`, `Upgrade`,
-    `Proxy-Authorization`, `Proxy-Authenticate`, matched by field name in any
-    case — are dropped with their CRLF, because they describe a connection the
-    forward is not.
+  - the **hop-by-hop header lines** are dropped with their CRLF, because
+    they describe a connection the forward is not. Which lines those are is
+    two rules, matched by field name in any case:
+    - **the zoo's own list of nine names.** No source carries this list;
+      each name is on it for its own reason (R-3):
+      - `Connection` — RFC 9110 §7.6.1: the field that names this
+        connection's options, which an intermediary removes once it has
+        read them;
+      - `Proxy-Connection`, `Keep-Alive`, `TE`, `Transfer-Encoding`,
+        `Upgrade` — named by RFC 9110 §7.6.1 among the fields an
+        intermediary removes before forwarding whether or not `Connection`
+        lists them. `Proxy-Connection` is non-standard, and no origin
+        should see it; `Keep-Alive` and `TE` are about the exporter's
+        connection; `Transfer-Encoding` announces a framing the forward does
+        not use (§3.7: the sink decodes no `Transfer-Encoding`, so a
+        chunked POST is recorded, and forwarded, as a zero-byte body);
+        `Upgrade` asks for a protocol switch
+        on a connection the forward is not;
+      - `Trailer`, `Proxy-Authenticate`, `Proxy-Authorization` — from RFC
+        2616 §13.5.1's hop-by-hop list (`Trailer` there as "Trailers"),
+        which RFC 9110 does not repeat. `Trailer` announces a trailer
+        section, and since `Transfer-Encoding` is dropped none follows; the
+        two `Proxy-` fields authenticate the exporter to a proxy, and the
+        Collector is not one;
+    - **the fields the head's `Connection` lines name.** RFC 9110 §7.6.1
+      requires an intermediary to remove every field named as a
+      connection-option in `Connection`. The value of every `Connection`
+      header line in the head (all of them, if it repeats) is read as a
+      comma-separated list: each item stripped of spaces and tabs, empty
+      items ignored, compared in any case. A header line whose name is one
+      of them is dropped, whatever the name — `X-Foo` in
+      `Connection: X-Foo, keep-alive`, and equally a field the Collector
+      needs, if a client names one: the client said it is hop-by-hop, and
+      the Collector's answer to what is left is the forward's outcome. A
+      `Connection:` that §2.3's split puts inside another line names
+      nothing.
+
+    These rules change only the **forwarded copy**. The recorded head —
+    `raw/NNNN.headers.raw` and `NNNN.headers.json` — keeps every line,
+    hop-by-hop or not: the head is the record.
 
   `Content-Type`, `Content-Encoding`, `Content-Length` and `User-Agent` go
   through untouched, because they are what the Collector needs in order to
@@ -1494,8 +1529,9 @@ then the body, and nothing else:
 - **Everything else as captured, octet for octet**: the request line (an
   `HTTP/1.0` stays `HTTP/1.0`), the headers in the order sent, repeats
   included, each name and value with the spacing it had, every line ending as
-  it was (a bare LF stays a bare LF), and the hop-by-hop headers of RFC 9110
-  §7.6.1 too — unlike the tee's forward (§4.3), the replay does not drop them,
+  it was (a bare LF stays a bare LF), and the hop-by-hop headers too — unlike
+  the tee's forward, which drops the zoo's list and what `Connection` names
+  (§4.3), the replay does not drop them,
   because they are octets of the head the exporter sent and the replay is a
   claim about that head.
 

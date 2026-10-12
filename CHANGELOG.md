@@ -4,6 +4,30 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## Close review R-3 — the hop-by-hop list is the zoo's own
+
+From `patches/decisions-zoo-2026-10-12b.md`, Commit 2. Changes what the
+Collector receives; no capture touched, and the recorded head keeps every line.
+
+- **`SPEC.md` §4.3, `spanweave_zoo/forward.py`**: the hop-by-hop list is
+  stated as the zoo's own, one reason per name. RFC 9110 §7.6.1 is cited for
+  `Connection`, its connection-options and the fields it names for removal;
+  RFC 2616 §13.5.1 for `Trailer`, `Proxy-Authenticate` and
+  `Proxy-Authorization`. §6.2 no longer attributes the list to RFC 9110.
+- **`Proxy-Connection`** joins the list (nine names, was eight).
+- **Fields named in `Connection`** are dropped from the forward, as RFC 9110
+  §7.6.1 requires of an intermediary (`forward.connection_options`): every
+  `Connection` line's value read as a comma list, items stripped of spaces
+  and tabs, compared in any case.
+- Tests (`tests/test_tee.py`):
+  `test_proxy_connection_does_not_reach_the_collector`,
+  `test_fields_named_in_connection_are_dropped_across_lines_in_any_case`
+  (repeats, case, empty items, and a `Connection:` after a bare LF that names
+  nothing), and `test_a_field_named_in_connection_does_not_reach_the_collector`
+  (`Connection: X-Foo, keep-alive` plus `X-Foo` through a real tee into a
+  downstream sink: recorded, not delivered). All three red on 1ddf386; the
+  mutation "skip the `Connection` parse" fails the last two.
+
 ## Close review R-1, R-6 — a divergence reaches the report
 
 From `patches/decisions-zoo-2026-10-12b.md`, Commit 1. Tests only: no code,
