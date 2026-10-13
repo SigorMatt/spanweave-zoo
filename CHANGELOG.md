@@ -4,6 +4,41 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B6a — the audit observes every policy and names every node
+
+`OPEN_QUESTIONS.md` §8, option 1 over a timed replay (the maintainer's decision
+of 2026-10-13). `SPEC.md` §7.3, §7.5, §7.6. No capture touched, neither pin
+moved; the committed `audit/*.md` reports are not regenerated here (B7r).
+
+- **Step 2 runs `serve` three times.** The end-of-input run (`--requests N`,
+  untimed) as before, still the one step 3 compares; then `--quiet 0
+  --requests N` and `--root-grace 0 --requests N`, each replayed with
+  `--timing`. Per policy run the report tables every `completed`,
+  `late_arrival`, `written` and `released` event -- trace, index, generation
+  (counted from the receiver's events, which carry none) and reason (a
+  `completed` detail's clause before its first colon) -- with the `finished`
+  event, every body's status and the gap slept before it, and every event
+  verbatim. The Method says the zeros are the audit's values: the pinned
+  receiver documents no default. The policy runs yield no finding; one that
+  could not be completed is an incomplete step (exit 1).
+- **Step 4 adds a row per node**: id, kind, status, model, parent present
+  (yes / no / absent from graph), the diagnostic codes naming it, and its span
+  events as the record carries them (the record's `events`, verbatim as
+  compact sorted JSON beneath the table, or *absent*).
+- **`audit.audit()` takes a `sleep` seam**, keyword, no default; `cli.py`
+  passes the one real `time.sleep`. A capture's timed runs take as long as
+  its captured gaps: Z3's `real` audit now takes about 23 s, the others
+  about a second.
+- Tests: through the `serve_command` seam, the four `serve` argvs (step 1's,
+  then step 2's three with their flags) and the captured gap slept on exactly
+  the two policy runs; the policy table's reasons and generations, and the
+  generation count on a crafted event stream (`forgotten` restarts it); a
+  graph with one ERROR node whose row carries `error`, its model, `absent
+  from graph` and its events; a node stating no parent and carrying no
+  events; a row for every node of Z4's `recorded` report. Red on the parent.
+- Mutations shown caught: the policy runs replayed untimed (no gap slept);
+  the status cell not read from the node (`unset` for the ERROR node).
+
 ## B5c — a folded `Content-Length` is unframeable
 
 B5b's open case; the maintainer's decision of 2026-10-13. `SPEC.md` §3.3,

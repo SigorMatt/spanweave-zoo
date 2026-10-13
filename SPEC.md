@@ -1968,15 +1968,59 @@ written `<port>` because the audit lets the kernel choose one.
    Recorded: every answer's status and every event line `serve` wrote to
    stderr, verbatim, and its exit status. A `415` on protobuf is a finding,
    not an error.
-2. **The Collector's JSON into `serve`.** The same, with `--json` and *N* the
-   number of `json/` bodies. **Completion** is `serve --requests N`: after the
-   *N*th request the input has ended, and the end of input runs
-   spanweave-live's `Run.finish()`, which replaces the completion with `Cap(0)`
-   and ticks once, so every trace still held completes and is written as
-   `graphs/<trace_id>.json` (its `SPEC.md` §8.5 at the pinned sha). That is the
-   `Cap(0)`-at-end the plan names, chosen by the receiver's own CLI and not by
-   the audit; the report says so once, in its method section. Recorded: the
-   statuses, every event, the exit status and every graph file's bytes.
+2. **The Collector's JSON into `serve`, three times** (B6a). The same, with
+   `--json` and *N* the number of `json/` bodies, under three completions, in
+   this order:
+   - **End of input.** `serve --port 0 --out graphs --requests N`, replayed
+     back to back as step 1 is. **Completion** is `serve --requests N`: after
+     the *N*th request the input has ended, and the end of input runs
+     spanweave-live's `Run.finish()`, which replaces the completion with
+     `Cap(0)` and ticks once, so every trace still held completes and is
+     written as `graphs/<trace_id>.json` (its `SPEC.md` §8.5 at the pinned
+     sha). That is the `Cap(0)`-at-end the plan names, chosen by the
+     receiver's own CLI and not by the audit; the report says so once, in its
+     method section. Recorded: the statuses, every event, the exit status and
+     every graph file's bytes. Step 2's findings are this run's, and it is
+     the run step 3 compares and checks against.
+   - **`--quiet 0`.** `serve --port 0 --out graphs --quiet 0 --requests N`,
+     and `zoo replay <run> --json --timing` into it (§6.3), the captured gaps
+     slept through the audit's `sleep` seam (§7.6).
+   - **`--root-grace 0`.** The same, with `--root-grace 0`.
+
+   **Zero is the audit's value, not the receiver's.** The pinned
+   spanweave-live documents no default for either flag — absent is "no such
+   policy", and its README ("The CLI") calls every bound the caller's number
+   (`OPEN_QUESTIONS.md` §8) — so the audit chooses the smallest legal value,
+   at which each policy fires at the first tick its condition holds (its §5.3:
+   both boundaries inclusive, "`Quiet(0)` ... is legal"). `--requests N` is
+   still passed, so a trace a policy has not completed by the *N*th request
+   is completed at end of input by `Cap(0)`, and the `completed` event's reason
+   says which of the two it was: what each policy did with a root that arrived
+   last, or with a trace that has no root, is observed rather than to be
+   established. The replay is timed so the receiver sees the exporter's own
+   pauses between bodies; it ticks once per request (its §8.5), so the
+   sequence of events is the capture's. The report's method states that the
+   values are the audit's.
+
+   Recorded for each of the two: every answer's status and the gap slept
+   before it, the replayer's own lines (a gap it could not compute, §6.3),
+   the exit status, every event verbatim, and one table of every `completed`,
+   `late_arrival`, `written` and `released` event in the order `serve` wrote
+   them — code, trace id, `index`, generation and reason — with the
+   `finished` event beneath it. The **reason** of a `completed` is the clause
+   of its `detail` before the first colon ("the quiet policy fired on
+   Quiet(seconds=0.0)"): at the pinned sha the event carries its policy in no
+   field of its own, and the clock readings follow the colon. A `written` or
+   `released` event's reason is its `detail`; a `late_arrival`'s is none, its
+   `detail` being clock readings. The **generation** is the receiver's (its
+   §5.5), counted from its events, which carry none: a trace's *n*th
+   `completed` completes generation *n*, a `late_arrival` opens the next one,
+   a `written` or `released` belongs to the generation just completed, and a
+   `forgotten` for the trace starts the count again (its `--max-completed`:
+   the next record opens generation 1). The two policy runs yield **no
+   finding**: they are an observation, and step 2's findings are the
+   end-of-input run's. One that could not be completed (§7.5) is an
+   incomplete step and exit 1, and stops nothing after it.
 3. **Live against batch.** For each trace, the records the receiver fed, in
    order, through `spanweave.build` — the live graph must equal the batch graph
    byte for byte (spanweave's `SPEC.md` §10.1, prefix consistency, on a
@@ -2010,7 +2054,21 @@ written `<port>` because the audit lets the kernel choose one.
    diagnostic code with its count, the keys of the `unmapped_attributes`
    diagnostics by size (the number of diagnostics naming each key, largest
    first, and the bytes those diagnostics take in the graph document as
-   compact sorted JSON), and every node of kind `unknown` by name.
+   compact sorted JSON), and every node of kind `unknown` by name. Then **one
+   row per node** (B6a), in the graph's order: its id; its kind; its status;
+   its `model` (the key of that name in `Node.attributes`, spanweave's
+   normalized subset), or *absent*; whether its parent is present — *yes*
+   where a `parent` edge points at it, *absent from graph* where an
+   `orphan_parent` diagnostic names it (its record states a parent this graph
+   does not hold), *no* where its record states none; the codes of the
+   diagnostics naming it (`Diagnostic.node_id`), each once with its count
+   where more than one; and its **span events as the record carries them**:
+   the value under the `events` key of `Node.raw.source` — OTLP's span field,
+   kept verbatim on the record spanweave's reader flattened — written beneath
+   the table as compact sorted JSON, one block per node, and the row saying
+   how many; *absent* where the record has no such key. Nothing in a row is
+   read from a payload: every value is the pinned library's, through its
+   public API.
 5. **`agentgolden`'s signature on each graph.** `agentgolden.signature.signature(graph)`,
    as a smoke, no rules evaluated. Recorded: the number of steps and their
    tokens, or the exception it raised.
@@ -2024,8 +2082,9 @@ read.
 The audit parses no payload of its own (§1.1): bodies are read only by the
 pinned receiver and the pinned library, and the graphs only through their
 public API. The `listening` event's port and the clock readings a `completed`
-event carries (`seconds`, and the two readings in its `detail`) are the
-receiver's and differ from run to run; nothing else in a report does.
+or `late_arrival` event carries (`seconds`, and the two readings in its
+`detail`) are the receiver's and differ from run to run; nothing else in a
+report does.
 
 ### 7.4 Findings, and who owns them
 
@@ -2057,12 +2116,15 @@ understand, which is its job (`A6` turns the tables into probes).
 In order: the header (the capture, its `kind` and seal, the zoo's version, the
 three libraries' versions and shas), the method, the findings with a count per
 owner, then one section per step with its command, a table and every event.
+Step 2's section holds its three runs, the end-of-input run first, each
+policy run under a heading naming its flag; step 4's holds, per graph, the
+inspect output, the diagnostic tables and the node table (§7.3).
 Written whole at the end; a second audit of the same capture overwrites it.
 
 | Exit | When |
 |---|---|
 | **0** | every step ran; the report is written (findings or not) |
-| **1** | the report is written and a step could not be completed: `serve` did not start, did not finish within its bound, the capture has no `json/` body, or step 3's reconstruction did not match what `serve` reported |
+| **1** | the report is written and a step could not be completed: `serve` did not start, did not finish within its bound (in step 1, or in any of step 2's three runs), the capture has no `json/` body, or step 3's reconstruction did not match what `serve` reported |
 
 `serve` did not start covers both a child that exits before its `listening`
 event and a command that cannot be executed at all — `Popen` raising
@@ -2083,10 +2145,11 @@ seam of §6's, named here:
 
 | Seam | What it is | Why |
 |---|---|---|
-| `serve_command` | the argv prefix that runs `spanweave-live`; the audit appends `serve --port 0 --out graphs --requests N` (§7.3). Default `SERVE_COMMAND`, `python -m spanweave_live.cli` on this interpreter | starting a process is touching the world. A test passes a command that never starts or cannot be executed, or one that wraps the real `serve` and changes what it writes — which is how a live ≠ batch divergence is driven to the report |
+| `serve_command` | the argv prefix that runs `spanweave-live`; the audit appends `serve --port 0 --out graphs --requests N`, or for step 2's policy runs `serve --port 0 --out graphs --quiet 0 --requests N` and `... --root-grace 0 --requests N` (§7.3). Default `SERVE_COMMAND`, `python -m spanweave_live.cli` on this interpreter | starting a process is touching the world. A test passes a command that never starts or cannot be executed, or one that wraps the real `serve` and changes what it writes — which is how a live ≠ batch divergence is driven to the report |
 | `reread` | called with the run and its `json/` files; returns the in-process reconstruction step 3 checks against `serve` (the statuses, and the records by partition). Default `reread`, the pinned `Endpoint` and `trace_id_of` as above | a test passes one that returns statuses or records other than `serve`'s, so step 3's mismatch (§7.3) is driven without a defect in spanweave-live |
 | `inspect_command` | the argv prefix that runs `spanweave`; the audit appends `inspect graphs/<trace_id>.json`. Default `INSPECT_COMMAND`, `python -m spanweave.cli` | the same, for step 4 |
 | `signature` | called with each step-3 graph; returns agentgolden's `Signature` or raises. Default `agentgolden.signature.signature` | a test passes one that raises, so a step-5 finding and its owner (§7.4) are driven without a defect in agentgolden |
+| `sleep` | called with each captured gap the two timed replays of step 2 sleep (§6.3). Keyword, **no default**: `cli.py` passes the one real `time.sleep`, as it does to `zoo replay --timing` | sleeping is touching the world, and nothing under `spanweave_zoo/` sleeps on its own. A test passes one that records the gaps and returns, so a timed run takes no time and every gap it slept is a value the test asserts |
 | `installed` | called with a distribution name; returns the commit installed (its PEP 610 `direct_url.json`) or `None`. Default `installed_sha` | a test passes one that reports a sha other than the pin, so §7.2's refusal is driven without reinstalling anything |
 | `send` (§6.2) | the capture reaches `serve` through `zoo replay`'s own `send`, in-process: `replay.sender("127.0.0.1", port, timeout=SEND_TIMEOUT)` | the one outbound socket the audit uses is §6.2's, the package's second outbound socket with §4.8's `forward`; the audit opens none of its own |
 | `--port 0` | `serve` is told to bind port `0`; the kernel chooses the port, and the audit reads it from `serve`'s `listening` event on stderr | the audit binds nothing, never collides with a port in use and never races a fixed one |

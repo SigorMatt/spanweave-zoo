@@ -13,6 +13,7 @@ fake receiver could only confirm what the test already believed.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tomllib
@@ -44,8 +45,26 @@ pytestmark = [
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "capture"
 RECORDED = REPO / "captures" / "z4" / "2026-10-12-recorded"
+# Two `json/` bodies, 0.202147 s apart by their receipt times: the smallest
+# committed capture with a gap for `--timing` to sleep.
+REAL = REPO / "captures" / "z4" / "2026-10-12-real"
 
 OWNERS = {"spanweave", "spanweave-live", "agentgolden"}
+
+
+def no_sleep(seconds: float) -> None:
+    """The audit's `sleep` seam (`SPEC.md` 7.6) for a test: a timed replay
+    that takes no time."""
+
+
+class Sleeps:
+    """A `sleep` that records every gap it was asked to sleep, and returns."""
+
+    def __init__(self) -> None:
+        self.gaps: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.gaps.append(seconds)
 
 
 def pyproject_pins() -> dict[str, str]:
@@ -62,7 +81,7 @@ def pyproject_pins() -> dict[str, str]:
 @pytest.fixture(scope="module")
 def fixture_audit(tmp_path_factory):
     out = tmp_path_factory.mktemp("audit")
-    result = audit.audit(FIXTURE, out=out)
+    result = audit.audit(FIXTURE, out=out, sleep=no_sleep)
     return result, result.path.read_text(encoding="utf-8")
 
 
@@ -72,7 +91,7 @@ def recorded_audit(tmp_path_factory):
     # read and never changed. The fixture capture's one hand-built span is
     # claimed by no adapter, so it yields no graph; this one does.
     out = tmp_path_factory.mktemp("audit")
-    result = audit.audit(RECORDED, out=out)
+    result = audit.audit(RECORDED, out=out, sleep=no_sleep)
     return result, result.path.read_text(encoding="utf-8")
 
 
@@ -158,6 +177,203 @@ def test_the_method_section_states_the_completion_once(fixture_audit):
     assert "--requests" in text
 
 
+# --- B6a: step 2 under each policy, step 4 per node (SPEC.md 7.3) -----------
+
+
+def recording_serve(log: Path) -> tuple[str, ...]:
+    """The real `serve`, run as it is run, with every argv it was given
+    appended to `log` first: the `serve_command` seam (`SPEC.md` 7.6)."""
+    return (
+        sys.executable,
+        "-c",
+        "import json, runpy, sys\n"
+        f"with open({str(log)!r}, 'a', encoding='utf-8') as seen:\n"
+        "    seen.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "sys.argv = ['spanweave-live', *sys.argv[1:]]\n"
+        "runpy.run_module('spanweave_live.cli', run_name='__main__')\n",
+    )
+
+
+def test_step_two_runs_serve_three_times_two_of_them_timed(tmp_path):
+    # OPEN_QUESTIONS.md section 8's decision: the end-of-input run as before,
+    # then `--quiet 0` and `--root-grace 0`, each with `--requests N`, each
+    # replayed with `--timing` -- the captured gap slept through the seam.
+    log = tmp_path / "argv.jsonl"
+    sleeps = Sleeps()
+    result = audit.audit(
+        REAL, out=tmp_path / "audit", serve_command=recording_serve(log), sleep=sleeps
+    )
+    assert result.exit == 0, result.incomplete
+    seen = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    base = ["serve", "--port", "0", "--out", "graphs"]
+    assert seen == [
+        [*base, "--requests", "2"],
+        [*base, "--requests", "2"],
+        [*base, "--quiet", "0", "--requests", "2"],
+        [*base, "--root-grace", "0", "--requests", "2"],
+    ]
+    # One captured gap per timed run, and none for the untimed ones.
+    assert sleeps.gaps == [pytest.approx(0.202147)] * 2
+    assert [run.policy for run in result.policy_runs] == [
+        ("--quiet", "0"),
+        ("--root-grace", "0"),
+    ]
+    for run in result.policy_runs:
+        assert [o.slept for o in run.outcomes] == [None, pytest.approx(0.202147)]
+        assert [o.status for o in run.outcomes] == [200, 200]
+    text = result.path.read_text(encoding="utf-8")
+    for flag in ("--quiet 0", "--root-grace 0"):
+        assert f"--out graphs {flag} --requests 2" in text, flag
+    assert text.count("--json --timing") == 2
+    # The Method says whose values the zeros are.
+    method = text.split("## Method", 1)[1].split("## Findings", 1)[0]
+    assert "the audit's" in method and "--quiet 0" in method
+
+
+def test_each_policy_run_tables_its_completions_with_reason_and_generation(
+    tmp_path,
+):
+    result = audit.audit(REAL, out=tmp_path, sleep=no_sleep)
+    assert result.exit == 0, result.incomplete
+    quiet, grace = result.policy_runs
+    completed = [e for e in audit.policy_events(quiet) if e.code == "completed"]
+    assert completed
+    for event in completed:
+        assert event.reason == "the quiet policy fired on Quiet(seconds=0.0)"
+        assert event.generation >= 1
+    finished = quiet.finished()
+    assert finished is not None and finished.get("exit") == 0
+    text = result.path.read_text(encoding="utf-8")
+    assert "the quiet policy fired on Quiet(seconds=0.0)" in text
+    assert grace.lines and "## Step 3" in text
+
+
+def test_generations_count_completions_and_restart_on_forgotten():
+    # `SPEC.md` 7.3: the stderr events carry no generation; the audit counts
+    # the receiver's own -- the nth `completed` of a trace is generation n.
+    def line(code, trace, index, detail="d"):
+        return json.dumps(
+            {"code": code, "detail": detail, "index": index, "trace_id": trace}
+        )
+
+    served = audit.Served(source="json", files=[], command=[])
+    served.lines = [
+        line("completed", "t", 1, "the quiet policy fired on Quiet(seconds=0.0): x"),
+        line("written", "t", 1, "graphs/t.json"),
+        line("late_arrival", "t", 2),
+        line("completed", "t", 2, "the cap policy fired on Cap(records=0): y"),
+        line("released", "t", 2, "released"),
+        line("forgotten", "t", 2),
+        line("completed", "t", 3, "the cap policy fired on Cap(records=0): z"),
+    ]
+    rows = [(e.code, e.generation, e.reason) for e in audit.policy_events(served)]
+    assert rows == [
+        ("completed", 1, "the quiet policy fired on Quiet(seconds=0.0)"),
+        ("written", 1, "graphs/t.json"),
+        ("late_arrival", 2, ""),
+        ("completed", 2, "the cap policy fired on Cap(records=0)"),
+        ("released", 2, "released"),
+        ("completed", 1, "the cap policy fired on Cap(records=0)"),
+    ]
+
+
+def _error_graph():
+    import spanweave
+
+    span = {
+        "trace_id": "t1",
+        "start_time": "1791811632860513997",
+        "end_time": "1791811632878070667",
+    }
+    records = [
+        {
+            **span,
+            "span_id": "a1",
+            "parent_id": "p0",
+            "name": "chat m-1",
+            "kind": 3,
+            "attributes": {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": "m-1",
+            },
+            "status": "ERROR",
+            "events": [{"name": "exception", "timeUnixNano": "1"}],
+        },
+        {
+            **span,
+            "span_id": "b1",
+            "parent_id": "a1",
+            "name": "execute_tool x",
+            "kind": 1,
+            "attributes": {"gen_ai.operation.name": "execute_tool"},
+            "status": "OK",
+        },
+    ]
+    builder = spanweave.Builder()
+    for record in records:
+        builder.feed(record)
+    return builder.graph()
+
+
+def _cells(row: str) -> list[str]:
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+
+def test_the_node_table_names_an_error_node_with_its_status():
+    lines = audit.node_table(_error_graph())
+    [error] = [row for row in lines if row.startswith("| `a1` |")]
+    assert _cells(error) == [
+        "`a1`",
+        "llm",
+        "error",
+        "`m-1`",
+        "absent from graph",
+        "`orphan_parent`, `timestamp_unit_suspect`, `unmapped_attributes`",
+        "1",
+    ]
+    [child] = [row for row in lines if row.startswith("| `b1` |")]
+    assert _cells(child)[1:5] == ["tool", "ok", "absent", "yes"]
+    assert _cells(child)[6] == "absent"
+    # The events, as the record carries them, beneath the table.
+    assert '[{"name":"exception","timeUnixNano":"1"}]' in "\n".join(lines)
+
+
+def test_a_node_whose_record_states_no_parent_and_carries_no_events():
+    import spanweave
+
+    builder = spanweave.Builder()
+    builder.feed(
+        {
+            "trace_id": "t1",
+            "span_id": "r1",
+            "name": "invoke_agent",
+            "kind": 1,
+            "attributes": {"gen_ai.operation.name": "invoke_agent"},
+            "status": "UNSET",
+        }
+    )
+    [row] = [r for r in audit.node_table(builder.graph()) if r.startswith("| `r1` |")]
+    cells = _cells(row)
+    assert cells[2] == "unset"
+    assert cells[4] == "no"
+    assert cells[6] == "absent"
+
+
+def test_the_report_carries_a_row_for_every_node(recorded_audit):
+    result, text = recorded_audit
+    step4 = text.split("## Step 4 ", 1)[1].split("## Step 5 ", 1)[0]
+    assert "| Node | Kind | Status | Model | Parent | Diagnostics | Span events |" in (
+        step4
+    )
+    for partition in result.partitions:
+        if partition.graph is None or partition.live is None:
+            continue
+        for node in partition.graph.nodes():
+            assert f"| `{node.id}` | {node.kind.value} | {node.status.value} |" in (
+                step4
+            ), node.id
+
+
 # --- the owner rules (SPEC.md section 7.4) ------------------------------------
 
 
@@ -204,7 +420,9 @@ def test_a_live_batch_divergence_reaches_the_report_with_its_owner(tmp_path):
     # SPEC.md section 7.4: live != batch where incremental = batch is
     # spanweave-live's. `divergence_owner` is tested directly above; this is
     # the path from it to a finding and to the report (REVIEW-2026-10-12 R-1).
-    result = audit.audit(RECORDED, out=tmp_path, serve_command=DIVERGING_SERVE)
+    result = audit.audit(
+        RECORDED, out=tmp_path, serve_command=DIVERGING_SERVE, sleep=no_sleep
+    )
     assert result.exit == 0, result.incomplete
     identified = [p for p in result.partitions if p.trace_id is not None]
     assert identified
@@ -231,7 +449,7 @@ def test_a_signature_that_raises_is_a_finding_owned_by_agentgolden(tmp_path):
     def raising(graph):
         raise RuntimeError("planted")
 
-    result = audit.audit(RECORDED, out=tmp_path, signature=raising)
+    result = audit.audit(RECORDED, out=tmp_path, signature=raising, sleep=no_sleep)
     [smoke] = [f for f in result.findings if f.step == 5]
     assert smoke.owner == "agentgolden"
     assert "RuntimeError: planted" in smoke.observed
@@ -269,7 +487,7 @@ def test_a_capture_with_no_json_body_is_audited_as_far_as_it_goes(tmp_path):
         [(lambda port: head_octets(port, body), body)],
         clock,
     )
-    result = audit.audit(run, out=tmp_path / "audit")
+    result = audit.audit(run, out=tmp_path / "audit", sleep=no_sleep)
     assert result.exit == 1
     assert any("json/" in reason for reason in result.incomplete)
     text = result.path.read_text(encoding="utf-8")
@@ -279,7 +497,7 @@ def test_a_capture_with_no_json_body_is_audited_as_far_as_it_goes(tmp_path):
 
 def test_a_serve_that_never_starts_leaves_the_audit_incomplete(tmp_path):
     failing = (sys.executable, "-c", "import sys; sys.exit(3)")
-    result = audit.audit(FIXTURE, out=tmp_path, serve_command=failing)
+    result = audit.audit(FIXTURE, out=tmp_path, serve_command=failing, sleep=no_sleep)
     assert result.exit == 1
     assert any("listening" in reason for reason in result.incomplete)
 
@@ -292,10 +510,15 @@ def test_a_serve_command_that_cannot_be_executed_still_writes_the_report(
     # exit is 1, not a traceback and no report (Qodo Q5, B6 (b)).
     missing = (str(tmp_path / "no-such-serve"),)
     out = tmp_path / "audit"
-    result = audit.audit(FIXTURE, out=out, serve_command=missing)
+    result = audit.audit(FIXTURE, out=out, serve_command=missing, sleep=no_sleep)
     assert result.exit == 1
     started = [r for r in result.incomplete if "serve did not start: " in r]
-    assert [r.split(":", 1)[0] for r in started] == ["step 1", "step 2"]
+    assert [r.split(":", 1)[0] for r in started] == [
+        "step 1",
+        "step 2",
+        "step 2 (--quiet 0)",
+        "step 2 (--root-grace 0)",
+    ]
     assert result.findings == []
     text = result.path.read_text(encoding="utf-8")
     assert "Incomplete: serve did not start: " in text
@@ -321,7 +544,7 @@ def test_a_reread_that_does_not_match_serve_runs_no_step_after_it(tmp_path):
         found.statuses = [599 for _ in found.statuses]
         return found
 
-    result = audit.audit(RECORDED, out=tmp_path, reread=short)
+    result = audit.audit(RECORDED, out=tmp_path, reread=short, sleep=no_sleep)
     assert result.exit == 1
     [mismatch] = [r for r in result.incomplete if r.startswith("step 3")]
     assert "does not match serve" in mismatch
@@ -344,7 +567,7 @@ def test_a_routed_count_that_does_not_match_is_the_same_refusal(tmp_path):
         found.partitions[0].origins.pop()
         return found
 
-    result = audit.audit(RECORDED, out=tmp_path, reread=fewer)
+    result = audit.audit(RECORDED, out=tmp_path, reread=fewer, sleep=no_sleep)
     assert result.exit == 1
     assert any("routed" in r for r in result.incomplete if r.startswith("step 3"))
     assert [f for f in result.findings if f.step >= 3] == []
@@ -384,5 +607,7 @@ def test_a_path_that_is_not_a_run_is_refused(tmp_path, capsys):
 
 def test_an_installed_sha_that_is_not_the_pin_is_refused(tmp_path):
     with pytest.raises(audit.AuditRefused, match="spanweave"):
-        audit.audit(FIXTURE, out=tmp_path, installed=lambda name: "0" * 40)
+        audit.audit(
+            FIXTURE, out=tmp_path, installed=lambda name: "0" * 40, sleep=no_sleep
+        )
     assert not list(tmp_path.iterdir())
