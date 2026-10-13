@@ -615,10 +615,14 @@ class _Handler(BaseHTTPRequestHandler):
         where its body ends, so it cannot know where the next request on the
         connection begins -- and `_answer` closes the connection after it
         rather than read whatever follows (a chunked body's chunks) as a
-        request. Unframed is: no `Content-Length`, one that is not a number,
-        or one that is not positive with a `Transfer-Encoding` beside it.
+        request. Unframed is (`SPEC.md` §3.7's table): any
+        `Transfer-Encoding`, whatever `Content-Length` says beside it -- the
+        request-smuggling shape, never read by its length (B5a); no
+        `Content-Length`; one that is not a number; or a negative one.
         """
         self._unframed = True
+        if self.headers.get("Transfer-Encoding") is not None:
+            return b""
         declared = self.headers.get("Content-Length")
         if declared is None:
             return b""
@@ -629,8 +633,7 @@ class _Handler(BaseHTTPRequestHandler):
             # fact: it stays in `headers.json`, and the body is what we could
             # read, which is nothing.
             return b""
-        if length <= 0:
-            self._unframed = self.headers.get("Transfer-Encoding") is not None
+        if length < 0:
             return b""
         self._unframed = False
         return self.rfile.read(length)

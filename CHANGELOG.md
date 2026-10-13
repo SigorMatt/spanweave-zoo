@@ -4,6 +4,29 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B5a — a request with `Transfer-Encoding` is never read by its `Content-Length`
+
+Review of B5's remainder; the maintainer's decision of 2026-10-13. `SPEC.md`
+§3.3, §3.7. No capture touched; the sink still decodes no framing.
+
+- **Any `Transfer-Encoding` makes a POST unframed**, whatever its
+  `Content-Length` says: a zero-byte body, the usual answer with `Connection:
+  close`, and the connection closed. Before, a POST carrying both headers with
+  a positive length was read by that length -- the first octets of its chunk
+  frames recorded as the body and the rest parsed as the next request (a stray
+  `400`/`501`, or a second request nobody sent).
+- **A negative `Content-Length` closes too**, with or without
+  `Transfer-Encoding`. Before, with none, it was a zero-byte body on a kept
+  connection, and the octets after it were read as the next request.
+- **`SPEC.md` §3.7 now has a table** of every framing case and its outcome.
+- Tests: a POST with both headers followed by its chunk frames and a
+  well-formed POST on one connection, a negative length alone likewise, and
+  three new framings in the unframed parametrization (positive with
+  `chunked`, positive with another `Transfer-Encoding`, negative alone) -- all
+  red on the parent.
+- Mutation shown caught: dropping the `Transfer-Encoding` check (4 cases
+  fail).
+
 ## B4a — the replayer refuses a path outside the run
 
 `OPEN_QUESTIONS.md` §7, option 1. `SPEC.md` §5.4, §6.1, §6.4, §6.5, §7.2. No

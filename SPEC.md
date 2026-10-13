@@ -365,7 +365,7 @@ accept. The sink is not a receiver and its `200` means "recorded", never
 
 A POST the sink **could not frame** (§3.7) gets that same answer with one
 header more, **`Connection: close`**, and the connection is closed once the
-answer is sent (B5, Q9). The sink decodes no framing, so after such a request
+answer is sent (B5, Q9; every case is §3.7's table, B5a). The sink decodes no framing, so after such a request
 it does not know where the next one begins: kept alive, it read a chunked
 body's chunks as a request line and answered a `400` no exporter asked for.
 Closing records what it could see and guesses nothing about what follows
@@ -476,21 +476,33 @@ never varies its answer by content; and never imports `spanweave` or
 mislabelled, double-compressed or not OTLP at all is recorded like any other,
 because the zoo records what exporters send and never improves it (§1).
 
-A POST that carries no `Content-Length` — or one whose `Content-Length` is not
-a number — is recorded as a **zero-byte** body with its headers beside it, and
-answered like any other. The sink reads the framing it was given and does not
-guess one it was not: decoding a `Transfer-Encoding` is decoding. What it could
-see is what the capture says it saw, and the header that said so is in the
-record.
+The sink reads the framing it was given and does not guess one it was not:
+decoding a `Transfer-Encoding` is decoding. A POST whose body the sink cannot
+read by its `Content-Length` alone is recorded as a **zero-byte** body with its
+headers beside it, and answered like any other. What it could see is what the
+capture says it saw, and the header that said so is in the record.
 
-Such a POST is **unframed**, and so is one whose `Content-Length` is not
-positive while a `Transfer-Encoding` is present: in each the sink cannot tell
-where the body ends, and so where the next request on the connection begins.
-An unframed POST is recorded exactly as above and answered with `Connection:
-close`, and its connection is closed after the answer (§3.3): nothing sent
-after it on that connection is read, recorded or answered. A `Content-Length:
-0` with no `Transfer-Encoding` is a framing — an empty body — and keeps its
-connection.
+Such a POST is **unframed**: the sink cannot tell where its body ends, and so
+where the next request on the connection begins. An unframed POST is answered
+with `Connection: close`, and its connection is closed after the answer
+(§3.3): nothing sent after it on that connection is read, recorded or
+answered. A request carrying **any** `Transfer-Encoding` is unframed whatever
+its `Content-Length` says — the two together are the request-smuggling shape,
+and read by its length the sink would take the first octets of the chunk
+frames as a body and the rest as a request nobody sent (B5a). The table is
+every case, decided by the framing headers alone and never by the bytes:
+
+| `Transfer-Encoding` | `Content-Length` | Body recorded | Connection |
+|---|---|---|---|
+| present, any value | any, or absent | zero bytes | closed (unframed) |
+| absent | absent | zero bytes | closed (unframed) |
+| absent | not a number | zero bytes | closed (unframed) |
+| absent | negative | zero bytes | closed (unframed) |
+| absent | `0` | zero bytes (an empty body) | kept |
+| absent | positive *n* | the *n* octets declared | kept |
+
+A `Content-Length: 0` with no `Transfer-Encoding` is a framing — an empty
+body — and keeps its connection, as does a positive one.
 
 It **binds and resolves no name**. `http.server`'s own bind follows with
 `socket.getfqdn(host)` — a reverse lookup of the address it was just given,

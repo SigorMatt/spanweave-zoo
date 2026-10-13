@@ -953,8 +953,19 @@ def test_a_chunked_post_then_a_well_formed_one_is_one_body_and_no_stray_400(
         b"Content-Length: five\r\n",
         b"Content-Length: 0\r\nTransfer-Encoding: chunked\r\n",
         b"Content-Length: -3\r\nTransfer-Encoding: chunked\r\n",
+        b"Content-Length: 5\r\nTransfer-Encoding: chunked\r\n",
+        b"Transfer-Encoding: gzip\r\nContent-Length: 5\r\n",
+        b"Content-Length: -3\r\n",
     ],
-    ids=["no-length", "non-numeric", "zero-with-te", "negative-with-te"],
+    ids=[
+        "no-length",
+        "non-numeric",
+        "zero-with-te",
+        "negative-with-te",
+        "positive-with-te",
+        "positive-with-any-te",
+        "negative",
+    ],
 )
 def test_every_post_the_sink_cannot_frame_closes_its_connection(tmp_path, framing):
     # B5 (a): each framing the row names is recorded as a zero-byte body
@@ -969,6 +980,42 @@ def test_every_post_the_sink_cannot_frame_closes_its_connection(tmp_path, framin
     assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
     assert body_of(raw) == b""
     assert head_of(raw) == head
+
+
+def test_a_post_with_both_framings_is_never_read_by_its_length(tmp_path):
+    # B5a, `SPEC.md` §3.7: `Content-Length` beside a `Transfer-Encoding` is the
+    # request-smuggling shape. Read by its length, the sink took the first five
+    # octets of the chunk frames as the body and parsed the rest as the next
+    # request -- a 400 no exporter asked for, or a second request nobody sent.
+    # Any `Transfer-Encoding` makes the POST unframed whatever the length says:
+    # a zero-byte body, one answer that says close, and nothing after it read.
+    raw = tmp_path / "run" / "raw"
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+        b"Content-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    frames = b"5\r\nhello\r\n0\r\n\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + frames + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+
+
+def test_a_negative_length_alone_closes_its_connection(tmp_path):
+    # B5a, `SPEC.md` §3.7: a negative `Content-Length` frames nothing, so the
+    # sink cannot know where the next request begins. Kept alive, the octets
+    # after it were read as a second request and recorded as a second body.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\nContent-Length: -3\r\n\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"abc" + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
 
 
 def test_an_unframed_post_to_another_path_is_404_and_closes_too(tmp_path):
