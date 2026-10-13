@@ -4,6 +4,26 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B7-Z3 — Z3 (`echo-planner`) audited
+
+`zoo audit` on `captures/z3/2026-10-13-real` and `captures/z3/2026-10-13-recorded`,
+at the `audit` extra's pins (unchanged). No `SPEC.md` section touched, no code
+or test changed, no capture touched (`zoo verify` green on both before the audit).
+
+- **Reports:** `audit/z3-2026-10-13-real.md` and `audit/z3-2026-10-13-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each. One finding
+  each: every `raw/` body answered 415 (spanweave-live). A second run differs
+  only in the `listening` port and a `completed` event's clock readings (§7.3).
+- **Graphs:** one trace per capture, 102 records, live = batch = incremental
+  byte for byte; every record claimed by `openinference`; step 5 clean.
+- **`PROBES.md`:** L1 and S3 seen again in Z3; new L3 (root in the last of four
+  bodies: one completion, at the end of input), S6 (two instrumentors: 50 `llm`
+  nodes), S7 (unmapped OpenInference keys, 363 kB), S8
+  (`droppedAttributesCount` on 18 nodes; the 599 SDK lines are not in the
+  capture), S9 (`unpaired_call` × 48), S10 (nine `llm` steps with no model).
+  Observations only; the open ones are marked *to establish*.
+- **`ROADMAP.md`:** Z3's row reads audited.
+
 ## B5a — a request with `Transfer-Encoding` is never read by its `Content-Length`
 
 Review of B5's remainder; the maintainer's decision of 2026-10-13. `SPEC.md`
