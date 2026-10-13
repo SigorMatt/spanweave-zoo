@@ -1,0 +1,9 @@
+POST /v1/traces HTTP/1.1
+Host: localhost:4318
+user-agent: OTel-OTLP-Exporter-Python/1.45.1
+Accept-Encoding: gzip, deflate
+Accept: */*
+Connection: keep-alive
+content-type: application/x-protobuf
+Content-Length: 31379
+
