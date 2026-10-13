@@ -365,7 +365,7 @@ accept. The sink is not a receiver and its `200` means "recorded", never
 
 A POST the sink **could not frame** (§3.7) gets that same answer with one
 header more, **`Connection: close`**, and the connection is closed once the
-answer is sent (B5, Q9; every case is §3.7's table, B5a). The sink decodes no framing, so after such a request
+answer is sent (B5, Q9; every case is §3.7's table, B5a, B5b). The sink decodes no framing, so after such a request
 it does not know where the next one begins: kept alive, it read a chunked
 body's chunks as a request line and answered a `400` no exporter asked for.
 Closing records what it could see and guesses nothing about what follows
@@ -489,20 +489,35 @@ with `Connection: close`, and its connection is closed after the answer
 answered. A request carrying **any** `Transfer-Encoding` is unframed whatever
 its `Content-Length` says — the two together are the request-smuggling shape,
 and read by its length the sink would take the first octets of the chunk
-frames as a body and the rest as a request nobody sent (B5a). The table is
-every case, decided by the framing headers alone and never by the bytes:
+frames as a body and the rest as a request nobody sent (B5a).
+
+A `Content-Length` is **digits, once** (B5b; RFC 9110 §8.6, `1*DIGIT`). Its
+value is what the stdlib's parse of the head hands the sink (§2.3: that parse
+is what the sink handles a request with), less the spaces and horizontal tabs
+around it — RFC 9110 §5.5's optional whitespace, which §2.3's split removes
+too and which is not part of a value. What remains must be one or more ASCII
+digits `0`–`9` and nothing else: `+5`, `-3`, `5_0`, `5, 5`, a digit from
+another script, or a `5` with any other whitespace beside it (a vertical tab,
+a no-break space) is not a length, although Python's `int()` reads several
+of them as one. A request carrying **more than one** `Content-Length` declares
+a length only if every value is the same once that whitespace is removed —
+then it is one length — and none if any two differ, whichever comes first.
+The table is every case, decided by the framing headers alone and never by
+the bytes:
 
 | `Transfer-Encoding` | `Content-Length` | Body recorded | Connection |
 |---|---|---|---|
 | present, any value | any, or absent | zero bytes | closed (unframed) |
 | absent | absent | zero bytes | closed (unframed) |
-| absent | not a number | zero bytes | closed (unframed) |
-| absent | negative | zero bytes | closed (unframed) |
+| absent | not `1*DIGIT` (`five`, `+5`, `5_0`, `-3`, empty, …) | zero bytes | closed (unframed) |
+| absent | repeated, two values differ | zero bytes | closed (unframed) |
+| absent | repeated, every value the same | as for that one value | as for that one value |
 | absent | `0` | zero bytes (an empty body) | kept |
 | absent | positive *n* | the *n* octets declared | kept |
 
 A `Content-Length: 0` with no `Transfer-Encoding` is a framing — an empty
-body — and keeps its connection, as does a positive one.
+body — and keeps its connection, as does a positive one. A negative length is
+one case of "not `1*DIGIT`" (B5a decided it first).
 
 It **binds and resolves no name**. `http.server`'s own bind follows with
 `socket.getfqdn(host)` — a reverse lookup of the address it was just given,

@@ -131,6 +131,30 @@ def field_name(line: str) -> str | None:
     return None
 
 
+# The characters of a `Content-Length` (RFC 9110 §8.6: `1*DIGIT`). ASCII digits
+# and nothing else: `int()` would also take a sign, an underscore, whitespace
+# other than `_OWS`, and digits from other scripts.
+_DIGITS = frozenset("0123456789")
+
+
+def declared_length(values: list[str]) -> int | None:
+    """The body length a request's `Content-Length` values declare, or `None`.
+
+    `SPEC.md` §3.7 (B5b): each value, less the optional whitespace around it
+    (`_OWS`, as §2.3's split removes it), must be one or more ASCII digits;
+    repeats count as one length only when they are all equal. No value, a
+    value that is not digits, or two that differ declare nothing, and the
+    request is unframed. Pure: the values decide it, never the body.
+    """
+    distinct = {value.strip(_OWS) for value in values}
+    if len(distinct) != 1:
+        return None
+    (value,) = distinct
+    if not value or not set(value) <= _DIGITS:
+        return None
+    return int(value)
+
+
 def split_head(head: bytes) -> dict[str, object]:
     """What `NNNN.headers.json` says a head carried (`SPEC.md` §2.3).
 
@@ -618,22 +642,16 @@ class _Handler(BaseHTTPRequestHandler):
         request. Unframed is (`SPEC.md` §3.7's table): any
         `Transfer-Encoding`, whatever `Content-Length` says beside it -- the
         request-smuggling shape, never read by its length (B5a); no
-        `Content-Length`; one that is not a number; or a negative one.
+        `Content-Length`; or none that `declared_length` reads as one (B5b).
+        A `Content-Length` it does not read is itself a recorded fact: it
+        stays in the head, and the body is what we could read, which is
+        nothing.
         """
         self._unframed = True
         if self.headers.get("Transfer-Encoding") is not None:
             return b""
-        declared = self.headers.get("Content-Length")
-        if declared is None:
-            return b""
-        try:
-            length = int(declared)
-        except ValueError:
-            # A `Content-Length` that is not a number is itself a recorded
-            # fact: it stays in `headers.json`, and the body is what we could
-            # read, which is nothing.
-            return b""
-        if length < 0:
+        length = declared_length(self.headers.get_all("Content-Length") or [])
+        if length is None:
             return b""
         self._unframed = False
         return self.rfile.read(length)

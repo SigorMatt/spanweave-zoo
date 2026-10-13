@@ -4,6 +4,30 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B5b — a `Content-Length` is digits, once
+
+Review of B5a's remainder; the maintainer's decision of 2026-10-13. `SPEC.md`
+§3.3, §3.7. No capture touched; the sink still decodes no framing.
+
+- **A `Content-Length` is `1*DIGIT` and nothing else** (RFC 9110 §8.6), once
+  the spaces and tabs around it are removed. `+5`, `5_0`, and a `5` beside
+  whitespace that is not a space or tab are unframed: a zero-byte body, the
+  usual answer with `Connection: close`, the connection closed. Before,
+  `int()` read each as a length and the octets after the body were parsed as
+  the next request.
+- **Two `Content-Length` headers that differ are unframed** the same way.
+  Before, the first one won. Identical repeats are one length and keep the
+  connection, as before.
+- **`SPEC.md` §3.7's table** gains the rows; "not a number" and "negative"
+  are now one row, "not `1*DIGIT`".
+- Tests: five unframed cases (`+5`, a vertical tab before the `5`, `5_0`,
+  `5`/`6` and `6`/`5`), each followed on the connection by a well-formed POST
+  that must not be read -- all red on the parent; three kept-connection
+  guards (identical repeats, identical up to whitespace, trailing
+  whitespace), green on the parent by design.
+- Mutations shown caught: reading only the first header (2 cases fail);
+  treating any repeat as unframed (2 guards fail).
+
 ## B7-Z5 — Z5 (`flaky-fetcher`) audited
 
 `zoo audit` on `captures/z5/2026-10-13-real` and `captures/z5/2026-10-13-recorded`,

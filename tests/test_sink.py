@@ -1045,3 +1045,73 @@ def test_a_framed_post_keeps_its_connection(tmp_path):
     assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
     assert answer.count(b"Connection: close") == 0
     assert [body_of(raw, 1), body_of(raw, 2)] == [b"", PROTOBUF]
+
+
+# --- B5b: a `Content-Length` is digits, once ---------------------------------
+
+# A well-formed POST that asks to close, so a sink that wrongly keeps the
+# connection after the first POST answers this one too and the read still ends
+# at EOF -- the wrong outcome is a second status, never a timeout.
+LAST = WELL_FORMED.replace(b"Host: zoo\r\n", b"Host: zoo\r\nConnection: close\r\n")
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        b"Content-Length: +5\r\n",
+        # Whitespace inside the value that `int()` discards and RFC 9110 §5.5's
+        # optional whitespace (space, tab) is not -- a vertical tab. A leading
+        # space never reaches the value: it is that optional whitespace.
+        b"Content-Length: \x0b5\r\n",
+        b"Content-Length: 5_0\r\n",
+        b"Content-Length: 5\r\nContent-Length: 6\r\n",
+        b"Content-Length: 6\r\nContent-Length: 5\r\n",
+    ],
+    ids=[
+        "plus-sign",
+        "inner-whitespace",
+        "underscore",
+        "differing-5-6",
+        "differing-6-5",
+    ],
+)
+def test_a_length_that_is_not_digits_once_closes_its_connection(tmp_path, framing):
+    # B5b, `SPEC.md` §3.7: a `Content-Length` is `1*DIGIT` (RFC 9110 §8.6) and
+    # nothing else, and two that differ are no length. `int()` read `+5`,
+    # `\v5` and `5_0` as lengths, and the first of two headers won: the body
+    # was read by a length the request never validly declared, and what
+    # followed was parsed as the next request. Now each is unframed: a
+    # zero-byte body, one answer that says close, nothing after it read.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello!" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        b"Content-Length: 5\r\nContent-Length: 5\r\n",
+        b"Content-Length: 5\r\nContent-Length: \t5 \r\n",
+        b"Content-Length: 5 \r\n",
+    ],
+    ids=["identical", "identical-but-whitespace", "trailing-whitespace"],
+)
+def test_identical_lengths_are_one_length_and_keep_the_connection(tmp_path, framing):
+    # B5b, `SPEC.md` §3.7, the other edge: a repeated `Content-Length` whose
+    # values are equal once the optional whitespace around them is removed
+    # (RFC 9110 §5.5, `SPEC.md` §2.3) declares one length, so the body is
+    # those octets and the connection is kept -- the POST after it is the
+    # second body. Optional whitespace is not part of a value either way.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
+    assert answer.count(b"Connection: close") == 0
+    assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]
