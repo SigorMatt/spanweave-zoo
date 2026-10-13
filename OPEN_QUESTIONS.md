@@ -466,3 +466,86 @@ declined: an incomplete report for a manifest `verify` rejects would have the
 audit read what `verify` would not, and every verify failure as an
 incomplete report would make the audit a second `verify` with a worse
 answer.
+
+---
+
+## 8. B6a: the pinned receiver documents no default for `--quiet` or `--root-grace`
+
+**Status: open, 2026-10-13. Asked by B6a, which stopped before writing any
+code, test or `SPEC.md` change: the row asks for `--quiet <default>` and
+`--root-grace <default>`, "the receiver's documented defaults at the pinned
+sha", and the batch brief makes an undocumented default a halt point. There
+is none, so the two values are a policy the zoo's spec does not state.**
+
+**Facts gathered at spanweave-live `cddc694` (the pin in `pyproject.toml`'s
+`audit` extra, installed and matching), so the decision need not re-gather
+them.**
+
+- `spanweave-live serve --help`: `--quiet S` "complete a trace that has had no
+  record for S seconds on this process's monotonic clock (SPEC.md 5.3)";
+  `--root-grace S` "complete a trace S seconds after an ended root was first
+  seen (SPEC.md 5.3) ...". Neither help text names a default.
+- `spanweave_live/cli.py`: both are `add_argument(..., type=float)` with **no
+  `default=`**, so each is `None` when absent, and `_policies` adds `Quiet` /
+  `RootEnded` only when given. Absent is "no such policy", not a number.
+- README.md, "The CLI": "Give several and they compose as any-of; **give none
+  and only end of input completes a trace**. The other flags are bounds, each
+  of them the caller's number rather than a default this library invented".
+  Its examples use `--quiet 30` (with `tail`) and `--root-grace 5` (with
+  `serve`) -- examples, not stated defaults.
+- SPEC.md §5 ("a policy the caller chose about when to stop"), §5.3 (the
+  three boundaries, inclusive; "`Quiet(0)` completes a trace on the first tick
+  after any record, which is legal"), §8.1 (flag table, no default column;
+  composition order `--quiet`, `--root-grace`, `--cap`), §8.5 ("The CLI ticks
+  **once per yield** ... per request served"; at the `--requests` count every
+  trace still held completes under `Cap(0)`).
+
+**What follows for the audit, whatever value is chosen.** Each policy run
+must still pass `--requests N` (without it `serve` never stops), so every
+trace a policy does not complete earlier is completed at end of input by
+`Cap(0)` -- the `completed` events' `policy`/reason is what distinguishes the
+two. `serve` ticks once per request, and the audit replays the bodies back to
+back (no `--timing`, so no sleep), so a positive number of seconds is a
+comparison against wall-clock gaps of milliseconds: `--quiet 30` or
+`--root-grace 5` would in practice never fire before end of input, every
+completion would read `Cap(0)`, and whether one did fire would depend on the
+machine's speed -- a report that could differ run to run for reasons not in
+the capture.
+
+**The options, each with its cost.**
+
+1. **Zero for both: `--quiet 0` and `--root-grace 0`.** `Quiet(0)` fires at
+   the first tick after any record (the receiver's own §5.3 sentence), so the
+   run shows which request's tick completed each trace; `RootEnded(0)` fires
+   at the first tick after an ended root is seen, so a root that arrived last
+   (Z3's, L3) and a trace with no root (Z5's, L4) show as the policy firing,
+   or not, before `Cap(0)`. Both are inclusive boundaries and need no clock
+   gap, so the observation is deterministic across machines. Cost: zero is
+   the zoo's choice, not the receiver's default; the Method says so in place
+   of the row's "documented defaults", and the row's wording is corrected.
+2. **The README's example values: `--quiet 30` and `--root-grace 5`.**
+   Closest to "documented". Cost: they are examples for a long-running
+   receiver, not defaults; under a back-to-back replay neither fires before
+   end of input, so the two extra runs observe what the `Cap(0)` run already
+   does, and L3/L4 stay "to establish" -- and the outcome is timing-dependent.
+3. **The README values with `zoo replay --timing`** (the captured gaps,
+   §6.3), so a policy sees the exporter's own pauses. Cost: the audit takes as
+   long as the capture did, sleeps on the real clock through §6.3's seam, and
+   whether a 5 s or 30 s boundary is crossed depends on scheduling as well as
+   on the capture -- non-deterministic reports, against `SPEC.md` §7.3's "the
+   clock readings ... differ from run to run; nothing else in a report does".
+4. **Ask spanweave-live for documented defaults.** A change in a pinned
+   library and a pin bump -- both halt points of their own -- and its README
+   states that it deliberately has none.
+
+**Recommended:** option 1. It is the only one under which the two extra runs
+observe something the end-of-input run does not, deterministically, and it
+answers the question B6a exists to answer ("what did each policy do with a
+rootless trace / a root that came last"). The row and the Method would say
+"`--quiet 0`, `--root-grace 0`: the receiver documents no default (README,
+'The CLI'), so the audit chooses the smallest legal value, at which each
+policy fires at the first tick its condition holds (its SPEC §5.3)".
+
+The second half of the row (step 4's per-node table) does not depend on this
+question; it was not started either, because the row is one batch and one
+commit.
