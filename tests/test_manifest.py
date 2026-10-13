@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -595,78 +596,150 @@ def test_a_project_manifest_the_zoo_cannot_date_is_copied_with_a_problem(
     capsys.readouterr()
 
 
-# --- A3b: 1,600 bodies cost the same each (`SPEC.md` §3.5) ------------------
+# --- A3b, B2b: 1,600 bodies cost the same each (`SPEC.md` §3.5, §3.6) -------
 
 BODIES = 1600
-SAMPLE = 100
-# Generous on purpose, and still nowhere near what it catches. What is under
-# test is that the cost of recording a body does not GROW with the length of
-# the run: a manifest rewritten after every POST, or a journal re-read after
-# every POST, makes the last hundred bodies cost many times the first because
-# each one handles a document with fifteen hundred entries in it. Journalling
-# makes the two the same within noise, so the bound has to hold on a shared CI
-# runner -- not to be tight.
-BOUND = 2.0
 
 
-def _record(recorder: sink.Recorder, first: int, last: int) -> list[float]:
-    """Record bodies `first`..`last`; return each one's CPU seconds.
+class _Counted:
+    """One file opened through the `open_file` seam, and the octets it moved."""
 
-    CPU time (`time.process_time`: this process's user and system time), not
-    wall-clock time: what the recorder costs is the work it does, and that is
-    what CPU time counts. A wall clock also counts every moment the process was
-    not running -- a neighbour on a shared runner, a disk that made it wait --
-    and on the macOS leg that alone took the last hundred from 675 to 2,168
-    us/body with no code change (`TASKS.md`, "macOS wall-clock cost test").
+    def __init__(self, handle, mode: str) -> None:
+        self._handle = handle
+        self.mode = mode
+        self.octets_read = 0
+        self.octets_written = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._handle.close()
+
+    def write(self, data: bytes) -> int:
+        self.octets_written += len(data)
+        return self._handle.write(data)
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._handle.read(size)
+        self.octets_read += len(data)
+        return data
+
+    def flush(self) -> None:
+        self._handle.flush()
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+class _Watch:
+    """The counting `open_file` (`SPEC.md` §3.6), and the opens that bypass it.
+
+    `opened` is every file the recorder opened through the seam since the last
+    `take()`. `bypassed` is every file under `root` opened while `watching`
+    *without* going through the seam, seen by a `sys.addaudithook` hook on the
+    interpreter's `open` event: a count of the seam's traffic is worth nothing
+    if the recorder can read a journal behind its back, so a file it opens any
+    other way is a failure of its own.
     """
-    costs = []
-    for number in range(first, last):
-        started = time.process_time()
-        recorder.record(
-            head=HEAD,
-            body=b"body %04d" % number,
-            accepted=True,
+
+    def __init__(self, root: Path) -> None:
+        self.root = str(root)
+        self.opened: list[_Counted] = []
+        self.bypassed: list[str] = []
+        self.watching = False
+        self._inside = False
+
+    def __call__(self, path: Path, mode: str) -> _Counted:
+        self._inside = True
+        try:
+            handle = path.open(mode)
+        finally:
+            self._inside = False
+        counted = _Counted(handle, mode)
+        self.opened.append(counted)
+        return counted
+
+    def audit(self, event: str, args: tuple[object, ...]) -> None:
+        if not self.watching or self._inside or event != "open":
+            return
+        target = args[0]
+        if isinstance(target, (str, bytes, Path)):
+            name = os.fsdecode(target)
+            if name.startswith(self.root):
+                self.bypassed.append(name)
+
+    def take(self) -> tuple[tuple[str, int, int], ...]:
+        """This body's cost: each file opened, as (mode, read, written)."""
+        cost = tuple(
+            (counted.mode, counted.octets_read, counted.octets_written)
+            for counted in self.opened
         )
-        costs.append(time.process_time() - started)
-    return costs
+        self.opened = []
+        return cost
 
 
-def _median(values: list[float]) -> float:
-    ordered = sorted(values)
-    middle = len(ordered) // 2
-    return (ordered[middle - 1] + ordered[middle]) / 2
+# An audit hook cannot be removed, so there is one for the whole session and it
+# forwards to whichever `_Watch` is current; with none, it returns at once.
+_CURRENT_WATCH: list[_Watch] = []
+
+
+def _forward_audit(event: str, args: tuple[object, ...]) -> None:
+    if _CURRENT_WATCH:
+        _CURRENT_WATCH[-1].audit(event, args)
+
+
+_HOOKED: list[bool] = []
 
 
 def test_sixteen_hundred_bodies_cost_the_same_each(tmp_path):
-    """The A3b row's fifth acceptance test (`SPEC.md` §3.5), measured by CPU.
+    """The A3b row's fifth acceptance test (`SPEC.md` §3.5), as a count (B2b).
 
-    Writing the run directory is the only expensive thing a capture does per
-    POST, so the measurement is of the recorder itself: one 1,600-body run, and
-    the CPU time of each of its first hundred bodies and its last hundred.
+    Writing the run directory is the only thing a capture does per POST that
+    could grow with the run, so the measurement is of the recorder itself:
+    one 1,600-body run, every body recorded through a counting `open_file`
+    seam (`SPEC.md` §3.6). A body's cost is the files the recorder opened to
+    record it -- for each, its mode, the octets read from it and the octets
+    written to it -- and the cost of body 1,600 must EQUAL the cost of body 1.
 
-    The method: each body's cost is `time.process_time()` around its one
-    `record` call, and a hundred bodies' cost is the MEDIAN of their hundred,
-    so a body that a scheduler tick or a page fault happened to land on does
-    not decide the run. The bound: the last hundred's median is under
-    `BOUND` times the first hundred's. A recorder whose per-body work grows
-    with the run -- an O(n) rescan of the journal, a manifest rewritten per
-    POST -- costs the last hundred bodies many times that, in CPU, on any
-    machine however loaded.
+    A count, not a clock: CPU time on the macOS runner put the last hundred
+    bodies at 2.6 times the first with no code change (`WORKPLAN.md` §3, B2b),
+    and a wall clock did worse (B2a). The count cannot be noisy, and it catches
+    what the clock was there to catch: a manifest rewritten per POST writes
+    more octets every body, an O(n) rescan of the journal reads more, and a
+    rescan that opens the journal some other way than the seam is a bypassed
+    open. Nothing here is timed, so nothing timed is asserted.
     """
+    if not _HOOKED:
+        sys.addaudithook(_forward_audit)
+        _HOOKED.append(True)
+    watch = _Watch(tmp_path)
     recorder = sink.Recorder(
-        tmp_path / "captures" / "z4" / "run-1" / "raw", now=lambda: STARTED
+        tmp_path / "captures" / "z4" / "run-1" / "raw",
+        now=lambda: STARTED,
+        open_file=watch,
     )
-    first = _median(_record(recorder, 0, SAMPLE)) * 1e6
-    _record(recorder, SAMPLE, BODIES - SAMPLE)
-    last = _median(_record(recorder, BODIES - SAMPLE, BODIES)) * 1e6
-    print(
-        f"\n{BODIES} bodies, CPU time: first {SAMPLE} median {first:.0f} us/body, "
-        f"last {SAMPLE} median {last:.0f} us/body, ratio {last / first:.2f}"
+    costs = []
+    _CURRENT_WATCH.append(watch)
+    watch.watching = True
+    try:
+        for number in range(1, BODIES + 1):
+            recorder.record(head=HEAD, body=b"body %04d" % number, accepted=True)
+            costs.append(watch.take())
+    finally:
+        watch.watching = False
+        _CURRENT_WATCH.remove(watch)
+
+    first, last = costs[0], costs[-1]
+    print(f"\n{BODIES} bodies: body 1 cost {first}, body {BODIES} cost {last}")
+    assert watch.bypassed == [], (
+        f"the recorder opened {len(watch.bypassed)} file(s) outside the "
+        f"open_file seam, starting {watch.bypassed[:1]}"
     )
-    assert last < BOUND * first, (
-        f"per-body CPU cost grew with the run: median {first:.0f} us/body over "
-        f"the first {SAMPLE} bodies, {last:.0f} us/body over the last {SAMPLE} "
-        f"of {BODIES}"
+    assert first, "the recorder opened nothing through the seam for body 1"
+    assert last == first, (
+        f"per-body cost grew with the run: body 1 opened {first}, body "
+        f"{BODIES} opened {last} -- each as (mode, octets read, octets written)"
     )
     # And the digests are all there, in the journal, waiting for the end of the
     # run: nothing was traded away for the cost.

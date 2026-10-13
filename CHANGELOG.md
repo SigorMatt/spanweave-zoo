@@ -4,6 +4,25 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B2b — the per-body cost is a count, not a clock
+
+`test_sixteen_hundred_bodies_cost_the_same_each` failed on the macOS leg again
+at `7275b12`, on CPU time this time (510 -> 1,333 us/body). No capture touched;
+the bytes the recorder writes are unchanged.
+
+- **A new seam, `open_file`** (`SPEC.md` §3.6): the recorder opens every file
+  it writes to record a body -- the body, both headers files, the journal
+  append -- through it, binary. The default is the real filesystem.
+- **What a body costs** is defined once, in §3.6: the files opened through the
+  seam for that body, each as mode, octets read, octets written. The test
+  records 1,600 bodies through a counting seam and asserts body 1,600's cost
+  **equals** body 1's. A `sys.addaudithook` watch fails the test if the
+  recorder opens a file under the run any other way while recording, so a
+  rescan cannot bypass the count. No time is measured or asserted.
+- Mutation shown caught: B2a's O(n) rescan of the journal in
+  `manifest._journal`, both outside the seam (a bypassed open) and through it
+  (body 1,600 reads 185,484 octets, body 1 reads none).
+
 ## B6 — the audit says "not run" when it cannot vouch
 
 Qodo Q4, Q5 (`TASKS.md`, "Series 2"). `SPEC.md` §7.3, §7.5, §7.6.

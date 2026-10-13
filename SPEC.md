@@ -446,9 +446,26 @@ does is injected and named here (`CLAUDE.md`, "Architecture invariants"):
 | the listener | the server is constructed by a factory a caller calls | a test binds `127.0.0.1` on port `0`, so the suite never collides with a port in use and never races a fixed one |
 | `before_record` | called with the body bytes once the body is read, before `NNNN` is assigned | a test can hold two POSTs in flight at a chosen point and make receipt order observable **without sleeping** — a sleep in a concurrency test is a race with a slow machine |
 | `after_record` | called with the manifest entry once the body is on disk | the same, from the other side; `cli.py` also uses it to print one line per recorded body |
+| `open_file` | opens a path in a binary mode (`wb`, `ab`) and returns the file; the default is the real filesystem | every file the recorder opens to record a body goes through it, so a test can count what recording one body costs (below) |
 
-The sink never reads the clock, never sleeps, never binds a socket and never
-draws a random number outside these.
+**What a body costs** (B2b), the one definition the §3.5 claim "the same work
+every time" is tested by: the files the recorder opens through `open_file`
+while recording that body, in order, each as its **mode**, the **octets read**
+from it and the **octets written** to it. Today that is four opens — the body,
+`NNNN.headers.raw`, `NNNN.headers.json` (its `.partial`, §5) and the journal
+append — and none reads. For bodies of equal length and a fixed `now`, the cost
+of the 1,600th body of a run **equals** the cost of the first: a manifest
+rewritten per POST writes more octets each time, and a rescan of the journal
+reads more. Creating a directory and the rename that makes `headers.json`
+atomic open nothing and are not counted. The recorder opens no file to record
+a body other than through `open_file`; the test fails on any file under the
+run that is opened some other way while it records, so a rescan cannot hide
+behind the seam. The cost is a count and never a clock: wall-clock and CPU
+time both grew with no code change on a shared runner (B2a, B2b), so no time
+is asserted anywhere.
+
+The sink never reads the clock, never sleeps, never binds a socket, never
+opens a file to record a body and never draws a random number outside these.
 
 ### 3.7 What the sink never does
 

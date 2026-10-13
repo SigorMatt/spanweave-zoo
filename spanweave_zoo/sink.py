@@ -246,6 +246,7 @@ class Recorder:
         after_record: Callable[[manifest.BodyEntry], None] | None = None,
         after_forward: Callable[[manifest.ForwardEntry], None] | None = None,
         create_directory: bool = True,
+        open_file: manifest.OpenFile = manifest.open_binary,
     ) -> None:
         self.raw = raw
         self.run = raw.parent
@@ -260,6 +261,9 @@ class Recorder:
         self._before_record = before_record
         self._after_record = after_record
         self._after_forward = after_forward
+        # Every file `record` opens goes through this (`SPEC.md` §3.6), so a
+        # test can count what recording one body costs, body by body.
+        self._open_file = open_file
         self._lock = threading.Lock()
         self._counters: dict[Path, int] = {self.raw: 0, self.rejected: 0}
         self.forwards: list[manifest.ForwardEntry] = []
@@ -403,20 +407,28 @@ class Recorder:
             stem = f"{number:04d}"
             directory.mkdir(parents=True, exist_ok=True)
             body_file = directory / (stem + suffix)
-            body_file.write_bytes(body)
+            manifest.write_bytes(body_file, body, open_file=self._open_file)
             # The unmodified record, then the zoo's split of it (`SPEC.md`
             # §2.3), and the two facts the octets of a head cannot carry.
-            (directory / (stem + HEADERS_RAW_SUFFIX)).write_bytes(head)
+            manifest.write_bytes(
+                directory / (stem + HEADERS_RAW_SUFFIX),
+                head,
+                open_file=self._open_file,
+            )
             parsed = split_head(head)
             parsed["bytes"] = len(body)
             parsed["received_at"] = self._now()
-            manifest.write_json(directory / (stem + HEADERS_SUFFIX), parsed)
+            manifest.write_json(
+                directory / (stem + HEADERS_SUFFIX),
+                parsed,
+                open_file=self._open_file,
+            )
             entry = manifest.BodyEntry(
                 file=body_file.relative_to(self.run).as_posix(),
                 sha256=manifest.digest(body),
                 bytes=len(body),
             )
-            manifest.journal_body(self.run, entry)
+            manifest.journal_body(self.run, entry, open_file=self._open_file)
             with self._quiet:
                 handler = threading.get_ident()
                 if handler in self._open:
@@ -461,7 +473,7 @@ class Recorder:
             if self._closed:
                 return
             self.forwards.append(outcome)
-            manifest.journal_forward(self.run, outcome)
+            manifest.journal_forward(self.run, outcome, open_file=self._open_file)
         if self._after_forward is not None:
             self._after_forward(outcome)
 

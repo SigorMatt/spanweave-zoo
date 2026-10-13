@@ -63,7 +63,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import IO, Any
 
 from spanweave_zoo import __version__
 
@@ -243,15 +243,38 @@ def seal_of(document: dict[str, Any]) -> str:
     return digest(canonical(unsealed))
 
 
-def write_json(path: Path, document: object) -> None:
+OpenFile = Callable[[Path, str], IO[bytes]]
+"""The `open_file` seam (`SPEC.md` §3.6): open a path in a binary mode.
+
+The mode is `"wb"` or `"ab"` -- every file the recorder opens to record a body
+goes through one of these, so a test can count each one and the octets it
+moves. The default is `open_binary`, the real filesystem.
+"""
+
+
+def open_binary(path: Path, mode: str) -> IO[bytes]:
+    """The real `open_file`: `path.open(mode)`, binary, nothing added."""
+    return path.open(mode)
+
+
+def write_bytes(path: Path, data: bytes, *, open_file: OpenFile = open_binary) -> None:
+    """Write `data` to `path` whole, through the `open_file` seam."""
+    with open_file(path, "wb") as handle:
+        handle.write(data)
+
+
+def write_json(
+    path: Path, document: object, *, open_file: OpenFile = open_binary
+) -> None:
     """Write JSON atomically, so a reader never sees half a document.
 
     The sink rewrites `MANIFEST.json` after every POST while an exporter is
     still sending, and `zoo verify` may be reading it. A rename within one
     directory is atomic, so the file on disk is always one whole manifest.
+    UTF-8, written as octets, so the bytes are the same on every platform.
     """
     temporary = path.with_name(path.name + ".partial")
-    temporary.write_text(dumps(document), encoding="utf-8")
+    write_bytes(temporary, dumps(document).encode("utf-8"), open_file=open_file)
     temporary.replace(path)
 
 
@@ -300,7 +323,9 @@ def _append(document: dict[str, Any], key: str, entry: object) -> None:
     document[key] = listed
 
 
-def _journal(run: Path, name: str, document: object) -> None:
+def _journal(
+    run: Path, name: str, document: object, open_file: OpenFile = open_binary
+) -> None:
     """Append one line to one of the run's journals, and flush it.
 
     Append, flush, close -- per line, under the run's lock, so two recorders
@@ -314,12 +339,14 @@ def _journal(run: Path, name: str, document: object) -> None:
     line = json.dumps(document, sort_keys=True) + "\n"
     with _lock_for(run):
         run.mkdir(parents=True, exist_ok=True)
-        with (run / name).open("a", encoding="utf-8") as journal:
-            journal.write(line)
+        with open_file(run / name, "ab") as journal:
+            journal.write(line.encode("utf-8"))
             journal.flush()
 
 
-def journal_body(run: Path, entry: BodyEntry) -> None:
+def journal_body(
+    run: Path, entry: BodyEntry, *, open_file: OpenFile = open_binary
+) -> None:
     """Write one recorded body down, now (`SPEC.md` §3.5).
 
     One line, flushed, in the order the bodies were recorded -- which is
@@ -328,16 +355,18 @@ def journal_body(run: Path, entry: BodyEntry) -> None:
     the run; until then the journal is where the digests are, which is why it
     is flushed rather than buffered.
     """
-    _journal(run, JOURNAL_NAME, entry.as_document())
+    _journal(run, JOURNAL_NAME, entry.as_document(), open_file)
 
 
-def journal_forward(run: Path, entry: ForwardEntry) -> None:
+def journal_forward(
+    run: Path, entry: ForwardEntry, *, open_file: OpenFile = open_binary
+) -> None:
     """Write one attempted forward down, now (`SPEC.md` §4.5).
 
     In the order the forwards *completed*, which is receipt order unless two
     exports were in flight at once.
     """
-    _journal(run, FORWARD_JOURNAL_NAME, entry.as_document())
+    _journal(run, FORWARD_JOURNAL_NAME, entry.as_document(), open_file)
 
 
 def _journalled(run: Path, name: str) -> tuple[list[dict[str, Any]], list[str]]:
