@@ -458,3 +458,11 @@ simpler rule and the one `verify` already follows.
 **Recommended:** option 1, with (a). It is B4's rule applied to the one reader
 that lacks it, and it leaves §7.2's refusal, which already names the entry and
 reads nothing, standing.
+
+**The decision (2026-10-13, maintainer).** Option 1. The audit keeps §7.2 and
+its test asserts the refusal names the entry; `zoo replay` gets B4's check on
+both sides of the manifest, and refuses before sending. Options 2 and 3 are
+declined: an incomplete report for a manifest `verify` rejects would have the
+audit read what `verify` would not, and every verify failure as an
+incomplete report would make the audit a second `verify` with a worse
+answer.
