@@ -8,7 +8,7 @@ captures land, extending `PROBES.md` until all six are in. One batch = one
 sub-agent = one commit = one concern. This file plus git is the only state;
 any session can resume cold from it.
 
-Last updated: 2026-10-13 (run 3 in progress: B2b, B4a, B5a, B7-Z3 done.)
+Last updated: 2026-10-13 (run 3 done: B2b, B4a, B5a, B7-Z3, B7-Z5.)
 
 ---
 
@@ -164,7 +164,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | B6 | **The audit says "not run" when it cannot vouch.** Q4, Q5. (a) When step 3's in-process re-read does not match `serve` (statuses or routed count), step 3 is incomplete **and** its partition comparisons and steps 4–5 are not run and rendered as such — as SPEC §7.3 already says; today the findings are emitted anyway. (b) A `serve` command that cannot start (`OSError` from `Popen`) is `served.problem = "serve did not start: …"`, the report is still written, exit 1 — as SPEC §7.5 lists it. Tests red on the parent: a mismatch injected through the `reread` seam yields a report with steps 3–5 "not run" and no library finding; a nonexistent serve command yields a written report and exit 1. | done (290fc1b) | 5 |
 | B7 | **Per-project audit, one row per capture pair.** Template, instantiated by a `plan:` commit when a project's captures land on `zoo` (operator commit `captures: zN real and recorded, <date>`): `zoo audit` on both captures, reports under `audit/zN-<date>-{real,recorded}.md`, `PROBES.md` extended with every new probe (owner, capture, command, observed, expected or "to establish"), `ROADMAP.md`'s row for Zn updated, CI's `audit` job still green with the new reports. Findings are never fixed here. First instance: **B7-Z3** or **B7-Z5**, whichever lands first. | template | 6 each |
 | B7-Z3 | **Audit Z3 (`echo-planner`): `captures/z3/2026-10-13-real` (4 bodies, the root in the last) and `-recorded` (1 body).** As the B7 template. Of particular interest, to be reported as observed and never asserted: the real capture's root span arriving in the fourth body (what `serve`'s completion did with a trace whose root came last); the 599 `Attributes dict is full` lines (which attributes the SDK dropped, visible as `unmapped_attributes` or as absence); two instrumentors on one client (`generation` and `ChatCompletion` for every turn — whether spanweave claims both, one, or neither). `PROBES.md` extended; `ROADMAP.md`'s Z3 row reads audited. | done (`a180f06`) | 6 |
-| B7-Z5 | **Audit Z5 (`flaky-fetcher`): `captures/z5/2026-10-13-real` and `-recorded` (one body each, four spans, no root).** As the B7 template. Of particular interest: a trace with no root in either capture (what `Quiet`, `RootEnded` and `Cap` each did with it); two `http_get` spans in ERROR with `exception` events (how spanweave renders a failed tool call and its exception); the identical real and recorded bodies (whether the graphs are byte-identical too). `PROBES.md` extended; `ROADMAP.md`'s Z5 row reads audited. | todo | 6 |
+| B7-Z5 | **Audit Z5 (`flaky-fetcher`): `captures/z5/2026-10-13-real` and `-recorded` (one body each, four spans, no root).** As the B7 template. Of particular interest: a trace with no root in either capture (what `Quiet`, `RootEnded` and `Cap` each did with it); two `http_get` spans in ERROR with `exception` events (how spanweave renders a failed tool call and its exception); the real and recorded bodies (believed identical when the row was written; they are not — same length, 380 bytes differ — corrected at B7-Z5's close, §4). `PROBES.md` extended; `ROADMAP.md`'s Z5 row reads audited. | done (`54703f2`) | 6 |
 | B8 | **The series closes.** When every project's row in `ROADMAP.md` reads audited: `TASKS.md` registry B0–B8 with shas, §3 and §4 folded; `reviews/` complete with sha256; `PROBES.md` consolidated across all six projects, grouped by owner; WORKPLAN.md deleted; PR `zoo` → `main` (a merge commit, as PR #1 was). No `plan:` commit follows. | awaiting B7 | 6 |
 
 ## 2. Execution order
@@ -332,6 +332,14 @@ Every batch: CI green on the pushed tip before `done`.
   `captures/z3/` holds those lines, so S8 says the audit cannot tie them to
   a span. The figure stays in the row as the operator's report, not a
   capture fact.
+- 2026-10-13: B7-Z5 done (`54703f2`), CI green on all seven jobs. F1 per
+  report (L1 again); S3, S7 again; L4, S11, S12, S13 new. The row's premise
+  "identical real and recorded bodies" was wrong: the two `raw/0001.body`
+  files are 5,934 bytes each and differ in 380 bytes (json bodies and
+  sha256s differ too), and the graphs differ at least by trace id — row
+  corrected. `Quiet`/`RootEnded` are not observable from the audit (it
+  passes no `--quiet`/`--root-grace`/`--cap`), nor is span status in the
+  report; both marked *to establish* in PROBES.md. Run 3 done.
 
 ## 5. Origins
 
