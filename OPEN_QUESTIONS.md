@@ -549,3 +549,10 @@ policy fires at the first tick its condition holds (its SPEC §5.3)".
 The second half of the row (step 4's per-node table) does not depend on this
 question; it was not started either, because the row is one batch and one
 commit.
+
+**The decision (2026-10-13, maintainer).** Option 1, with the two policy
+runs replayed under `--timing`: `--quiet 0` and `--root-grace 0` are the
+audit's values, stated in the Method, and the captured inter-body gaps make
+each body's verdict observable and the sequence deterministic. The untimed
+end-of-input run stays the one step 3 compares. Options 2 and 3 are declined
+for the reasons the batch gave; option 4 because the pin is the record.
