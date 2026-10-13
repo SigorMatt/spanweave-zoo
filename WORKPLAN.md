@@ -8,7 +8,7 @@ captures land, extending `PROBES.md` until all six are in. One batch = one
 sub-agent = one commit = one concern. This file plus git is the only state;
 any session can resume cold from it.
 
-Last updated: 2026-10-13 (run 3 in progress: B2b, B4a, B5a done.)
+Last updated: 2026-10-13 (run 3 in progress: B2b, B4a, B5a, B7-Z3 done.)
 
 ---
 
@@ -163,8 +163,8 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | B5a | **A request with `Transfer-Encoding` is never read by its `Content-Length`, and a negative length closes.** Review of B5's remainder. Any `Transfer-Encoding` header: zero-byte body, the answer, `Connection: close`, connection closed — regardless of `Content-Length`. A negative `Content-Length` with no `Transfer-Encoding`: zero-byte body, the answer, closed. Tests red on the parent: a POST with both headers followed on the same connection by a well-formed POST yields one recorded zero-byte body, no second request parsed from the chunk frames; a negative length likewise; mutation shown. SPEC §3.7's table lists every framing case and its outcome. | done (`558ec4a`) | 4 |
 | B6 | **The audit says "not run" when it cannot vouch.** Q4, Q5. (a) When step 3's in-process re-read does not match `serve` (statuses or routed count), step 3 is incomplete **and** its partition comparisons and steps 4–5 are not run and rendered as such — as SPEC §7.3 already says; today the findings are emitted anyway. (b) A `serve` command that cannot start (`OSError` from `Popen`) is `served.problem = "serve did not start: …"`, the report is still written, exit 1 — as SPEC §7.5 lists it. Tests red on the parent: a mismatch injected through the `reread` seam yields a report with steps 3–5 "not run" and no library finding; a nonexistent serve command yields a written report and exit 1. | done (290fc1b) | 5 |
 | B7 | **Per-project audit, one row per capture pair.** Template, instantiated by a `plan:` commit when a project's captures land on `zoo` (operator commit `captures: zN real and recorded, <date>`): `zoo audit` on both captures, reports under `audit/zN-<date>-{real,recorded}.md`, `PROBES.md` extended with every new probe (owner, capture, command, observed, expected or "to establish"), `ROADMAP.md`'s row for Zn updated, CI's `audit` job still green with the new reports. Findings are never fixed here. First instance: **B7-Z3** or **B7-Z5**, whichever lands first. | template | 6 each |
-| B7-Z3 | **Audit Z3 (`echo-planner`): `captures/z3/2026-10-13-real` (4 bodies, the root in the last) and `-recorded` (1 body).** As the B7 template. Of particular interest, to be reported as observed and never asserted: the real capture's root span arriving in the fourth body (what `serve`'s completion did with a trace whose root came last); the 599 `Attributes dict is full` lines (which attributes the SDK dropped, visible as `unmapped_attributes` or as absence); two instrumentors on one client (`generation` and `ChatCompletion` for every turn — whether spanweave claims both, one, or neither). `PROBES.md` extended; `ROADMAP.md`'s Z3 row reads audited. | awaiting B6 | 6 |
-| B7-Z5 | **Audit Z5 (`flaky-fetcher`): `captures/z5/2026-10-13-real` and `-recorded` (one body each, four spans, no root).** As the B7 template. Of particular interest: a trace with no root in either capture (what `Quiet`, `RootEnded` and `Cap` each did with it); two `http_get` spans in ERROR with `exception` events (how spanweave renders a failed tool call and its exception); the identical real and recorded bodies (whether the graphs are byte-identical too). `PROBES.md` extended; `ROADMAP.md`'s Z5 row reads audited. | awaiting B6 | 6 |
+| B7-Z3 | **Audit Z3 (`echo-planner`): `captures/z3/2026-10-13-real` (4 bodies, the root in the last) and `-recorded` (1 body).** As the B7 template. Of particular interest, to be reported as observed and never asserted: the real capture's root span arriving in the fourth body (what `serve`'s completion did with a trace whose root came last); the 599 `Attributes dict is full` lines (which attributes the SDK dropped, visible as `unmapped_attributes` or as absence); two instrumentors on one client (`generation` and `ChatCompletion` for every turn — whether spanweave claims both, one, or neither). `PROBES.md` extended; `ROADMAP.md`'s Z3 row reads audited. | done (`a180f06`) | 6 |
+| B7-Z5 | **Audit Z5 (`flaky-fetcher`): `captures/z5/2026-10-13-real` and `-recorded` (one body each, four spans, no root).** As the B7 template. Of particular interest: a trace with no root in either capture (what `Quiet`, `RootEnded` and `Cap` each did with it); two `http_get` spans in ERROR with `exception` events (how spanweave renders a failed tool call and its exception); the identical real and recorded bodies (whether the graphs are byte-identical too). `PROBES.md` extended; `ROADMAP.md`'s Z5 row reads audited. | todo | 6 |
 | B8 | **The series closes.** When every project's row in `ROADMAP.md` reads audited: `TASKS.md` registry B0–B8 with shas, §3 and §4 folded; `reviews/` complete with sha256; `PROBES.md` consolidated across all six projects, grouped by owner; WORKPLAN.md deleted; PR `zoo` → `main` (a merge commit, as PR #1 was). No `plan:` commit follows. | awaiting B7 | 6 |
 
 ## 2. Execution order
@@ -324,6 +324,14 @@ Every batch: CI green on the pushed tip before `done`.
   Two shapes no rule covers, left undecided (candidate rows): two
   `Content-Length` headers (read by the first), and `int()` accepting
   `+5`, ` 5`, `5_0` as a length.
+- 2026-10-13: B7-Z3 done (`a180f06`), CI green on all seven jobs. One
+  finding per report (spanweave-live: every protobuf body answered 415,
+  L1 again); probes L3, S3 again, S6–S10 added, observed only. B7-Z5's
+  status `awaiting B6` read as `todo` (B6 is done). The row's premise "the
+  599 `Attributes dict is full` lines" is not in the record: nothing under
+  `captures/z3/` holds those lines, so S8 says the audit cannot tie them to
+  a span. The figure stays in the row as the operator's report, not a
+  capture fact.
 
 ## 5. Origins
 
