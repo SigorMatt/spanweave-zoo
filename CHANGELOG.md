@@ -4,6 +4,26 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B7-Z5 — Z5 (`flaky-fetcher`) audited
+
+`zoo audit` on `captures/z5/2026-10-13-real` and `captures/z5/2026-10-13-recorded`,
+at the `audit` extra's pins (unchanged). No `SPEC.md` section touched, no code
+or test changed, no capture touched (`zoo verify` green on both before the audit).
+
+- **Reports:** `audit/z5-2026-10-13-real.md` and `audit/z5-2026-10-13-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each. One finding
+  each: the `raw/` body answered 415 (spanweave-live).
+- **Graphs:** one trace per capture, 4 records (`chain` 2, `tool` 2, no `llm`,
+  no root), live = batch = incremental byte for byte (17,691 bytes); every
+  record claimed by `openinference`; step 5 clean.
+- **`PROBES.md`:** L1, S3 and S7 seen again in Z5; new L4 (no root: one
+  completion, the end-of-input `Cap(0)`; `Quiet` and `RootEnded` not exercised
+  by the audit), S11 (two `http_get` tool nodes; `<record>.events` unmapped; no
+  status shown), S12 (`orphan_parent` × 2), S13 (real and recorded bodies
+  differ in 380 of 5,934 bytes; graphs equal in size, not byte-identical —
+  trace ids differ). Observations only; the open ones are marked *to establish*.
+- **`ROADMAP.md`:** Z5's row reads audited.
+
 ## B7-Z3 — Z3 (`echo-planner`) audited
 
 `zoo audit` on `captures/z3/2026-10-13-real` and `captures/z3/2026-10-13-recorded`,
