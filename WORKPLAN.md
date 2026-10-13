@@ -8,7 +8,7 @@ captures land, extending `PROBES.md` until all six are in. One batch = one
 sub-agent = one commit = one concern. This file plus git is the only state;
 any session can resume cold from it.
 
-Last updated: 2026-10-13 (run 4 confirmed; B5d, B6b, B7-Z1 added; run 5 = B5d → B6b → B7-Z1.)
+Last updated: 2026-10-14 (run 5 done: B5d, B6b, B7-Z1.)
 
 ---
 
@@ -171,7 +171,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | B7 | **Per-project audit, one row per capture pair.** Template, instantiated by a `plan:` commit when a project's captures land on `zoo` (operator commit `captures: zN real and recorded, <date>`): `zoo audit` on both captures, reports under `audit/zN-<date>-{real,recorded}.md`, `PROBES.md` extended with every new probe (owner, capture, command, observed, expected or "to establish"), `ROADMAP.md`'s row for Zn updated, CI's `audit` job still green with the new reports. Findings are never fixed here. First instance: **B7-Z3** or **B7-Z5**, whichever lands first. | template | 6 each |
 | B7-Z3 | **Audit Z3 (`echo-planner`): `captures/z3/2026-10-13-real` (4 bodies, the root in the last) and `-recorded` (1 body).** As the B7 template. Of particular interest, to be reported as observed and never asserted: the real capture's root span arriving in the fourth body (what `serve`'s completion did with a trace whose root came last); the 599 `Attributes dict is full` lines (which attributes the SDK dropped, visible as `unmapped_attributes` or as absence); two instrumentors on one client (`generation` and `ChatCompletion` for every turn — whether spanweave claims both, one, or neither). `PROBES.md` extended; `ROADMAP.md`'s Z3 row reads audited. | done (`a180f06`) | 6 |
 | B7-Z5 | **Audit Z5 (`flaky-fetcher`): `captures/z5/2026-10-13-real` and `-recorded` (one body each, four spans, no root).** As the B7 template. Of particular interest: a trace with no root in either capture (what `Quiet`, `RootEnded` and `Cap` each did with it); two `http_get` spans in ERROR with `exception` events (how spanweave renders a failed tool call and its exception); the real and recorded bodies (believed identical when the row was written; they are not — same length, 380 bytes differ — corrected at B7-Z5's close, §4). `PROBES.md` extended; `ROADMAP.md`'s Z5 row reads audited. | done (`54703f2`) | 6 |
-| B7-Z1 | **Audit Z1 (`ledger-clerk`): its two captures.** As the B7 template, with B6b's audit. Of particular interest, reported as observed: the nesting depth and whether parent-before-child ordering holds within and across bodies (Z1's brief); the deepest tool node and the `summarize` LLM node on the way back up. `PROBES.md` extended; `ROADMAP.md`'s Z1 row reads audited. | todo | 6 |
+| B7-Z1 | **Audit Z1 (`ledger-clerk`): its two captures.** As the B7 template, with B6b's audit. Of particular interest, reported as observed: the nesting depth and whether parent-before-child ordering holds within and across bodies (Z1's brief); the deepest tool node and the `summarize` node (a `chain`, not an LLM node, and not on the deepest tool node's way back up — corrected at B7-Z1's close, §4). `PROBES.md` extended; `ROADMAP.md`'s Z1 row reads audited. | done (`184b70d`) | 6 |
 | B8 | **The series closes.** When every project's row in `ROADMAP.md` reads audited: `TASKS.md` registry B0–B8 with shas, §3 and §4 folded; `reviews/` complete with sha256; `PROBES.md` consolidated across all six projects, grouped by owner; WORKPLAN.md deleted; PR `zoo` → `main` (a merge commit, as PR #1 was). No `plan:` commit follows. | awaiting B7 | 6 |
 
 ## 2. Execution order
@@ -448,6 +448,24 @@ tip before `done`.
   `absent` (§7.5 says so); §7.5 states that a report keeps the layout it
   was written with until audited again. Committed `audit/` reports not
   regenerated, as the row says.
+- 2026-10-14: B7-Z1 done (`184b70d`), CI 38485886518 green on all seven
+  jobs. F1 per report (L1 again); L3, S3, S7, S9 again; S14 (PROMPT spans
+  become two `unknown` `ChatPromptTemplate` nodes) and S15 (the row's
+  points) new; counts spanweave-live 4, spanweave 15, agentgolden 0. One
+  trace of 31 records per capture, 30 explicit parent edges, no
+  `orphan_parent` at end of input; depth 8 edges to five `fx_rate` tool
+  nodes under `_fetch_rates`. Parent-before-child holds nowhere: every
+  child's record precedes its parent's (30 of 30), the root is the last
+  record of the last body. Ordering was observed beside the audit (records
+  fed one by one to a pinned `spanweave.Builder`; command in S15), as were
+  `serve`'s written graphs (`--quiet 0` first generation: 6
+  `orphan_parent`) — the report does not show which record a node came
+  from; marked in PROBES.md. Row premise wrong: `summarize` is a `chain`
+  node (depth 4, child of `categorize`) whose LLM child is `ChatOpenAI`,
+  off the `fx_rate` path — row corrected. PROBES.md's "re-running
+  reproduces the committed reports" corrected: since B6b, Z3/Z4/Z5's
+  committed reports keep the old layout until B8. Z1's project manifest
+  names no repository, so ROADMAP's Repository cell is "—". Run 5 done.
 
 ## 5. Origins
 
