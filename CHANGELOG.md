@@ -4,6 +4,32 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B7-Z1 — Z1 (`ledger-clerk`) audited
+
+`zoo audit` on `captures/z1/2026-10-13-real` and `captures/z1/2026-10-13-recorded`
+with B6b's audit (`390eb24`), at the `audit` extra's pins (unchanged). No
+`SPEC.md` section touched, no code or test changed, no capture touched
+(`make verify` green), so no test red on a parent is owed.
+
+- **Reports:** `audit/z1-2026-10-13-real.md` and `audit/z1-2026-10-13-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each, the first
+  reports with B6b's node table. One finding each: every `raw/` body answered
+  415 (spanweave-live). A second run differs only in the `listening` ports and
+  the clock readings of `completed` and `late_arrival` events.
+- **Graphs:** one trace per capture, 31 records (`chain` 19, `llm` 4, `tool`
+  6, `unknown` 2), 30 explicit `parent` edges, no `orphan_parent`; live =
+  batch = incremental (266,641 bytes real, 249,322 recorded); every record
+  claimed by `openinference`; step 5 clean (31 steps).
+- **`PROBES.md`:** L1, L3, S3, S7 and S9 seen again in Z1; new S14
+  (`openinference.span.kind = PROMPT` kept as two `unknown`
+  `ChatPromptTemplate` nodes) and S15 (the row's points of interest: depth 8,
+  root to each of five `fx_rate` tool nodes; every child's record before its
+  parent's, 30 of 30, within and across bodies; `summarize` is a `chain`
+  node whose `llm` child is `ChatOpenAI`, not on the way back up from
+  `fx_rate`). Observations only. Counts restated: spanweave-live 4,
+  spanweave 15, agentgolden 0.
+- **`ROADMAP.md`:** Z1's row reads audited.
+
 ## B6b — the node table names the span
 
 The maintainer's decision of 2026-10-13 (B6b). `SPEC.md` §7.3, §7.5, §7.6.

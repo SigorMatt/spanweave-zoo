@@ -9,7 +9,11 @@ re-audited all six captures with the one audit as B6a left it (`07285bd`:
 step 2 under each completion policy, step 4 a row per node) and **replaced**
 the six reports in place, same filenames; every probe below cites the
 re-audit's reports, and an observation the earlier reports could not make is
-marked *(B7r)*. This file consolidates them into the probe list each owning
+marked *(B7r)*. B7-Z1 adds Z1's, written by the audit as B6b left it
+(`390eb24`: step 4's node table also names each node's span, its parent id,
+its unmapped keys and its payload state): `audit/z1-2026-10-13-real.md` and
+`audit/z1-2026-10-13-recorded.md`; observations from them are marked
+*(B7-Z1)*. This file consolidates them into the probe list each owning
 repository's next series starts from.
 
 A probe is a reproduction, never a fix (`CLAUDE.md`, standing rule 7): a
@@ -21,10 +25,12 @@ The owner is named by `SPEC.md` §7.4's table.
 **Pins.** Every observation below was made at `spanweave@fec7da27af517ad8b58ae3ec57827916aae60674`
 (0.9.1), `spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d` (0.0.1) and
 `agentgolden@aa1847f2a2ad51a95b98ab3e180bc5d211e6b138` (0.1.0), the `audit`
-extra's pins, with the stock Collector 0.162.0 — Z4's, Z3's and Z5's alike (each
-report's header records the three shas, pinned and installed). The six reports
-were all written by one audit, the zoo's at B6a (`07285bd`), re-run by B7r
-with the pins unchanged; the step-2 policy runs' `--quiet 0` and
+extra's pins, with the stock Collector 0.162.0 — Z4's, Z3's, Z5's and Z1's
+alike (each report's header records the three shas, pinned and installed).
+The six Z4, Z3 and Z5 reports were all written by one audit, the zoo's at B6a
+(`07285bd`), re-run by B7r with the pins unchanged; Z1's two by the zoo's at
+B6b (`390eb24`), the pins unchanged, so their node table has B6b's columns
+and the other six keep B6a's (`SPEC.md` §7.5) until B8 audits them again; the step-2 policy runs' `--quiet 0` and
 `--root-grace 0` are the audit's values, not the receiver's (each report's
 "Method", `SPEC.md` §7.3).
 
@@ -44,21 +50,31 @@ uv run zoo verify captures/z5/2026-10-13-real
 uv run zoo verify captures/z5/2026-10-13-recorded
 uv run zoo audit captures/z5/2026-10-13-real --out "${TMPDIR:-/tmp}"/zoo-audit
 uv run zoo audit captures/z5/2026-10-13-recorded --out "${TMPDIR:-/tmp}"/zoo-audit
+uv run zoo verify captures/z1/2026-10-13-real
+uv run zoo verify captures/z1/2026-10-13-recorded
+uv run zoo audit captures/z1/2026-10-13-real --out "${TMPDIR:-/tmp}"/zoo-audit
+uv run zoo audit captures/z1/2026-10-13-recorded --out "${TMPDIR:-/tmp}"/zoo-audit
 ```
 
 The reports it writes differ from the committed ones only in the `listening`
 port and the clock readings in a `completed` or `late_arrival` event (each
 report's "Method"). B7r checked it: a second run of all six audits, normalised
 for those two things alone, was identical to the committed reports line for
-line, so no difference in the audit's method was found. Z3's `real` audit takes
-about 23 s (its two timed replays sleep the captured gaps); the others about a
-second.
+line, so no difference in the audit's method was found. Z3's `real` audit took
+about 23 s at B6a (its two timed replays slept the captured gaps); the others
+about a second. Run at a later audit, the six differ in what that audit
+changed as well: from B6b on, step 4's node table has B6b's columns and no
+replay is `--timing`. B7-Z1 checked Z1's two the same way: a second run,
+normalised for the `listening` ports and the `completed` and `late_arrival`
+events, was identical to the committed reports; each takes about a second.
 Each probe also gives the step's own commands, as the reports print them.
 
-**Count.** spanweave-live: 4 (L1–L2 from Z4, L1 seen again in Z3 and Z5; L3
-from Z3; L4 from Z5). spanweave: 13 (S1–S5 from Z4, S3 seen again in Z3 and
-Z5; S6–S10 from Z3, S7 seen again in Z5; S11–S13 from Z5). agentgolden: 0
-(step 5's `signature` ran clean on every written graph of all six captures).
+**Count.** spanweave-live: 4 (L1–L2 from Z4, L1 seen again in Z3, Z5 and Z1;
+L3 from Z3, seen again in Z1; L4 from Z5). spanweave: 15 (S1–S5 from Z4, S3
+seen again in Z3, Z5 and Z1; S6–S10 from Z3, S7 seen again in Z5 and Z1, S9
+seen again in Z1; S11–S13 from Z5; S14–S15 from Z1). agentgolden: 0 (step 5's
+`signature` ran clean on every written graph of all eight captures). B7-Z1
+added two probes (S14, S15) and one finding per Z1 report (L1's).
 B7r's re-audit added no probe and no finding: each report's findings are the
 ones it had (Z4 3, Z3 1, Z5 1, per report), and its new observations are
 written into the probes they answer. A probe marked *to establish* is an
@@ -99,6 +115,12 @@ asserts nothing.
   2 bodies across the two captures.
 - **Re-audit (B7r):** F1 again in all six re-audited reports, the same bodies,
   status and detail.
+- **Seen again in Z1** (B7-Z1, finding F1 in both Z1 reports):
+  `captures/z1/2026-10-13-real` (`raw/0001.body`, `raw/0002.body`,
+  `--requests 2`) and `captures/z1/2026-10-13-recorded` (`raw/0001.body`,
+  `--requests 1`), the same commands with `z1/2026-10-13-*`. Every body
+  answered 415, the same event and detail: 3 of 3 bodies across the two
+  captures.
 
 ### L2. A record `serve` routed reaches no graph, and no event says where it went
 
@@ -212,6 +234,31 @@ asserts nothing.
   `e5cd88a577106085` (recorded), kind `agent`, status `ok`. Every other node's
   parent is present (*yes*, 101 of 102). The table does not say which body a
   node's record came from.
+- **Seen again in Z1** (B7-Z1, step 2 of both Z1 reports): the root's
+  record in the last of **two** bodies (S15 says how that was read). Real,
+  2 bodies (22 and 9 records), all answered 200: the end-of-input run
+  completes once, at `index` 31, by `Cap(records=0)`; `--quiet 0` completes
+  twice — at `index` 22 (generation 1, 22 records, before the body carrying
+  the root arrived) and, after a `late_arrival` at `index` 23, at `index` 31
+  (generation 2, 9 records), writing
+  `graphs/40e8f3f6ace0600a1255ec9030397af7.json` and `.2.json`; `--root-grace
+  0` completes once, at `index` 31, by `RootEnded(grace_seconds=0.0)`.
+  `finished` reports `routed: 31` in each run. Recorded, 1 body of 31 records:
+  one completion at `index` 31 under each of the three. Live, batch and
+  incremental equal on both (266,641 bytes real, 249,322 recorded).
+  - **Not in the report, observed beside it (B7-Z1):** the two generation
+    graphs `--quiet 0` writes, which step 3 compares with nothing. Replayed
+    by hand into `serve --port 0 --out graphs --quiet 0 --requests 2`, then
+    `spanweave inspect` on each: generation 1 (22 nodes) carries
+    `orphan_parent` × 6 and 16 explicit `parent` edges — the six nodes whose
+    parent is in the second body (`73e3edd2fc491888` `model`,
+    `9833521556552bed` `load_ledger`, `b920656c39cb92a4`
+    `RunnableAssign<categories>`, `c8f9b88d62e9a54b` `RunnableAssign<rates>`,
+    `898632359c6f7de1` `reconcile`, `e0e1f2785bd03602`
+    `ChatPromptTemplate`); generation 2 (9 nodes) carries no `orphan_parent`
+    and 8 explicit `parent` edges, its one parentless node the root
+    `bd08a2148df084bc` `LangGraph`. Neither generation's graph is the
+    end-of-input graph (31 nodes, 30 `parent` edges, no `orphan_parent`).
 
 ### L4. A trace with no root: completed by `Quiet(0)` under `--quiet 0`; under `--root-grace 0`, by the end-of-input `Cap(0)`, never by `RootEnded`
 
@@ -342,6 +389,17 @@ asserts nothing.
   `timestamp_unit_suspect`, once (4 + 4 Z4, 102 + 102 Z3, 4 + 4 Z5). The
   *to establish* above stands: the table names the code per node, not what
   raised it.
+- **Seen again in Z1** (B7-Z1, step 4 of both Z1 reports):
+  `timestamp_unit_suspect` × 31 — once per node, every row — on
+  `graphs/40e8f3f6ace0600a1255ec9030397af7.json` (real) and
+  `graphs/a97e57e66afeaad79303a015a945515c.json` (recorded), through
+  `openinference`. Not in the report but in the graph `serve` writes (read
+  beside the audit, B7-Z1), the diagnostic's own message says what raised
+  it: `started_at (1791915997281317120), ended_at (1791915997282008832)
+  exceeds 100000000000, which unix seconds cannot reach; the field may be in
+  milliseconds or nanoseconds. Every value is kept exactly as reported and
+  nothing is rescaled`. Whether it is warranted on this input stays *to
+  establish*.
 
 ### S4. `unmapped_attributes` on every span
 
@@ -428,6 +486,25 @@ asserts nothing.
   `<record>.*` keys (4 each), `metadata` (4), `<record>.events` (2),
   `tool.description` (2). `metadata` was named in neither Z3 report;
   `<record>.events` is S11's.
+- **Seen again in Z1** (B7-Z1, step 4 of both Z1 reports): 31
+  `unmapped_attributes` diagnostics on each graph — one per node — taking
+  15,462 bytes as compact sorted JSON on both captures. Keys: Z4's four
+  `<record>.*` keys and `metadata` (31 each), `llm.input_messages.0.message.role`
+  (7), `llm.input_messages.0.message.content` (6), `tool.description` (6),
+  `llm.finish_reason`, `llm.input_messages.1.message.{content,role}`,
+  `llm.invocation_parameters`, `llm.output_messages.0.message.role`,
+  `llm.provider`, `llm.system` (4 each), `llm.output_messages.0.message.content`
+  (3), `llm.prompt_template.template`, `llm.prompt_template.variables`,
+  `llm.tools.0.tool.json_schema` (2 each), and one each of
+  `llm.input_messages.2.message.{role,tool_calls.0.tool_call.{id,function.name,function.arguments}}`,
+  `llm.input_messages.3.message.{content,name}` and
+  `llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments`.
+  Named in no earlier report: `llm.provider`, `llm.prompt_template.template`,
+  `llm.prompt_template.variables` and `llm.input_messages.3.message.name`. The
+  node table (B6b's columns) puts the two `llm.prompt_template.*` keys on
+  the two `unknown` `ChatPromptTemplate` nodes (S14), and `metadata` on every
+  node. The two captures' tables are the same, key for key and count for
+  count.
 
 ### S8. `<record>.droppedAttributesCount` on 18 nodes; what was dropped is absent
 
@@ -464,6 +541,23 @@ asserts nothing.
   which carry none); no `tool`, `chain` or `agent` node carries one.
 - **To establish:** whether the 48 follow from two `llm` nodes per tool call
   (S6).
+- **Seen again in Z1** (B7-Z1, step 4 of both Z1 reports), with one
+  instrumentor: `unpaired_call` × 1 on each graph, on the first `ChatOpenAI`
+  `llm` node in graph order — `bc88f958b4e7b638` (real),
+  `d65c8a757c33a1ea` (recorded), parent the `model` chain under the root —
+  whose unmapped keys include
+  `llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments`.
+  Not in the report but in the graph `serve` writes (read beside the audit),
+  the diagnostic's message: `call 'chatcmpl-tool-b84a56ef4e875c2d' was
+  requested and no span in this input fulfils it; no edge is invented`, its
+  source `{"call_id": ..., "operation": "categorize"}` (recorded:
+  `call_stub_categorize_1`). The graph holds a `tool` node named
+  `categorize` (`bf207c306c0f583c` real, `4b292064ede9bc73` recorded), the
+  root's grandchild through the `tools` chain; its unmapped keys are the
+  `<record>.*` four, `metadata` and `tool.description`. The five `fx_rate`
+  tool nodes are called by a chain, not by an `llm` node, and no diagnostic
+  names them. **To establish:** what the `categorize` tool span would have to
+  carry for spanweave to pair it, and whether its record carries it.
 
 ### S10. Nine `llm` steps carry no model
 
@@ -591,13 +685,110 @@ asserts nothing.
   and timestamps the exporter generated — equal sizes are consistent with
   that and do not show it.
 
+### S14. `openinference.span.kind = PROMPT` becomes an `unknown` node
+
+- **From:** step 4's table in both Z1 reports (B7-Z1).
+- **Captures:** `captures/z1/2026-10-13-real`, `captures/z1/2026-10-13-recorded`.
+- **Command:**
+
+  ```bash
+  uv run spanweave-live serve --port <port> --out graphs --requests 2
+  uv run zoo replay captures/z1/2026-10-13-real --to http://127.0.0.1:<port> --json
+  uv run spanweave inspect graphs/40e8f3f6ace0600a1255ec9030397af7.json
+  ```
+
+  (`--requests 1`, `…-recorded` and `graphs/a97e57e66afeaad79303a015a945515c.json`
+  for the recorded capture.)
+- **Observed:** `unknown: 2` in `inspect`'s node counts and
+  `unknown_span_kind` × 2 on each graph; the report's `unknown` nodes:
+  `ChatPromptTemplate` × 2. The node table: `df4e7bd70f4edf20` (child of the
+  `RunnableSequence` under `RunnableParallel<categories>`) and
+  `e0e1f2785bd03602` (child of the `summarize` chain) real,
+  `03003a0f0472b46a` and `ce2ca6162ca67c60` recorded; status `ok`, model
+  absent, inputs and outputs `present`, unmapped keys including
+  `llm.prompt_template.template` and `llm.prompt_template.variables`. Not in
+  the report but in the graph `serve` writes (read beside the audit): the
+  diagnostic's message is `openinference.span.kind='PROMPT' does not map to a
+  NodeKind; kept as unknown, with the reported kind preserved in attributes`.
+  Nothing was dropped; it is spanweave saying what it did not map, and not a
+  finding (`SPEC.md` §7.4).
+- **To establish:** whether `PROMPT` is a kind the `openinference` adapter
+  is meant to map.
+
+### S15. Z1's nesting: depth 8, and every child's record before its parent's, within and across bodies
+
+- **From:** steps 3 and 4 of both Z1 reports, and the records step 3 feeds,
+  read beside the audit. B7-Z1's points of interest (Z1's brief: "nesting
+  depth and parent-before-child ordering in a real exporter's batches"),
+  reported as observed; not a finding.
+- **Captures:** `captures/z1/2026-10-13-real` (2 bodies, 22 + 9 records),
+  `captures/z1/2026-10-13-recorded` (1 body, 31 records).
+- **Command:** both `zoo audit` commands above; and for the order of the
+  records, the audit's own re-read (step 3) with a `spanweave.Builder` fed
+  one record at a time, noting the node each record adds:
+
+  ```bash
+  uv run python -c '
+  import sys; from pathlib import Path; import spanweave; from spanweave_zoo import audit
+  run = Path(sys.argv[1]); files = sorted(f"json/{p.name}" for p in (run / "json").glob("[0-9][0-9][0-9][0-9].json"))
+  for part in audit.reread(run, files).partitions:
+      b, seen = spanweave.Builder(), set()
+      for rec, origin in zip(part.feed, part.origins):
+          b.feed(rec); g = b.graph()
+          for n in g.nodes():
+              if n.id not in seen: seen.add(n.id); print(origin, n.id, n.kind.value, n.name, g.parents(n.id, spanweave.EdgeKind.PARENT))
+  ' captures/z1/2026-10-13-real
+  ```
+
+  (A parent shown empty at the time its child is added is a parent not yet
+  fed; the final graph's `parent` edges are the report's node table.)
+- **Observed — depth:** 31 nodes, 30 explicit `parent` edges, one node with
+  no parent (`bd08a2148df084bc` `LangGraph` real, `19b58c36ccca6627`
+  recorded), no `orphan_parent`; live, batch and incremental equal. The
+  longest root-to-leaf path is 8 `parent` edges (9 levels), to each of the
+  five `fx_rate` `tool` nodes: `LangGraph` → `tools` (chain) → `categorize`
+  (tool) → `categorize` (chain) → `RunnableAssign<rates>` →
+  `RunnableParallel<rates>` → `lookup_rate` → `_fetch_rates` → `fx_rate`. The
+  deepest `tool` nodes are those five (`6c17e931ae4a5989`,
+  `de9709a4a4be62f2`, `64171e698a5f787d`, `c27097b50658e7c6`,
+  `e7cde30149b4895b` real), all children of `_fetch_rates`, status `ok`,
+  inputs and outputs `present`, no span events; the deepest `llm` node
+  is the `ChatOpenAI` under `RunnableSequence` at depth 7. The recorded
+  graph's node table is the real one's row for row but for node ids and the
+  model (`ledger-clerk-stub`).
+- **Observed — the `summarize` node:** it is a **`chain`** node, not an
+  `llm` node — `fb5a00c15fff11d1` (real), `f0106dfcaca83836` (recorded),
+  model absent, at depth 4, a child of the `categorize` chain and so a
+  sibling of `RunnableAssign<rates>`, not beneath `lookup_rate` or
+  `fx_rate`. Its children are `ChatPromptTemplate` (`unknown`, S14),
+  `ChatOpenAI` (`llm`, depth 5, `04704daf4e5e5376` real /
+  `eddf6a6b5613c8b0` recorded, model `Qwen/Qwen3-235B-A22B-Instruct-2507` /
+  `ledger-clerk-stub`) and `StrOutputParser`. The B7-Z1 row's phrase "the
+  `summarize` LLM node on the way back up" does not match the capture: the
+  LLM node under `summarize` is named `ChatOpenAI`, and it is not on the path
+  from `fx_rate` back to the root.
+- **Observed — ordering:** in both captures every child's record is fed
+  before its parent's: 30 of 30 `parent` edges, none the other way, so
+  parent-before-child holds for none. Within a body: real body 1, 16 of 16
+  edges with both ends in it; real body 2, 8 of 8; recorded's one body, 30
+  of 30. Across bodies (real): the 6 edges whose child is in body 1 and
+  parent in body 2 (L3's six `orphan_parent` under `--quiet 0`); none the
+  other way. Body 1 ends inside the `summarize` subtree: its
+  `ChatPromptTemplate` is the last record of body 1, and `ChatOpenAI`,
+  `StrOutputParser` and `summarize` itself the first three of body 2. The
+  root `LangGraph` is the last record of the last body in both captures.
+- **To establish:** nothing for spanweave: at end of input it rebuilt every
+  `parent` edge from child-first records, and its incremental graph equals
+  its batch graph. What a consumer that completes early sees of this order is
+  L3's.
+
 ---
 
 ## agentgolden
 
 None. Step 5 (`agentgolden.signature.signature(graph)`, no rules) returned
-four `llm` steps on each written graph of Z4's, 102 steps on each of Z3's and
-4 steps on each of Z5's, and raised on none — again in all six re-audited
-reports (B7r). S10's `llm:-` steps were *to establish* as possibly
+four `llm` steps on each written graph of Z4's, 102 steps on each of Z3's,
+4 steps on each of Z5's and 31 on each of Z1's, and raised on none — again in
+all six re-audited reports (B7r), and in both Z1 reports (B7-Z1). S10's `llm:-` steps were *to establish* as possibly
 agentgolden's; the re-audit's node table shows the graph itself carries no
 model on those nine nodes, so the signature reads it as it is.
