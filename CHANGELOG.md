@@ -4,6 +4,34 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B7r — every captured project audited once more, with the one audit
+
+`zoo audit` on Z4's, Z3's and Z5's six captures with B6a's audit (`07285bd`),
+at the `audit` extra's pins (unchanged). No `SPEC.md` section touched, no code
+or test changed, no capture touched (`make verify` green).
+
+- **Reports replaced:** the six `audit/z{4,3,5}-*-{real,recorded}.md`,
+  rewritten in place by `zoo audit` (same filenames; no old report kept beside
+  a new one), exit 0 each. Findings unchanged: Z4 3 each, Z3 1 each, Z5 1 each.
+- **Re-run determinism:** a second run of all six, into the scratchpad,
+  differs from the committed reports only in the `listening` ports and the
+  clock readings of `completed` and `late_arrival` events — identical line for
+  line once those are normalised. No finding about the audit's method.
+- **`PROBES.md`:** every probe cites the re-audit; observations marked
+  *(B7r)*. Moved from *to establish* / *not observable* to observed: L3
+  (`--quiet 0` completes Z3 real four times, once per body, three
+  `late_arrival`s; `--root-grace 0` once, by `RootEnded`, at the last
+  record), L4 (`Quiet(0)` completes Z5's rootless trace; under
+  `--root-grace 0` the end-of-input `Cap(0)` does, never `RootEnded`), S5 and
+  S9 (which nodes carry `unpaired_call`), S10 (the nine `llm:-` steps are the
+  nine `llm` nodes with no `model` in the graph), S11 (both `http_get` nodes
+  status `error`, one `exception` event each), S12 (which two nodes are
+  orphaned). Observed further, still partly *to establish*: L2 (Z4 under each
+  policy), S2, S3, S6, S13; S8 stays (the node table names codes, not keys).
+  No new probe, no new finding; counts and the
+  pins paragraph restated.
+- **`ROADMAP.md`:** Z3's, Z4's and Z5's rows cite the re-audit.
+
 ## B6a — the audit observes every policy and names every node
 
 `OPEN_QUESTIONS.md` §8, option 1 over a timed replay (the maintainer's decision
