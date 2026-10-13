@@ -45,8 +45,10 @@ nothing else (`split_head`), so a bare CR or LF stays inside the value it
 arrived in. The stdlib's parse had done worse than truncate: a value of
 `otel\\rX-Injected: yes` came out of it as two headers, one of which no client
 sent. The stdlib's parse is still what the sink *handled* the request with --
-its `Content-Length`, the content type it echoes, the path that chose the
-directory -- and it is no longer what the record says the request carried.
+the content type it echoes, the path that chose the directory -- and it is no
+longer what the record says the request carried. B5d took the framing out of
+it (`SPEC.md` §3.7): a body is read by the framing headers on the record's own
+split (`framing_of`), so the record and the framing cannot disagree.
 
 A3g took the parse out of the forward too (`SPEC.md` §4.3): the tee hands the
 Collector the recorded octets, with only the `Host` line and the hop-by-hop
@@ -177,6 +179,27 @@ def folds_a_length(head: bytes) -> bool:
         ):
             return True
     return False
+
+
+def framing_of(head: bytes) -> tuple[bool, list[str]]:
+    """The framing headers the record shows: a `Transfer-Encoding`, the lengths.
+
+    `SPEC.md` §3.7 (B5d): the sink frames a body by its own parse of the
+    head -- `split_head`, the one `NNNN.headers.json` shows -- and never by
+    the stdlib's header object, which splits on a bare CR and a bare LF and so
+    can see a framing header the record does not, or miss one it does.
+    Whether any header named `Transfer-Encoding` (any case) is present, and
+    every `Content-Length` value (any case) in the order received. Pure: the
+    head's octets decide it, never the body.
+    """
+    pairs = split_head(head)["headers"]
+    assert isinstance(pairs, list)
+    names = [str(name).lower() for name, _ in pairs]
+    chunked = "transfer-encoding" in names
+    lengths = [
+        str(value) for (name, value) in pairs if str(name).lower() == "content-length"
+    ]
+    return chunked, lengths
 
 
 def split_head(head: bytes) -> dict[str, object]:
@@ -668,17 +691,21 @@ class _Handler(BaseHTTPRequestHandler):
         request-smuggling shape, never read by its length (B5a); no
         `Content-Length`; or none that `declared_length` reads as one (B5b);
         or one continued on a folded line, which the stdlib joins and the
-        record does not (`folds_a_length`, B5c).
+        record does not (`folds_a_length`, B5c). Every framing header is read
+        from the record's own split of the head (`framing_of`, B5d), never
+        from the stdlib's `self.headers`: the record and the framing cannot
+        disagree.
         A `Content-Length` it does not read is itself a recorded fact: it
         stays in the head, and the body is what we could read, which is
         nothing.
         """
         self._unframed = True
-        if self.headers.get("Transfer-Encoding") is not None:
+        encoded, lengths = framing_of(self._head)
+        if encoded:
             return b""
         if folds_a_length(self._head):
             return b""
-        length = declared_length(self.headers.get_all("Content-Length") or [])
+        length = declared_length(lengths)
         if length is None:
             return b""
         self._unframed = False

@@ -162,10 +162,11 @@ matters:
   rule as §2.4's `json/`: if the two disagree, the octets are what arrived.
 
 It is **not** the stdlib's parse (A3f). Python's `http.server` parses the head
-to handle the request — its `Content-Length` frames the body, its
-`Content-Type` is echoed (§3.3), its path chooses the directory (§3.4) — and
-that parse is still what the sink *handled* the request with. Since A3g it is
-nothing more: the tee forwards the recorded octets, not the parse (§4.3). It
+to handle the request — its `Content-Type` is echoed (§3.3), its path chooses
+the directory (§3.4) — and that parse is still what the sink *handled* the
+request with. Since A3g it is nothing more: the tee forwards the recorded
+octets, not the parse (§4.3); and since B5d it frames nothing — a body is read
+by the framing headers on *this* split (§3.7). It
 is not what the record says the request carried, because it can say more than
 the request did. A **bare CR inside a header value** is the case: HTTP forbids
 it, real clients emit it, and `email`'s header parser splits the line on it.
@@ -476,6 +477,27 @@ never varies its answer by content; and never imports `spanweave` or
 mislabelled, double-compressed or not OTLP at all is recorded like any other,
 because the zoo records what exporters send and never improves it (§1).
 
+**The sink frames by the record's own parse** (B5d). The framing headers —
+`Transfer-Encoding` and `Content-Length`, either in any case — are read from
+§2.3's split of the recorded head, the one `NNNN.headers.json` shows: split on
+CRLF only, a header a line whose text before its first colon is a token, a
+value less the spaces and tabs around it. They are never read from the
+stdlib's parse, which splits on a bare CR and a bare LF and so can see a
+framing header the record does not show, or miss one it does. The record and
+the framing then cannot disagree, and every case below is a case of this one
+rule:
+
+- `Content-Length:` LF ` 5` is one line on the split, valued LF ` 5` — not
+  digits — although the stdlib's reader ends the line at the LF and joins
+  ` 5` to it as a fold.
+- `X: a` CR `Content-Length: 5` is one header, `X`, on the split, and no
+  length — although `email`'s parser splits the line at the CR and finds a
+  `Content-Length: 5`.
+- `X: a` CR `Transfer-Encoding: chunked` beside a `Content-Length: 5` is no
+  `Transfer-Encoding` on the split, so the request is framed by its `5`.
+- A head with no CRLF at all (§2.3) has no headers on the split, so no
+  `Content-Length`, and is unframed whatever its bare-LF lines say.
+
 The sink reads the framing it was given and does not guess one it was not:
 decoding a `Transfer-Encoding` is decoding. A POST whose body the sink cannot
 read by its `Content-Length` alone is recorded as a **zero-byte** body with its
@@ -492,10 +514,9 @@ and read by its length the sink would take the first octets of the chunk
 frames as a body and the rest as a request nobody sent (B5a).
 
 A `Content-Length` is **digits, once** (B5b; RFC 9110 §8.6, `1*DIGIT`). Its
-value is what the stdlib's parse of the head hands the sink (§2.3: that parse
-is what the sink handles a request with), less the spaces and horizontal tabs
-around it — RFC 9110 §5.5's optional whitespace, which §2.3's split removes
-too and which is not part of a value. What remains must be one or more ASCII
+value is its value on §2.3's split (B5d), less the spaces and horizontal tabs
+around it — RFC 9110 §5.5's optional whitespace, which the split removes and
+which is not part of a value. What remains must be one or more ASCII
 digits `0`–`9` and nothing else: `+5`, `-3`, `5_0`, `5, 5`, a digit from
 another script, or a `5` with any other whitespace beside it (a vertical tab,
 a no-break space) is not a length, although Python's `int()` reads several
@@ -507,15 +528,16 @@ A `Content-Length` **continued on a folded line** declares no length (B5c).
 On §2.3's split of the recorded head, that is a `Content-Length` header line
 (any case) followed by a line beginning with a space or a horizontal tab —
 RFC 9112 §5.2's obsolete line folding. The stdlib's parse joins the fold into
-the value: for `Content-Length:` CRLF ` 5` it hands the sink `5`, while the
-record's split says the header is empty and lists ` 5` as `unparsed`, part of
-no header. The record and the framing must agree, so the request is unframed
-whatever the joined value would read as; `NNNN.headers.json` is the split as
-ever, and the fold stays `unparsed`. A fold on any other header frames
-nothing and changes nothing.
+the value: for `Content-Length:` CRLF ` 5` it reads `5`, while the record's
+split says the header is empty and lists ` 5` as `unparsed`, part of no
+header. A fold beside a length is a line the record holds and cannot place,
+so the request is unframed whatever the split's own value reads as —
+`Content-Length: 5` CRLF ` 0` too; `NNNN.headers.json` is the split as ever,
+and the fold stays `unparsed`. A fold on any other header frames nothing and
+changes nothing.
 
-The table is every case, decided by the framing headers alone and never by
-the bytes:
+The table is every case, decided by the framing headers on the record's
+split alone (B5d) and never by the bytes:
 
 | `Transfer-Encoding` | `Content-Length` | Body recorded | Connection |
 |---|---|---|---|

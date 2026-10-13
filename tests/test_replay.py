@@ -329,7 +329,12 @@ def test_a_replayed_head_differs_from_the_captured_one_in_the_host_line_only(
         )
     assert [outcome.status for outcome in outcomes] == [200], outcomes
     assert sent_head(again) == with_host(sent_head(source), port)
-    assert sent_body(again) == JSON_BODY
+    # B5d (`SPEC.md` §3.7): the sink frames by §2.3's split, on which the
+    # LF-only head has no `Content-Length` -- so it is unframed, a zero-byte
+    # body, when captured and again when replayed.
+    body = b"" if shape == "lf-only" else JSON_BODY
+    assert sent_body(source) == body
+    assert sent_body(again) == body
 
 
 def test_the_json_side_sends_the_collectors_re_encoding(tmp_path):

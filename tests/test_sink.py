@@ -340,11 +340,16 @@ def test_an_lf_only_head_is_one_unparsed_entry_and_nothing_else(tmp_path):
     # `unparsed`, and a `method` and `path` read out of the first line -- the
     # json omitted the whole header block without saying so. Under the
     # ratified rule it is one `unparsed` entry, verbatim, and no field claims
-    # a request line, a method or a path the split never found.
+    # a request line, a method or a path the split never found. B5d: the
+    # sink frames by that split (`SPEC.md` §3.7), which shows no
+    # `Content-Length` here, so the POST is unframed -- a zero-byte body and
+    # an answer that says close -- although the stdlib's parse reads `5`.
     raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
     with running(raw) as (_, port):
         answer = send_octets(port, LF_ONLY_HEAD, b"hello")
     assert answer.startswith(b"HTTP/1.1 200"), answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert body_of(raw) == b""
     assert head_of(raw) == LF_ONLY_HEAD
     recorded = headers_of(raw)
     assert recorded["unparsed"] == [LF_ONLY_HEAD.decode("latin-1")]
@@ -352,7 +357,7 @@ def test_an_lf_only_head_is_one_unparsed_entry_and_nothing_else(tmp_path):
     for key in ("request_line", "method", "path"):
         assert key not in recorded, f"{key} claimed from a head with no CRLF"
     assert (recorded["bytes"], recorded["received_at"]) == (
-        5,
+        0,
         "2026-10-09T12:00:01+00:00",
     )
 
@@ -1169,3 +1174,67 @@ def test_a_fold_on_another_header_keeps_the_connection(tmp_path):
     assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
     assert answer.count(b"Connection: close") == 0
     assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]
+
+
+# --- B5d: the sink frames by the record's own parse --------------------------
+
+
+@pytest.mark.parametrize(
+    ("framing", "headers"),
+    [
+        # A bare LF, then a space: the stdlib's reader ends the line at the LF
+        # and joins ` 5` to it as a fold, so its parse says `5`. On §2.3's
+        # CRLF split it is one line, and the value is `\n 5` -- not digits.
+        (b"Content-Length:\n 5\r\n", [["Content-Length", "\n 5"]]),
+        # A bare CR inside another header's value: `email`'s parser splits the
+        # line on it and finds a `Content-Length: 5`. The record's split finds
+        # one header, `X`, whose value holds the CR -- and no length at all.
+        (b"X: a\rContent-Length: 5\r\n", [["X", "a\rContent-Length: 5"]]),
+    ],
+    ids=["lf-then-space", "bare-cr-in-another-value"],
+)
+def test_a_length_only_the_stdlib_reads_closes_its_connection(
+    tmp_path, framing, headers
+):
+    # B5d, `SPEC.md` §3.7: the sink frames a body by its own parse of the head
+    # -- §2.3's split, the one `NNNN.headers.json` shows -- and never by the
+    # stdlib's header object, which splits on a bare CR and a bare LF. Before,
+    # each head here was read by a `Content-Length: 5` the record does not
+    # show, and what followed was parsed as the next request. Now each is
+    # unframed: a zero-byte body, one answer that says close, nothing after it
+    # read -- exactly as the head's split shows it.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+    split = headers_of(raw)
+    assert split["headers"] == [["Host", "zoo"], *headers]
+    assert "unparsed" not in split
+
+
+def test_a_transfer_encoding_only_the_stdlib_reads_frames_nothing(tmp_path):
+    # B5d's other edge, the same rule from the other side: a
+    # `Transfer-Encoding` that exists only in the stdlib's parse -- split out
+    # of another header's value at a bare CR -- is not in the record, so the
+    # record's `Content-Length: 5` frames the body. Five octets, the
+    # connection kept, and the POST after it is the second body.
+    raw = tmp_path / "run" / "raw"
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+        b"X: a\rTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n"
+    )
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
+    assert answer.count(b"Connection: close") == 0
+    assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]
+    assert headers_of(raw)["headers"] == [
+        ["Host", "zoo"],
+        ["X", "a\rTransfer-Encoding: chunked"],
+        ["Content-Length", "5"],
+    ]

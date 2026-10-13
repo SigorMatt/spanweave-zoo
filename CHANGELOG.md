@@ -4,6 +4,36 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B5d — the sink frames by the record's own parse
+
+B5c's open case; the maintainer's decision of 2026-10-13. `SPEC.md` §2.3,
+§3.7. No capture touched; the sink still decodes no framing, and
+`NNNN.headers.json` is derived as before.
+
+- **The framing headers come from §2.3's split of the recorded head**
+  (`framing_of`), never from the stdlib's `self.headers`, which splits on a
+  bare CR and a bare LF. `Content-Length:` LF ` 5` and `X: a` CR
+  `Content-Length: 5` were read by a length of `5` the record does not show;
+  each is now unframed: a zero-byte body, the answer with `Connection: close`,
+  the connection closed.
+- **Two consequences of the same rule, beyond the two named heads:** a
+  `Transfer-Encoding` that exists only in the stdlib's parse (`X: a` CR
+  `Transfer-Encoding: chunked`) no longer unframes a request whose record
+  shows `Content-Length: 5` -- it is read by its `5` and keeps its
+  connection; and a head with no CRLF at all (A3g's LF-only head) has no
+  `Content-Length` on the split, so its body is now zero bytes and its
+  connection closed. The A3g sink test and the replay test's `lf-only` shape
+  are updated to say so; their head assertions are unchanged.
+- **`SPEC.md` §3.7** states the rule once and lists the cases under it; §2.3
+  no longer says the stdlib's `Content-Length` frames the body. B5c's fold
+  check stays, as a case of the rule.
+- Tests: the two heads, each followed on the connection by a well-formed POST
+  that must not be read, with the split asserted; the stdlib-only
+  `Transfer-Encoding` edge. All red on the parent, with the two updated tests;
+  B5a--B5c's tests unchanged and green.
+- Mutation shown caught: framing by the stdlib's `Content-Length` values
+  (both new heads, the LF-only sink test and the replay `lf-only` shape fail).
+
 ## B7r — every captured project audited once more, with the one audit
 
 `zoo audit` on Z4's, Z3's and Z5's six captures with B6a's audit (`07285bd`),
