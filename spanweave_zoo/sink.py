@@ -70,6 +70,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import pairwise
 from pathlib import Path
 
 from spanweave_zoo import manifest
@@ -153,6 +154,29 @@ def declared_length(values: list[str]) -> int | None:
     if not value or not set(value) <= _DIGITS:
         return None
     return int(value)
+
+
+def folds_a_length(head: bytes) -> bool:
+    """Whether a `Content-Length` in the recorded head continues on a fold.
+
+    `SPEC.md` §3.7 (B5c): on §2.3's split of the octets -- Latin-1, CRLF and
+    nothing else -- a line that is a `Content-Length` header (any case),
+    followed by a line beginning with a space or a horizontal tab (RFC 9112
+    §5.2's obsolete line folding). The stdlib's parse joins that fold into the
+    value and frames by it; the record lists the fold as `unparsed`, no part
+    of any header. A request where the two would disagree declares no length.
+    Pure: the head's octets decide it, never the body.
+    """
+    lines = head.decode("latin-1").split("\r\n")
+    for line, following in pairwise(lines[1:]):
+        name = field_name(line)
+        if (
+            name is not None
+            and name.lower() == "content-length"
+            and following[:1] in (" ", "\t")
+        ):
+            return True
+    return False
 
 
 def split_head(head: bytes) -> dict[str, object]:
@@ -642,13 +666,17 @@ class _Handler(BaseHTTPRequestHandler):
         request. Unframed is (`SPEC.md` §3.7's table): any
         `Transfer-Encoding`, whatever `Content-Length` says beside it -- the
         request-smuggling shape, never read by its length (B5a); no
-        `Content-Length`; or none that `declared_length` reads as one (B5b).
+        `Content-Length`; or none that `declared_length` reads as one (B5b);
+        or one continued on a folded line, which the stdlib joins and the
+        record does not (`folds_a_length`, B5c).
         A `Content-Length` it does not read is itself a recorded fact: it
         stays in the head, and the body is what we could read, which is
         nothing.
         """
         self._unframed = True
         if self.headers.get("Transfer-Encoding") is not None:
+            return b""
+        if folds_a_length(self._head):
             return b""
         length = declared_length(self.headers.get_all("Content-Length") or [])
         if length is None:

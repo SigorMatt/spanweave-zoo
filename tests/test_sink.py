@@ -1115,3 +1115,57 @@ def test_identical_lengths_are_one_length_and_keep_the_connection(tmp_path, fram
     assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
     assert answer.count(b"Connection: close") == 0
     assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]
+
+
+# --- B5c: a folded `Content-Length` is unframeable ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("framing", "headers", "unparsed"),
+    [
+        # The stdlib joins the fold and frames by `5`; the record's split
+        # says `Content-Length` is empty and lists ` 5` as `unparsed`.
+        (b"Content-Length:\r\n 5\r\n", [["Content-Length", ""]], [" 5"]),
+        (b"Content-Length:\r\n\t5\r\n", [["Content-Length", ""]], ["\t5"]),
+        # A fold after digits: the stdlib's value was never digits, so this
+        # one was unframed before B5c too -- it stays so.
+        (b"Content-Length: 5\r\n 0\r\n", [["Content-Length", "5"]], [" 0"]),
+    ],
+    ids=["empty-then-space-fold", "empty-then-tab-fold", "digits-then-fold"],
+)
+def test_a_folded_length_closes_its_connection(tmp_path, framing, headers, unparsed):
+    # B5c, `SPEC.md` §3.7: a `Content-Length` whose value continues on a
+    # folded line (obs-fold, a line beginning with a space or a tab) declares
+    # no length. `http.server`'s parse joined the fold and framed the body by
+    # a length the record (`SPEC.md` §2.3) does not show -- there the header
+    # is empty and the fold is `unparsed` -- and the record and the framing
+    # must agree. Unframed: a zero-byte body, one answer that says close,
+    # nothing after it read, and the head's split unchanged.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+    split = headers_of(raw)
+    assert split["headers"] == [["Host", "zoo"], *headers]
+    assert split["unparsed"] == unparsed
+
+
+def test_a_fold_on_another_header_keeps_the_connection(tmp_path):
+    # B5c's other edge: only the framing headers decide framing (`SPEC.md`
+    # §3.7). A fold on a header that is not `Content-Length` leaves the length
+    # declared, so the body is its octets and the POST after it is the second.
+    raw = tmp_path / "run" / "raw"
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+        b"Content-Length: 5\r\nX-Note: a\r\n b\r\n\r\n"
+    )
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
+    assert answer.count(b"Connection: close") == 0
+    assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]

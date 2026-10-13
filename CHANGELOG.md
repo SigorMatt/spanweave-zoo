@@ -4,6 +4,27 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B5c — a folded `Content-Length` is unframeable
+
+B5b's open case; the maintainer's decision of 2026-10-13. `SPEC.md` §3.3,
+§3.7. No capture touched; the sink still decodes no framing, and
+`NNNN.headers.json` is derived as before.
+
+- **A `Content-Length` continued on a folded line** (obs-fold: the next line
+  of the head begins with a space or a tab) is unframed: a zero-byte body, the
+  usual answer with `Connection: close`, the connection closed. Before, the
+  stdlib joined `Content-Length:` CRLF ` 5` into `5` and the body was read by
+  a length the record does not show -- there the header is empty and ` 5` is
+  `unparsed`.
+- **`SPEC.md` §3.7's table** gains the row.
+- Tests: three folded cases (empty then a space fold, empty then a tab fold,
+  digits then a fold), each followed on the connection by a well-formed POST
+  that must not be read, with the head's split asserted unchanged -- the first
+  two red on the parent, the third green on it by design (its joined value was
+  never digits); one guard, a fold on another header keeps the connection.
+- Mutations shown caught: recognising only a space as a fold (the tab case
+  fails); treating a fold after any header as unframed (the guard fails).
+
 ## B5b — a `Content-Length` is digits, once
 
 Review of B5a's remainder; the maintainer's decision of 2026-10-13. `SPEC.md`

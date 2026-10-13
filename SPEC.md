@@ -365,7 +365,7 @@ accept. The sink is not a receiver and its `200` means "recorded", never
 
 A POST the sink **could not frame** (§3.7) gets that same answer with one
 header more, **`Connection: close`**, and the connection is closed once the
-answer is sent (B5, Q9; every case is §3.7's table, B5a, B5b). The sink decodes no framing, so after such a request
+answer is sent (B5, Q9; every case is §3.7's table, B5a, B5b, B5c). The sink decodes no framing, so after such a request
 it does not know where the next one begins: kept alive, it read a chunked
 body's chunks as a request line and answered a `400` no exporter asked for.
 Closing records what it could see and guesses nothing about what follows
@@ -502,6 +502,18 @@ a no-break space) is not a length, although Python's `int()` reads several
 of them as one. A request carrying **more than one** `Content-Length` declares
 a length only if every value is the same once that whitespace is removed —
 then it is one length — and none if any two differ, whichever comes first.
+
+A `Content-Length` **continued on a folded line** declares no length (B5c).
+On §2.3's split of the recorded head, that is a `Content-Length` header line
+(any case) followed by a line beginning with a space or a horizontal tab —
+RFC 9112 §5.2's obsolete line folding. The stdlib's parse joins the fold into
+the value: for `Content-Length:` CRLF ` 5` it hands the sink `5`, while the
+record's split says the header is empty and lists ` 5` as `unparsed`, part of
+no header. The record and the framing must agree, so the request is unframed
+whatever the joined value would read as; `NNNN.headers.json` is the split as
+ever, and the fold stays `unparsed`. A fold on any other header frames
+nothing and changes nothing.
+
 The table is every case, decided by the framing headers alone and never by
 the bytes:
 
@@ -511,6 +523,7 @@ the bytes:
 | absent | absent | zero bytes | closed (unframed) |
 | absent | not `1*DIGIT` (`five`, `+5`, `5_0`, `-3`, empty, …) | zero bytes | closed (unframed) |
 | absent | repeated, two values differ | zero bytes | closed (unframed) |
+| absent | continued on a folded line (obs-fold) | zero bytes | closed (unframed) |
 | absent | repeated, every value the same | as for that one value | as for that one value |
 | absent | `0` | zero bytes (an empty body) | kept |
 | absent | positive *n* | the *n* octets declared | kept |
