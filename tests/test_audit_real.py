@@ -46,25 +46,10 @@ REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "capture"
 RECORDED = REPO / "captures" / "z4" / "2026-10-12-recorded"
 # Two `json/` bodies, 0.202147 s apart by their receipt times: the smallest
-# committed capture with a gap for `--timing` to sleep.
+# committed capture with two bodies for the policy runs to see.
 REAL = REPO / "captures" / "z4" / "2026-10-12-real"
 
 OWNERS = {"spanweave", "spanweave-live", "agentgolden"}
-
-
-def no_sleep(seconds: float) -> None:
-    """The audit's `sleep` seam (`SPEC.md` 7.6) for a test: a timed replay
-    that takes no time."""
-
-
-class Sleeps:
-    """A `sleep` that records every gap it was asked to sleep, and returns."""
-
-    def __init__(self) -> None:
-        self.gaps: list[float] = []
-
-    def __call__(self, seconds: float) -> None:
-        self.gaps.append(seconds)
 
 
 def pyproject_pins() -> dict[str, str]:
@@ -81,7 +66,7 @@ def pyproject_pins() -> dict[str, str]:
 @pytest.fixture(scope="module")
 def fixture_audit(tmp_path_factory):
     out = tmp_path_factory.mktemp("audit")
-    result = audit.audit(FIXTURE, out=out, sleep=no_sleep)
+    result = audit.audit(FIXTURE, out=out)
     return result, result.path.read_text(encoding="utf-8")
 
 
@@ -91,7 +76,7 @@ def recorded_audit(tmp_path_factory):
     # read and never changed. The fixture capture's one hand-built span is
     # claimed by no adapter, so it yields no graph; this one does.
     out = tmp_path_factory.mktemp("audit")
-    result = audit.audit(RECORDED, out=out, sleep=no_sleep)
+    result = audit.audit(RECORDED, out=out)
     return result, result.path.read_text(encoding="utf-8")
 
 
@@ -194,14 +179,14 @@ def recording_serve(log: Path) -> tuple[str, ...]:
     )
 
 
-def test_step_two_runs_serve_three_times_two_of_them_timed(tmp_path):
+def test_step_two_runs_serve_three_times_none_of_them_timed(tmp_path):
     # OPEN_QUESTIONS.md section 8's decision: the end-of-input run as before,
-    # then `--quiet 0` and `--root-grace 0`, each with `--requests N`, each
-    # replayed with `--timing` -- the captured gap slept through the seam.
+    # then `--quiet 0` and `--root-grace 0`, each with `--requests N`. B6b:
+    # no replay is `--timing` -- `serve` ticks once per request, so at `0`
+    # the sequence is the same timed or not, and the audit has no `sleep`.
     log = tmp_path / "argv.jsonl"
-    sleeps = Sleeps()
     result = audit.audit(
-        REAL, out=tmp_path / "audit", serve_command=recording_serve(log), sleep=sleeps
+        REAL, out=tmp_path / "audit", serve_command=recording_serve(log)
     )
     assert result.exit == 0, result.incomplete
     seen = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
@@ -212,19 +197,17 @@ def test_step_two_runs_serve_three_times_two_of_them_timed(tmp_path):
         [*base, "--quiet", "0", "--requests", "2"],
         [*base, "--root-grace", "0", "--requests", "2"],
     ]
-    # One captured gap per timed run, and none for the untimed ones.
-    assert sleeps.gaps == [pytest.approx(0.202147)] * 2
     assert [run.policy for run in result.policy_runs] == [
         ("--quiet", "0"),
         ("--root-grace", "0"),
     ]
     for run in result.policy_runs:
-        assert [o.slept for o in run.outcomes] == [None, pytest.approx(0.202147)]
+        assert [o.slept for o in run.outcomes] == [None, None]
         assert [o.status for o in run.outcomes] == [200, 200]
     text = result.path.read_text(encoding="utf-8")
     for flag in ("--quiet 0", "--root-grace 0"):
         assert f"--out graphs {flag} --requests 2" in text, flag
-    assert text.count("--json --timing") == 2
+    assert "--timing" not in text
     # The Method says whose values the zeros are.
     method = text.split("## Method", 1)[1].split("## Findings", 1)[0]
     assert "the audit's" in method and "--quiet 0" in method
@@ -233,7 +216,7 @@ def test_step_two_runs_serve_three_times_two_of_them_timed(tmp_path):
 def test_each_policy_run_tables_its_completions_with_reason_and_generation(
     tmp_path,
 ):
-    result = audit.audit(REAL, out=tmp_path, sleep=no_sleep)
+    result = audit.audit(REAL, out=tmp_path)
     assert result.exit == 0, result.incomplete
     quiet, grace = result.policy_runs
     completed = [e for e in audit.policy_events(quiet) if e.code == "completed"]
@@ -305,7 +288,10 @@ def _error_graph():
             "parent_id": "a1",
             "name": "execute_tool x",
             "kind": 1,
-            "attributes": {"gen_ai.operation.name": "execute_tool"},
+            "attributes": {
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.call.arguments": '{"x":1}',
+            },
             "status": "OK",
         },
     ]
@@ -324,16 +310,28 @@ def test_the_node_table_names_an_error_node_with_its_status():
     [error] = [row for row in lines if row.startswith("| `a1` |")]
     assert _cells(error) == [
         "`a1`",
+        "chat m-1",
         "llm",
         "error",
         "`m-1`",
         "absent from graph",
+        "—",
         "`orphan_parent`, `timestamp_unit_suspect`, `unmapped_attributes`",
+        "`<record>.events`, `<record>.kind`",
+        "absent",
+        "absent",
         "1",
     ]
     [child] = [row for row in lines if row.startswith("| `b1` |")]
-    assert _cells(child)[1:5] == ["tool", "ok", "absent", "yes"]
-    assert _cells(child)[6] == "absent"
+    assert _cells(child)[1:7] == [
+        "execute_tool x",
+        "tool",
+        "ok",
+        "absent",
+        "yes",
+        "`a1`",
+    ]
+    assert _cells(child)[8:] == ["`<record>.kind`", "present", "absent", "absent"]
     # The events, as the record carries them, beneath the table.
     assert '[{"name":"exception","timeUnixNano":"1"}]' in "\n".join(lines)
 
@@ -354,24 +352,27 @@ def test_a_node_whose_record_states_no_parent_and_carries_no_events():
     )
     [row] = [r for r in audit.node_table(builder.graph()) if r.startswith("| `r1` |")]
     cells = _cells(row)
-    assert cells[2] == "unset"
-    assert cells[4] == "no"
-    assert cells[6] == "absent"
+    assert cells[1] == "invoke_agent"
+    assert cells[3] == "unset"
+    assert cells[5:7] == ["no", "—"]
+    assert cells[11] == "absent"
 
 
 def test_the_report_carries_a_row_for_every_node(recorded_audit):
     result, text = recorded_audit
     step4 = text.split("## Step 4 ", 1)[1].split("## Step 5 ", 1)[0]
-    assert "| Node | Kind | Status | Model | Parent | Diagnostics | Span events |" in (
-        step4
-    )
+    assert (
+        "| Node | Span name | Kind | Status | Model | Parent | Parent id | "
+        "Diagnostics | Unmapped keys | Inputs | Outputs | Span events |"
+    ) in step4
     for partition in result.partitions:
         if partition.graph is None or partition.live is None:
             continue
         for node in partition.graph.nodes():
-            assert f"| `{node.id}` | {node.kind.value} | {node.status.value} |" in (
-                step4
-            ), node.id
+            assert (
+                f"| `{node.id}` | {node.name} | {node.kind.value} | "
+                f"{node.status.value} |"
+            ) in step4, node.id
 
 
 # --- the owner rules (SPEC.md section 7.4) ------------------------------------
@@ -420,9 +421,7 @@ def test_a_live_batch_divergence_reaches_the_report_with_its_owner(tmp_path):
     # SPEC.md section 7.4: live != batch where incremental = batch is
     # spanweave-live's. `divergence_owner` is tested directly above; this is
     # the path from it to a finding and to the report (REVIEW-2026-10-12 R-1).
-    result = audit.audit(
-        RECORDED, out=tmp_path, serve_command=DIVERGING_SERVE, sleep=no_sleep
-    )
+    result = audit.audit(RECORDED, out=tmp_path, serve_command=DIVERGING_SERVE)
     assert result.exit == 0, result.incomplete
     identified = [p for p in result.partitions if p.trace_id is not None]
     assert identified
@@ -449,7 +448,7 @@ def test_a_signature_that_raises_is_a_finding_owned_by_agentgolden(tmp_path):
     def raising(graph):
         raise RuntimeError("planted")
 
-    result = audit.audit(RECORDED, out=tmp_path, signature=raising, sleep=no_sleep)
+    result = audit.audit(RECORDED, out=tmp_path, signature=raising)
     [smoke] = [f for f in result.findings if f.step == 5]
     assert smoke.owner == "agentgolden"
     assert "RuntimeError: planted" in smoke.observed
@@ -487,7 +486,7 @@ def test_a_capture_with_no_json_body_is_audited_as_far_as_it_goes(tmp_path):
         [(lambda port: head_octets(port, body), body)],
         clock,
     )
-    result = audit.audit(run, out=tmp_path / "audit", sleep=no_sleep)
+    result = audit.audit(run, out=tmp_path / "audit")
     assert result.exit == 1
     assert any("json/" in reason for reason in result.incomplete)
     text = result.path.read_text(encoding="utf-8")
@@ -497,7 +496,7 @@ def test_a_capture_with_no_json_body_is_audited_as_far_as_it_goes(tmp_path):
 
 def test_a_serve_that_never_starts_leaves_the_audit_incomplete(tmp_path):
     failing = (sys.executable, "-c", "import sys; sys.exit(3)")
-    result = audit.audit(FIXTURE, out=tmp_path, serve_command=failing, sleep=no_sleep)
+    result = audit.audit(FIXTURE, out=tmp_path, serve_command=failing)
     assert result.exit == 1
     assert any("listening" in reason for reason in result.incomplete)
 
@@ -510,7 +509,7 @@ def test_a_serve_command_that_cannot_be_executed_still_writes_the_report(
     # exit is 1, not a traceback and no report (Qodo Q5, B6 (b)).
     missing = (str(tmp_path / "no-such-serve"),)
     out = tmp_path / "audit"
-    result = audit.audit(FIXTURE, out=out, serve_command=missing, sleep=no_sleep)
+    result = audit.audit(FIXTURE, out=out, serve_command=missing)
     assert result.exit == 1
     started = [r for r in result.incomplete if "serve did not start: " in r]
     assert [r.split(":", 1)[0] for r in started] == [
@@ -544,7 +543,7 @@ def test_a_reread_that_does_not_match_serve_runs_no_step_after_it(tmp_path):
         found.statuses = [599 for _ in found.statuses]
         return found
 
-    result = audit.audit(RECORDED, out=tmp_path, reread=short, sleep=no_sleep)
+    result = audit.audit(RECORDED, out=tmp_path, reread=short)
     assert result.exit == 1
     [mismatch] = [r for r in result.incomplete if r.startswith("step 3")]
     assert "does not match serve" in mismatch
@@ -567,7 +566,7 @@ def test_a_routed_count_that_does_not_match_is_the_same_refusal(tmp_path):
         found.partitions[0].origins.pop()
         return found
 
-    result = audit.audit(RECORDED, out=tmp_path, reread=fewer, sleep=no_sleep)
+    result = audit.audit(RECORDED, out=tmp_path, reread=fewer)
     assert result.exit == 1
     assert any("routed" in r for r in result.incomplete if r.startswith("step 3"))
     assert [f for f in result.findings if f.step >= 3] == []
@@ -607,7 +606,5 @@ def test_a_path_that_is_not_a_run_is_refused(tmp_path, capsys):
 
 def test_an_installed_sha_that_is_not_the_pin_is_refused(tmp_path):
     with pytest.raises(audit.AuditRefused, match="spanweave"):
-        audit.audit(
-            FIXTURE, out=tmp_path, installed=lambda name: "0" * 40, sleep=no_sleep
-        )
+        audit.audit(FIXTURE, out=tmp_path, installed=lambda name: "0" * 40)
     assert not list(tmp_path.iterdir())

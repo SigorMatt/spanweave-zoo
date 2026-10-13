@@ -195,7 +195,7 @@ class Served:
     lines: list[str] = field(default_factory=list)
     policy: tuple[str, ...] = ()
     """The completion flags given to `serve` (`--quiet 0`), or none: end of
-    input alone. A run with one is replayed with `--timing`."""
+    input alone. No run is replayed `--timing` (B6b)."""
     replayed: list[str] = field(default_factory=list)
     """The replayer's own lines (`SPEC.md` §6.4), verbatim."""
     exit: int | None = None
@@ -222,10 +222,6 @@ class Served:
     def label(self) -> str:
         """`step 2`'s run named by its flags: `--quiet 0`, or `end of input`."""
         return " ".join(self.policy) or "end of input"
-
-    @property
-    def timed(self) -> bool:
-        return bool(self.policy)
 
 
 class _Lines:
@@ -276,11 +272,9 @@ def serve(
     command: Sequence[str],
     *,
     policy: tuple[str, ...] = (),
-    sleep: Callable[[float], None] | None = None,
 ) -> Served:
-    """Start `serve [policy] --requests N`, replay one side of `run` into it,
-    collect. With a policy the replay is `--timing`, sleeping through `sleep`
-    (`SPEC.md` §6.3, §7.3)."""
+    """Start `serve [policy] --requests N`, replay one side of `run` into it
+    back to back, collect (`SPEC.md` §7.3)."""
     files = replay.planned(run, source)
     here = workdir / (
         source + "".join(f"{flag}{value}" for flag, value in _pairs(policy))
@@ -319,8 +313,7 @@ def serve(
             run,
             source=source,
             send=replay.sender("127.0.0.1", port, timeout=SEND_TIMEOUT),
-            timing=served.timed,
-            sleep=sleep if served.timed else None,
+            timing=False,
             log=served.replayed.append,
         )
         unsent = [o.file for o in served.outcomes if o.status is None]
@@ -625,11 +618,10 @@ class Audit:
 def _serve_commands(run: Path, served: Served) -> tuple[str, ...]:
     flag = "--raw" if served.source == replay.RAW else "--json"
     policy = "".join(f" {part}" for part in served.policy)
-    timing = " --timing" if served.timed else ""
     return (
         f"uv run spanweave-live serve --port <port> --out {GRAPHS}{policy} "
         f"--requests {len(served.files)}",
-        f"uv run zoo replay {run} --to http://127.0.0.1:<port> {flag}{timing}",
+        f"uv run zoo replay {run} --to http://127.0.0.1:<port> {flag}",
     )
 
 
@@ -856,6 +848,12 @@ def _parent(graph: spanweave.Graph, node: spanweave.Node, orphans: set[str]) -> 
     return "absent from graph" if node.id in orphans else "no"
 
 
+def _parent_ids(graph: spanweave.Graph, node: spanweave.Node) -> str:
+    """The ids its `parent` edges come from, or `—` where none does."""
+    ids = graph.parents(node.id, spanweave.EdgeKind.PARENT)
+    return ", ".join(f"`{_cell(i)}`" for i in ids) or "—"
+
+
 def _span_events(node: spanweave.Node) -> object | None:
     """The record's `events`, as it carries them, or `None` for no such key."""
     source = node.raw.source
@@ -869,13 +867,19 @@ def node_table(graph: spanweave.Graph) -> list[str]:
     """Step 4's row per node (`SPEC.md` §7.3), then each node's span events
     as its record carries them, as compact sorted JSON."""
     on: dict[str, Counter[str]] = {}
+    keys: dict[str, set[str]] = {}
     for diagnostic in graph.diagnostics:
         if diagnostic.node_id is not None:
             on.setdefault(diagnostic.node_id, Counter())[diagnostic.code] += 1
+            if diagnostic.code == UNMAPPED and isinstance(diagnostic.source, list):
+                keys.setdefault(diagnostic.node_id, set()).update(
+                    str(key) for key in diagnostic.source
+                )
     orphans = {n for n, codes in on.items() if codes.get(ORPHAN_PARENT)}
     lines = [
-        "| Node | Kind | Status | Model | Parent | Diagnostics | Span events |",
-        "|---|---|---|---|---|---|---|",
+        "| Node | Span name | Kind | Status | Model | Parent | Parent id | "
+        "Diagnostics | Unmapped keys | Inputs | Outputs | Span events |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     carried: list[tuple[str, object]] = []
     for node in graph.nodes():
@@ -889,10 +893,15 @@ def node_table(graph: spanweave.Graph) -> list[str]:
         else:
             carried.append((node.id, events))
             shown = str(len(events)) if isinstance(events, list) else "1 value"
+        unmapped_keys = ", ".join(
+            f"`{_cell(key)}`" for key in sorted(keys.get(node.id, ()))
+        )
         lines.append(
-            f"| `{_cell(node.id)}` | {node.kind.value} | {node.status.value} | "
-            f"{_model(node)} | {_parent(graph, node, orphans)} | "
-            f"{codes or 'none'} | {shown} |"
+            f"| `{_cell(node.id)}` | {_cell(node.name)} | {node.kind.value} | "
+            f"{node.status.value} | {_model(node)} | "
+            f"{_parent(graph, node, orphans)} | {_parent_ids(graph, node)} | "
+            f"{codes or 'none'} | {unmapped_keys or 'none'} | "
+            f"{node.inputs.state.value} | {node.outputs.state.value} | {shown} |"
         )
     lines.append("")
     if carried:
@@ -944,16 +953,15 @@ def _policy_run(
     not_run: dict[int, str],
 ) -> None:
     """One of step 2's policy runs (`SPEC.md` §7.3)."""
-    w(f"### Step 2 under `{' '.join(policy)}`, replayed `--timing`", "")
+    w(f"### Step 2 under `{' '.join(policy)}`", "")
     served = next((s for s in result.policy_runs if s.policy == policy), None)
     if served is None:
         w(f"Not run: {not_run.get(2, 'step 2 was not run')}.", "")
         return
     w.block("\n".join(_serve_commands(run, served)), "bash")
-    w("| Body | Status | Gap slept before it |", "|---|---|---|")
+    w("| Body | Status |", "|---|---|")
     for outcome in served.outcomes:
-        slept = "none" if outcome.slept is None else f"{outcome.slept:g}s"
-        w(f"| `{outcome.file}` | {outcome.status or _cell(outcome.error)} | {slept} |")
+        w(f"| `{outcome.file}` | {outcome.status or _cell(outcome.error)} |")
     w("", f"serve exit status: {served.exit}", "")
     if served.problem:
         w(f"Incomplete: {served.problem}", "")
@@ -1019,9 +1027,10 @@ def render(
         "and is written (its SPEC §8.5 at the pinned sha). That is the "
         "`Cap(0)`-at-end the plan names, chosen by the receiver's CLI and not "
         "by the audit. Step 2 then runs twice more, each `serve` given one "
-        "completion policy as well as `--requests N` and each replay "
-        "`--timing`, the captured gaps slept: `--quiet 0`, then "
-        "`--root-grace 0`. **The zeros are the audit's values**: the pinned "
+        "completion policy as well as `--requests N`, each replayed back to "
+        "back: `--quiet 0`, then `--root-grace 0`; `serve` ticks once per "
+        "request (its SPEC §8.5), so the sequence of events is the capture's. "
+        "**The zeros are the audit's values**: the pinned "
         'receiver documents no default for either flag (its README, "The '
         'CLI"), so the audit chooses the smallest legal value, at which each '
         "policy fires at the first tick its condition holds (its SPEC §5.3); "
@@ -1037,8 +1046,10 @@ def render(
         "them in order.",
         "4. `spanweave inspect` on each written graph, verbatim; diagnostics by "
         "code, `unmapped_attributes` keys by size, `unknown` nodes; one row per "
-        "node -- kind, status, model, whether its parent is present, the "
-        "diagnostics naming it, and its span events as the record carries them.",
+        "node -- span name, kind, status, model, whether its parent is present "
+        "and its id, the diagnostics naming it, the unmapped attribute keys on "
+        "it (names only), its inputs' and outputs' payload state, and its span "
+        "events as the record carries them.",
         "5. `agentgolden.signature.signature(graph)`, no rules.",
         "",
         "Steps 4 and 5 read the `Builder`'s graph (spanweave has no public "
@@ -1198,13 +1209,10 @@ def audit(
     signature: Callable[[spanweave.Graph], Any] = agentgolden_signature,
     installed: Callable[[str], str | None] = installed_sha,
     reread: Callable[[Path, Sequence[str]], Reread] = reread,
-    sleep: Callable[[float], None],
 ) -> Audit:
     """Audit one run and write its report. Raises `AuditRefused` (exit 2).
 
-    `sleep` has no default: it is the one way the audit waits on the real
-    clock, step 2's two timed replays (`SPEC.md` §7.6), and `cli.py` passes
-    the real one as it does to `zoo replay --timing`.
+    Nothing here sleeps: every replay is back to back (`SPEC.md` §7.3, B6b).
     """
     if not (run / manifest.MANIFEST_NAME).is_file():
         raise AuditRefused(
@@ -1243,12 +1251,10 @@ def audit(
             # finding of their own; one that could not be completed is an
             # incomplete step, and step 3 still reads the run above.
             for policy in POLICIES:
-                timed = serve(
-                    run, source, workdir, serve_command, policy=policy, sleep=sleep
-                )
-                result.policy_runs.append(timed)
-                if timed.problem is not None:
-                    result.incomplete.append(f"step 2 ({timed.label}): {timed.problem}")
+                ruled = serve(run, source, workdir, serve_command, policy=policy)
+                result.policy_runs.append(ruled)
+                if ruled.problem is not None:
+                    result.incomplete.append(f"step 2 ({ruled.label}): {ruled.problem}")
         json_side = steps.get(2)
         if json_side is None or json_side.problem is not None:
             reason = "step 2 did not complete"

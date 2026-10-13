@@ -4,6 +4,30 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B6b — the node table names the span
+
+The maintainer's decision of 2026-10-13 (B6b). `SPEC.md` §7.3, §7.5, §7.6.
+No capture touched, and the six committed reports under `audit/` are **not**
+regenerated: they keep B6a's layout until they are audited again (B8).
+
+- **Step 4's node table gains five columns**: span name (`Node.name`), parent
+  id (each node whose `parent` edge points at it, or `—`), the unmapped
+  attribute keys on the node (from the `unmapped_attributes` diagnostics naming
+  it; names only, never values), and the inputs' and outputs' payload state as
+  `Payload.state` says it. The full order is in `SPEC.md` §7.5.
+- **No replay is `--timing`.** The two policy runs (`--quiet 0`,
+  `--root-grace 0`) replay back to back: `serve` ticks once per request, so
+  at `0` the sequence is the same timed or not (B6a's confirmation, §3). The
+  policy runs' table loses its "gap slept" column, and with nothing left to
+  sleep `audit()` loses its `sleep` seam (`SPEC.md` §7.6's row removed;
+  `cli.py` no longer passes one). `--cap` and non-zero values stay out.
+- Tests: the node table on a fixture graph (an orphan's parent id is `—`, a
+  child's is its parent's, the unmapped keys and a present input appear), the
+  report's header row, and step 2's three runs with no `--timing` anywhere in
+  the report. All red on the parent.
+- Mutation shown caught: a node with no `parent` edge shown as `none` instead
+  of `—` (both node-table tests fail).
+
 ## B5d — the sink frames by the record's own parse
 
 B5c's open case; the maintainer's decision of 2026-10-13. `SPEC.md` §2.3,

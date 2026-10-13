@@ -24,8 +24,8 @@ Five subcommands today:
 This module is also where the **clock** lives, and the **sleep**. No other
 module under `spanweave_zoo/` reads either: the sink takes `now` as an argument
 (`SPEC.md` §3.6) and the Collector's readiness wait, the replayer's
-`--timing` and the audit's two timed replays all take `sleep` (`SPEC.md` §4.8,
-§6.3, §7.6), so a recorded timestamp in
+`--timing` take `sleep` (`SPEC.md` §4.8, §6.3; the audit replays back to
+back and sleeps not at all, §7.3), so a recorded timestamp in
 a test is a value the test chose,
 and `_system_clock` below is the single place the real time enters the package.
 
@@ -578,9 +578,7 @@ def run_audit(args: argparse.Namespace) -> int:
         )
         return 2
     try:
-        # The real `sleep` for step 2's two timed replays (`SPEC.md` 7.3,
-        # 7.6): the audit sleeps through this seam and nowhere else.
-        result = audit.audit(Path(args.run), out=Path(args.out), sleep=_system_sleep)
+        result = audit.audit(Path(args.run), out=Path(args.out))
     except audit.AuditRefused as refused:
         print(f"zoo audit: refusing: {refused}", file=sys.stderr)
         return 2
