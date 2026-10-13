@@ -8,7 +8,7 @@ captures land, extending `PROBES.md` until all six are in. One batch = one
 sub-agent = one commit = one concern. This file plus git is the only state;
 any session can resume cold from it.
 
-Last updated: 2026-10-13 (B6a decided, B5b confirmed, B5c added; run 4 resumes B5c → B6a → B7r.)
+Last updated: 2026-10-13 (run 4 done: B5b, B5c, B6a, B7r.)
 
 ---
 
@@ -165,7 +165,7 @@ commit that cannot say `plan:`, and the watcher exempts it once per series.
 | B5c | **A folded `Content-Length` is unframeable.** B5b's open case. A head whose `Content-Length:` value continues on a following line (obs-fold) yields a zero-byte body, the answer, `Connection: close`, closed — the sink frames by nothing the record does not show. Test red on the parent: the folded head followed on the same connection by a well-formed POST yields one zero-byte body and no second request from leftovers; `headers.json` unchanged (the fold stays `unparsed`); mutation shown. SPEC §3.7's table gains the row. | done (`9bcbaa0`) | 3 |
 | B6 | **The audit says "not run" when it cannot vouch.** Q4, Q5. (a) When step 3's in-process re-read does not match `serve` (statuses or routed count), step 3 is incomplete **and** its partition comparisons and steps 4–5 are not run and rendered as such — as SPEC §7.3 already says; today the findings are emitted anyway. (b) A `serve` command that cannot start (`OSError` from `Popen`) is `served.problem = "serve did not start: …"`, the report is still written, exit 1 — as SPEC §7.5 lists it. Tests red on the parent: a mismatch injected through the `reread` seam yields a report with steps 3–5 "not run" and no library finding; a nonexistent serve command yields a written report and exit 1. | done (290fc1b) | 5 |
 | B6a | **The audit observes every policy and names every node.** `OPEN_QUESTIONS.md` §8, option 1 over a timed replay. (1) Step 2 runs `serve` three times per capture: `--requests N` untimed (the end-of-input `Cap(0)`, as today; step 3's graphs); `--quiet 0 --requests N` with `zoo replay --timing`; `--root-grace 0 --requests N` with `zoo replay --timing` — recording per run every `completed` event with its index, reason and generation, every `late_arrival`, `written`, `released`, `finished`. The Method names the values as the audit's. (2) Step 4 adds a per-node table: node id, kind, status, model, parent present (yes / no / absent from graph), diagnostic codes on the node, span events as the record carries them. SPEC §7.3 and §7.5 say so. Tests red on the parent through the `serve_command` seam (three invocations with the flags given, the replay's `--timing` on two) and on a fixture graph with one ERROR node (the row appears with its status); mutation shown. | done (`07285bd`) | 6 |
-| B7r | **Every captured project audited once more, with the one audit.** After B6a: `zoo audit` on Z4's, Z3's and Z5's six captures; the six reports under `audit/` replaced; PROBES.md updated — every "to establish" or "not observable" line that B6a's report answers gets its observation, each probe cites the new report, the counts and the pins paragraph restated; `ROADMAP.md`'s three rows cite the re-audit. No capture touched; findings never fixed. | awaiting B6a | 6 |
+| B7r | **Every captured project audited once more, with the one audit.** After B6a: `zoo audit` on Z4's, Z3's and Z5's six captures; the six reports under `audit/` replaced; PROBES.md updated — every "to establish" or "not observable" line that B6a's report answers gets its observation, each probe cites the new report, the counts and the pins paragraph restated; `ROADMAP.md`'s three rows cite the re-audit. No capture touched; findings never fixed. | done (`b63c0cf`) | 6 |
 | B7 | **Per-project audit, one row per capture pair.** Template, instantiated by a `plan:` commit when a project's captures land on `zoo` (operator commit `captures: zN real and recorded, <date>`): `zoo audit` on both captures, reports under `audit/zN-<date>-{real,recorded}.md`, `PROBES.md` extended with every new probe (owner, capture, command, observed, expected or "to establish"), `ROADMAP.md`'s row for Zn updated, CI's `audit` job still green with the new reports. Findings are never fixed here. First instance: **B7-Z3** or **B7-Z5**, whichever lands first. | template | 6 each |
 | B7-Z3 | **Audit Z3 (`echo-planner`): `captures/z3/2026-10-13-real` (4 bodies, the root in the last) and `-recorded` (1 body).** As the B7 template. Of particular interest, to be reported as observed and never asserted: the real capture's root span arriving in the fourth body (what `serve`'s completion did with a trace whose root came last); the 599 `Attributes dict is full` lines (which attributes the SDK dropped, visible as `unmapped_attributes` or as absence); two instrumentors on one client (`generation` and `ChatCompletion` for every turn — whether spanweave claims both, one, or neither). `PROBES.md` extended; `ROADMAP.md`'s Z3 row reads audited. | done (`a180f06`) | 6 |
 | B7-Z5 | **Audit Z5 (`flaky-fetcher`): `captures/z5/2026-10-13-real` and `-recorded` (one body each, four spans, no root).** As the B7 template. Of particular interest: a trace with no root in either capture (what `Quiet`, `RootEnded` and `Cap` each did with it); two `http_get` spans in ERROR with `exception` events (how spanweave renders a failed tool call and its exception); the real and recorded bodies (believed identical when the row was written; they are not — same length, 380 bytes differ — corrected at B7-Z5's close, §4). `PROBES.md` extended; `ROADMAP.md`'s Z5 row reads audited. | done (`54703f2`) | 6 |
@@ -405,6 +405,18 @@ Every batch: CI green on the pushed tip before `done`.
   `--quiet 0` makes 4 generations with 3 `late_arrival`, `--root-grace 0`
   completes once at the last request; Z5 real's node table shows its two
   `error` tool nodes with their exception events. B7r is unblocked.
+- 2026-10-13: B7r done (`b63c0cf`), CI 38413673522 green on all seven
+  jobs. Six reports replaced in place; findings unchanged (Z4 3, Z3 1,
+  Z5 1); no new probe, counts stay (spanweave-live 4, spanweave 13,
+  agentgolden 0). Observed now: L3, L4 (at 0), S5, S9, S10, S11, S12;
+  further but still partly open: L2, S2, S3, S6, S13. Still open because
+  the node table carries no span name, parent id, unmapped key or payload
+  per node (S2/S12 parent identity, S6 names, S8's 18 nodes, S10 records,
+  S11 outputs, S13 graph bytes) — a candidate row widening the table; and
+  `--cap` or non-zero policy values are never run. Re-run differs only in
+  `listening` ports and the clocks of `completed` and `late_arrival`
+  (PROBES.md corrected to say `late_arrival` too, as SPEC §7.3 does): no
+  method finding. Run 4 done.
 
 ## 5. Origins
 
