@@ -1394,10 +1394,12 @@ exactly one home for a digest (§3.5).
 `..` part — `raw/0001.body`, never `./raw/0001.body`, `raw/../raw/0001.body`
 or `/somewhere/0001.body` — and naming, with symlinks followed, a file inside
 the run directory. The zoo writes entries only of this shape — `bodies` from
-the names the sink gave its files, `files` from the walk — so the rule exists for `zoo verify`
-(§5.6), which reads the entry as a claim and not as an instruction. An entry
-that breaks it is a problem naming the entry, and the file it points at is
-**not read**: a manifest that could send the re-hash anywhere on the disk
+the names the sink gave its files, `files` from the walk — so the rule exists for every
+reader of the manifest: `zoo verify` (§5.6), `zoo replay` (§6.1, B4a) and,
+through `verify`, `zoo audit` (§7.2), each of which reads the entry as a claim
+and not as an instruction. One function holds it, and all three apply it. An
+entry that breaks it is a problem naming the entry, and the file it points at
+is **not read**: a manifest that could send the re-hash anywhere on the disk
 would let a capture be "verified" by bytes it does not hold. This confines
 *where* the seal's claims can point, not *whether* a resealed manifest
 verifies (§5, "What the seal is, and no more"): within the run directory, it
@@ -1674,6 +1676,18 @@ and a replay that sent nothing must not read as a replay that worked
 path that is not a capture, or one whose `MANIFEST.json` is absent or
 unreadable, on §5.6's rule: nothing was sent.
 
+**Replay trusts a manifest's paths only as far as `verify` would** (B4a).
+Before it reads a body or a head, the replayer applies §5.4's rule — the same
+function `verify` uses — to every `file` entry of `bodies` and of `files`: an
+entry that is absolute, is not a normalized relative path (a `..`, a `.`, an
+empty part), or resolves, symlinks followed, outside the run directory is a
+refusal naming the entry, exit **2**, nothing read and nothing sent. It
+checks **both sides**, the one it sends and the one it does not, and the
+`files` list beside them: a manifest is one document, and one claim pointing
+out of the run makes all of it untrusted (decided 2026-10-13,
+`OPEN_QUESTIONS.md` §7). Without it, `raw/../../elsewhere.body` passed the
+`raw/` filter above and a file outside the capture was sent as if recorded.
+
 ### 6.2 The head is the captured octets, with the `Host` line substituted
 
 Each request's head is its **`NNNN.headers.raw`** — the request line and the
@@ -1807,7 +1821,7 @@ finding and not an error (`CLAUDE.md` §0.6 rule 7).
 |---|---|
 | **0** | every body was sent and every answer was a 2xx |
 | **1** | any answer was not a 2xx, or any body could not be sent at all — a head that is missing, empty or unterminated (§6.2), a body file the manifest lists that is not on disk, a connection that failed or an answer that never came |
-| **2** | nothing was sent: the path is not a capture, its manifest is unreadable, or it holds no body in the chosen directory |
+| **2** | nothing was sent: the path is not a capture, its manifest is unreadable, it names a file outside the run directory (§6.1), or it holds no body in the chosen directory |
 
 The summary line says how many were sent, how many of those did not answer
 2xx, and how many were not sent at all, and the problems are printed again
@@ -1828,7 +1842,10 @@ port with nothing on it said every body had been sent (run-2b review, N-10).
 
 It does not verify the capture it sends: `zoo verify` re-hashes bytes (§5.6)
 and `make verify` runs it on every gate, and a second re-hash here would be a
-second place for the rule to live. It does not parse, decode or validate a
+second place for the rule to live. The one check it shares with `verify` is
+*where* the manifest's entries point (§5.4, §6.1), and it shares it by calling
+the same function, not by restating it: a replayer that followed a path out of
+the run would be sending bytes the capture does not hold. It does not parse, decode or validate a
 body, does not look at a response beyond its status, does not retry, and does
 not record anything: a replay produces no capture, and a receiver that wants
 one points a `zoo capture` at itself.
@@ -1882,7 +1899,11 @@ written — when it could check nothing honestly:
 
 - `<run>` is not one run directory holding a readable `MANIFEST.json`;
 - the run does not verify (§5.6) — an audit of bytes that are not the bytes
-  recorded would be a reproduction of nothing;
+  recorded would be a reproduction of nothing. A `file` entry outside the run
+  directory (§5.4) is such a run: the refusal line carries `verify`'s first
+  problem — for a run whose one fault is such an entry, the entry itself —
+  and nothing is read (B4a; an incomplete report for it was declined,
+  `OPEN_QUESTIONS.md` §7);
 - the `audit` extra is not installed;
 - for any of the three libraries, the commit that is installed is not the
   commit `pyproject.toml` pins, or cannot be read. The pinned sha is read from

@@ -135,15 +135,30 @@ def planned(run: Path, source: str) -> list[str]:
     recovered by sorting the directory: `NNNN` is receipt order *because* a
     recorder assigned it in receipt order, and re-deriving that here would be
     deciding it again.
+
+    The manifest's paths are trusted only as far as `verify` would trust them
+    (B4a, `SPEC.md` §6.1): any `bodies` or `files` entry, on either side,
+    that is absolute, not normalized, or resolves outside `run` is a
+    refusal naming it, raised before anything is read or sent.
     """
     try:
         recorded = manifest.recorded_bodies(run)
+        misplaced = manifest.misplaced(run)
     except (OSError, ValueError) as unreadable:
         raise ReplayRefused(
             f"{run} is not a capture this can replay: its "
             f"{manifest.MANIFEST_NAME} could not be read ({unreadable}). "
             f"Nothing was sent (SPEC.md section 6.1)."
         ) from None
+    if misplaced:
+        # B4a: the check `verify` applies (`SPEC.md` §5.4), on both sides,
+        # before a byte of a body or a head is read.
+        raise ReplayRefused(
+            f"{run}'s {manifest.MANIFEST_NAME} names a file outside the run "
+            f"directory, so none of its claims is one this follows: "
+            f"{'; '.join(misplaced)}. Nothing was sent, and no body or head "
+            f"was read (SPEC.md section 6.1)."
+        )
     prefix = source + "/"
     files = [file for file in recorded if file.startswith(prefix)]
     if not files:

@@ -837,7 +837,7 @@ def _rehashed(run: Path, document: dict[str, Any], key: str) -> list[str]:
         if not isinstance(name, str):
             found.append(f"{run}: {key}[{position}] has no 'file'")
             continue
-        outside = _outside(run, name)
+        outside = outside_run(run, name)
         if outside is not None:
             found.append(f"{run}: {key}[{position}] is {name!r}, {outside}")
             continue
@@ -860,7 +860,34 @@ def _rehashed(run: Path, document: dict[str, Any], key: str) -> list[str]:
     return found
 
 
-def _outside(run: Path, name: str) -> str | None:
+def misplaced(run: Path) -> list[str]:
+    """Every `file` entry of `bodies` and `files` that names no file of `run`.
+
+    One line per entry, worded as `zoo verify` words it, from `outside_run`
+    -- the one check every reader of a manifest applies (`SPEC.md` §5.4). The
+    replayer calls this before it reads or sends anything (`SPEC.md` §6.1,
+    B4a), on **both** sides of the manifest and not only the side it sends:
+    the manifest is one document, and one claim pointing out of the run makes
+    all of it untrusted. Entries that are not objects, or carry no string
+    `file`, name nothing and are `verify`'s to report. Raises whatever `read`
+    does on a manifest that cannot be read.
+    """
+    document = read(run)
+    found: list[str] = []
+    for key in (BODIES, FILES):
+        entries = document.get(key)
+        if not isinstance(entries, list):
+            continue
+        for position, entry in enumerate(entries):
+            if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+                continue
+            why = outside_run(run, entry["file"])
+            if why is not None:
+                found.append(f"{key}[{position}] is {entry['file']!r}, {why}")
+    return found
+
+
+def outside_run(run: Path, name: str) -> str | None:
     """Why a `file` entry does not name a file of this run, or `None` if it does.
 
     An entry is a normalized relative path under the run directory

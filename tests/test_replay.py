@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import shutil
 import socket
 import threading
 from contextlib import contextmanager
@@ -974,3 +975,120 @@ def test_a_skipped_body_with_no_receipt_time_leaves_no_gap_to_guess(tmp_path):
     assert sleeps.slept == []
     said = [line for line in lines if "no gap was slept" in line]
     assert len(said) == 1 and "raw/0003.body" in said[0], lines
+
+
+# --- B4a: a manifest path outside the run is a refusal, nothing sent --------
+
+
+def _outside_files(beside: Path) -> None:
+    """Bodies and a head outside the run, so a replayer that followed the
+    manifest there would find something to send -- and a test that it did not
+    is a test of the refusal, not of a missing file."""
+    beside.mkdir(parents=True, exist_ok=True)
+    # Copies of the capture's own bytes, so each head's `Content-Length` is
+    # true and a replayer that followed the entry would send it and be
+    # answered: the parent of B4a did, for a `..` entry under `raw/`.
+    for side, name, stem in (
+        ("raw", "0001.body", "outside"),
+        ("json", "0001.json", "elsewhere"),
+    ):
+        suffix = Path(name).suffix
+        shutil.copyfile(FIXTURE / side / name, beside / f"{stem}{suffix}")
+        shutil.copyfile(
+            FIXTURE / side / "0001.headers.raw", beside / f"{stem}.headers.raw"
+        )
+
+
+def _misplaced_copy(tmp_path: Path, case: str) -> tuple[Path, str]:
+    """A copy of the committed capture with one `file` entry pointing out of
+    it (`SPEC.md` §5.4), and the entry as the refusal must name it.
+
+    A copy, never the capture: a capture is immutable (`CLAUDE.md` §0.6
+    rule 2). The seal is not recomputed -- the replayer does not check it
+    (`SPEC.md` §6.5), so a test that resealed would prove nothing more.
+    """
+    run = tmp_path / "capture" / "run"
+    shutil.copytree(FIXTURE, run)
+    beside = run.parent
+    _outside_files(beside)
+    document = json.loads((run / manifest.MANIFEST_NAME).read_text("utf-8"))
+    files = {entry["file"]: entry for entry in document["files"]}
+    if case == "raw-absolute":
+        entry = str(beside / "outside.body")
+        document["bodies"][0]["file"] = entry
+    elif case == "raw-dotdot":
+        entry = "raw/../../outside.body"
+        document["bodies"][0]["file"] = entry
+    elif case == "json-absolute":
+        entry = str(beside / "elsewhere.json")
+        document["bodies"][1]["file"] = entry
+    elif case == "json-dotdot":
+        entry = "json/../../elsewhere.json"
+        document["bodies"][1]["file"] = entry
+    elif case == "files-dotdot":
+        entry = "raw/../../outside.headers.raw"
+        files["raw/0001.headers.raw"]["file"] = entry
+    elif case == "raw-symlink":
+        entry = "raw/0001.body"
+        (run / entry).unlink()
+        (run / entry).symlink_to(beside / "outside.body")
+    else:  # pragma: no cover - a typo in the parametrization
+        raise AssertionError(case)
+    (run / manifest.MANIFEST_NAME).write_text(
+        json.dumps(document, sort_keys=True), encoding="utf-8"
+    )
+    return run, entry
+
+
+@pytest.mark.parametrize("side", ["--raw", "--json"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "raw-absolute",
+        "raw-dotdot",
+        "json-absolute",
+        "json-dotdot",
+        "files-dotdot",
+        "raw-symlink",
+    ],
+)
+def test_a_manifest_path_outside_the_run_is_refused_and_nothing_sent(
+    tmp_path, capsys, case, side
+):
+    # B4a, `SPEC.md` §6.1: replay trusts a manifest's paths only as far as
+    # `verify` would (§5.4). An entry on the side being sent and one on the
+    # side that is not are the same refusal: the manifest is one document,
+    # and one claim pointing out of the run makes all of it untrusted.
+    run, entry = _misplaced_copy(tmp_path, case)
+    with scripted(200) as (server, port):
+        status = cli.main(
+            ["replay", str(run), side, "--to", f"http://127.0.0.1:{port}"]
+        )
+    err = capsys.readouterr().err
+    assert status == 2, err
+    assert repr(entry) in err, err
+    assert "Nothing was sent" in err
+    assert server.bodies == []
+
+
+def test_planned_refuses_before_anything_is_read(tmp_path, monkeypatch):
+    # The check precedes every read of a body or a head: `replay.replay` and
+    # the audit's `serve` both go through `planned` (`SPEC.md` §6.1, §7.3).
+    run, entry = _misplaced_copy(tmp_path, "raw-dotdot")
+    read: list[Path] = []
+    original = Path.read_bytes
+
+    def watched(self: Path) -> bytes:
+        read.append(self)
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", watched)
+    with pytest.raises(replay.ReplayRefused) as refused:
+        replay.replay(run, source=replay.RAW, send=Spy(200), log=lambda line: None)
+    assert repr(entry) in str(refused.value)
+    assert [path for path in read if path.name != manifest.MANIFEST_NAME] == []
+
+
+def test_the_committed_capture_has_no_entry_outside_itself():
+    # The clean case: the check refuses nothing a real capture holds.
+    assert manifest.misplaced(FIXTURE) == []

@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from spanweave_zoo import cli
-from tests.test_replay import Clock, crafted, head_octets
+from tests.test_replay import Clock, _misplaced_copy, crafted, head_octets
 
 # Not `pytest.importorskip` at module level: that skips the whole module at
 # collection, before `-m` deselects anything, so the skip lands in every
@@ -358,6 +358,20 @@ def test_a_capture_that_does_not_verify_is_refused(tmp_path, capsys):
     out = tmp_path / "audit"
     assert cli.main(["audit", str(run), "--out", str(out)]) == 2
     assert "does not verify" in capsys.readouterr().err
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("case", ["raw-absolute", "raw-dotdot"])
+def test_a_manifest_path_outside_the_run_is_refused_naming_it(tmp_path, capsys, case):
+    # B4a (`OPEN_QUESTIONS.md` §7, option 1): such a run does not verify
+    # (`SPEC.md` §5.4, §5.6), so the audit refuses it before reading anything
+    # (§7.2) -- exit 2, no report -- and the refusal names the entry.
+    run, entry = _misplaced_copy(tmp_path, case)
+    out = tmp_path / "audit"
+    assert cli.main(["audit", str(run), "--out", str(out)]) == 2
+    err = capsys.readouterr().err
+    assert "does not verify" in err
+    assert repr(entry) in err, err
     assert not out.exists()
 
 

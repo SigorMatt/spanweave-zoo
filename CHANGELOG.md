@@ -4,6 +4,30 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B4a — the replayer refuses a path outside the run
+
+`OPEN_QUESTIONS.md` §7, option 1. `SPEC.md` §5.4, §6.1, §6.4, §6.5, §7.2. No
+capture touched; every bad manifest in the tests is on a copy in a tmp dir.
+
+- **`zoo replay` applies B4's path rule before reading anything** (`SPEC.md`
+  §6.1): every `file` entry of `bodies` and `files`, on the side it sends and
+  the side it does not, goes through `manifest.outside_run` -- the function
+  `verify` uses, now public, with `manifest.misplaced` listing the entries.
+  An absolute entry, a non-normalized one (`..`) or one resolving outside the
+  run through a symlink is a refusal naming the entry, exit 2, nothing read
+  and nothing sent. Before, `raw/../../outside.body` passed the `raw/` prefix
+  filter and was sent (exit 0), and an absolute entry was refused only by
+  accident, without being named.
+- **The audit is unchanged**: such a run fails `verify`, so §7.2 already
+  refuses it before step 1; a new test asserts the refusal names the entry
+  (an absolute and a `..` entry, on fixture copies).
+- Tests: 12 replay cases (absolute and `..` on the raw and json sides, a `..`
+  in `files`, a symlink out; each sent `--raw` and `--json`) red on the
+  parent, a check that `planned` reads no body or head before refusing, and
+  the committed capture yielding no misplaced entry.
+- Mutation shown caught: checking only the side being sent (8 of the 12
+  cases fail).
+
 ## B2b — the per-body cost is a count, not a clock
 
 `test_sixteen_hundred_bodies_cost_the_same_each` failed on the macOS leg again
