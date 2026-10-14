@@ -1,0 +1,6 @@
+{"bytes": 3684, "file": "raw/0001.body", "sha256": "56b70f6b29bab4724e12ab68e374f468fb642594a0bf04475a2fd8ece182622c"}
+{"bytes": 5147, "file": "json/0001.json", "sha256": "d514e0e369434e499af6461faceeecee84dcb9dc7e671a82cc76d1fc626d82e7"}
+{"bytes": 24926, "file": "raw/0002.body", "sha256": "d01c273870441f13dce25bc1508e06a5a0d1001867a36ab7fe3d13b03747f72e"}
+{"bytes": 31804, "file": "json/0002.json", "sha256": "c4eb9add8209c2cd425b8b5e0c81007713a26346475566bb47cd1aa00b399799"}
+{"bytes": 25516, "file": "raw/0003.body", "sha256": "e577af5e49caeb3c41f7897660510cbdec6b918727d9b3cd2781724899ea0724"}
+{"bytes": 29309, "file": "json/0003.json", "sha256": "ec67ac053591294b27951560bf99e676b755962f13713c3243ab131885251cc3"}
