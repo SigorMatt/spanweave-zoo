@@ -996,6 +996,37 @@ def test_a_file_entry_that_points_outside_the_run_is_a_problem_and_is_not_read(
     assert outside.resolve() not in [path.resolve() for path in reads]
 
 
+@pytest.mark.parametrize("key", ["bodies", "files"])
+def test_a_file_entry_that_cannot_be_resolved_is_a_problem_not_a_traceback(
+    tmp_path, capsys, key
+):
+    # Qodo 3 on PR #2 (decisions-zoo-2026-10-14b, commit 3): a symlink that
+    # names itself cannot be resolved. On 3.11 and 3.12 `Path.resolve()`
+    # raises `RuntimeError` on the loop, and on 3.13+ a strict resolve raises
+    # `OSError`; either way the entry is a problem naming it, the same on
+    # every Python (`SPEC.md` §5.4), never a crash out of `zoo verify`.
+    run = hand_written_capture(tmp_path)
+    loop = run / "raw" / "loop.body"
+    loop.symlink_to(loop)
+    entry = "raw/loop.body"
+
+    def change(document: dict[str, object]) -> None:
+        if key == "bodies":
+            document[manifest.BODIES][0]["file"] = entry  # type: ignore[index]
+        else:
+            document[manifest.FILES].append(  # type: ignore[attr-defined]
+                {"bytes": len(BODY), "file": entry, "sha256": manifest.digest(BODY)}
+            )
+
+    _resealed(run, change)
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert f"{key}[" in out and repr(entry) in out, out
+    assert "cannot be resolved" in out, out
+    assert "seal" not in out, "the manifest was resealed; only the entry is wrong"
+
+
 def test_a_dot_dot_entry_that_lands_back_inside_is_still_a_problem(tmp_path, capsys):
     # The rule is on the entry as written, not only on where it lands: entries
     # are normalized relative paths (`SPEC.md` §5.4), and `raw/../raw/...` is

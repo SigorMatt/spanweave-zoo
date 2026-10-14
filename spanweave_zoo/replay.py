@@ -138,8 +138,8 @@ def planned(run: Path, source: str) -> list[str]:
 
     The manifest's paths are trusted only as far as `verify` would trust them
     (B4a, `SPEC.md` §6.1): any `bodies` or `files` entry, on either side,
-    that is absolute, not normalized, or resolves outside `run` is a
-    refusal naming it, raised before anything is read or sent.
+    that is absolute, not normalized, resolves outside `run` or cannot be
+    resolved is a refusal naming it, raised before anything is read or sent.
     """
     try:
         recorded = manifest.recorded_bodies(run)
@@ -154,8 +154,8 @@ def planned(run: Path, source: str) -> list[str]:
         # B4a: the check `verify` applies (`SPEC.md` §5.4), on both sides,
         # before a byte of a body or a head is read.
         raise ReplayRefused(
-            f"{run}'s {manifest.MANIFEST_NAME} names a file outside the run "
-            f"directory, so none of its claims is one this follows: "
+            f"{run}'s {manifest.MANIFEST_NAME} names a file that is not one "
+            f"of the run directory's, so none of its claims is one this follows: "
             f"{'; '.join(misplaced)}. Nothing was sent, and no body or head "
             f"was read (SPEC.md section 6.1)."
         )

@@ -1479,7 +1479,16 @@ through `verify`, `zoo audit` (§7.2), each of which reads the entry as a claim
 and not as an instruction. One function holds it, and all three apply it. An
 entry that breaks it is a problem naming the entry, and the file it points at
 is **not read**: a manifest that could send the re-hash anywhere on the disk
-would let a capture be "verified" by bytes it does not hold. This confines
+would let a capture be "verified" by bytes it does not hold. An entry that
+**cannot be resolved** — a symlink loop, or a link that cannot be read — is
+the same: a problem naming the entry ("which cannot be resolved"), the file
+not read, never a traceback. It is that on every Python the zoo supports:
+the path is resolved strictly, so a loop is refused whether the interpreter
+reports it as a `RuntimeError` (3.11, 3.12) or an `OSError` (3.13+); a path
+that merely does not exist is resolved as far as it goes and judged by where
+that lands, so a missing file stays a missing file (§5.6) and a dangling
+symlink out of the run stays a path outside it (Qodo 3 on PR #2,
+`decisions-zoo-2026-10-14b`). This confines
 *where* the seal's claims can point, not *whether* a resealed manifest
 verifies (§5, "What the seal is, and no more"): within the run directory, it
 still does.
@@ -1649,8 +1658,9 @@ so every file on disk is also unlisted; a `problems` that is not a list is a
 problem in itself, because what the run recorded going wrong cannot be read
 (a `bodies` that is not a list is already a manifest that cannot be read).
 And a `file` entry that is not a normalized relative path under the run
-directory (§5.4) — absolute, with a `..`, or a symlink resolving outside it —
-is a line naming the entry, and that file is not read.
+directory (§5.4) — absolute, with a `..`, a symlink resolving outside it, or
+one that cannot be resolved at all — is a line naming the entry, and that
+file is not read.
 
 The second direction is why the check walks the **directory** and not only the
 list. A verify that iterated the manifest can only ever confirm what the
@@ -1768,8 +1778,8 @@ unreadable, on §5.6's rule: nothing was sent.
 Before it reads a body or a head, the replayer applies §5.4's rule — the same
 function `verify` uses — to every `file` entry of `bodies` and of `files`: an
 entry that is absolute, is not a normalized relative path (a `..`, a `.`, an
-empty part), or resolves, symlinks followed, outside the run directory is a
-refusal naming the entry, exit **2**, nothing read and nothing sent. It
+empty part), resolves, symlinks followed, outside the run directory, or
+cannot be resolved (a symlink loop, §5.4) is a refusal naming the entry, exit **2**, nothing read and nothing sent. It
 checks **both sides**, the one it sends and the one it does not, and the
 `files` list beside them: a manifest is one document, and one claim pointing
 out of the run makes all of it untrusted (decided 2026-10-13,
@@ -1909,7 +1919,7 @@ finding and not an error (`CLAUDE.md` §0.6 rule 7).
 |---|---|
 | **0** | every body was sent and every answer was a 2xx |
 | **1** | any answer was not a 2xx, or any body could not be sent at all — a head that is missing, empty or unterminated (§6.2), a body file the manifest lists that is not on disk, a connection that failed or an answer that never came |
-| **2** | nothing was sent: the path is not a capture, its manifest is unreadable, it names a file outside the run directory (§6.1), or it holds no body in the chosen directory |
+| **2** | nothing was sent: the path is not a capture, its manifest is unreadable, it names a file outside the run directory or one that cannot be resolved (§6.1), or it holds no body in the chosen directory |
 
 The summary line says how many were sent, how many of those did not answer
 2xx, and how many were not sent at all, and the problems are printed again

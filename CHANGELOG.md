@@ -4,6 +4,31 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## decisions-zoo-2026-10-14b, commit 3 — Qodo 3 on PR #2
+
+A manifest entry that cannot be resolved, as
+`patches/decisions-zoo-2026-10-14b.md` accepted it. `SPEC.md` §5.4, §5.6,
+§6.1 and §6.4 touched. No capture touched (`make verify` green), no committed
+report regenerated.
+
+- **Qodo 3:** `outside_run` called `Path.resolve()` unguarded, so a `file`
+  entry naming a symlink loop raised `RuntimeError` out of `zoo verify` and
+  `zoo replay` on 3.11 and 3.12. On 3.13+ a non-strict resolve returns the
+  looping path unchanged, so the same entry passed the check: `verify`
+  called it missing, and `zoo replay --json` sent the other side as if the
+  manifest were sound. The path is now resolved strictly (a missing file or
+  a missing directory falls back to a non-strict resolve, so a missing file
+  is still reported as missing and a dangling symlink out is still outside),
+  and `OSError` or `RuntimeError` from it is the reason "which cannot be
+  resolved -- a symlink loop or an unreadable link -- so it was not read":
+  a `verify` problem naming the entry, exit 1, and a replay refusal naming
+  it, exit 2, nothing sent, the same on every Python. Replay's refusal now
+  reads "names a file that is not one of the run directory's", because a
+  loop is not outside it. Tests:
+  `test_a_file_entry_that_cannot_be_resolved_is_a_problem_not_a_traceback`
+  and
+  `test_a_manifest_entry_that_cannot_be_resolved_is_refused_and_nothing_sent`.
+
 ## decisions-zoo-2026-10-14b, commit 2 — Qodo 4 on PR #2
 
 `zoo sink`'s signal handling, as `patches/decisions-zoo-2026-10-14b.md`

@@ -892,7 +892,8 @@ def outside_run(run: Path, name: str) -> str | None:
 
     An entry is a normalized relative path under the run directory
     (`SPEC.md` §5.4): not absolute, no `.` or `..` part, no empty part, and --
-    symlinks followed -- resolving inside `run`. Anything else is a problem
+    symlinks followed -- resolving inside `run`; an entry whose symlinks
+    cannot be followed (a loop) does not. Anything else is a problem
     and the file it points at is not read: the manifest is a claim about this
     capture, and a resealed one still verifies (`SPEC.md` §5), but only about
     bytes inside the run directory.
@@ -905,12 +906,36 @@ def outside_run(run: Path, name: str) -> str | None:
             "not a normalized relative path, so it may name a file outside the "
             "run directory (SPEC.md section 5.4)"
         )
-    if not (run / name).resolve().is_relative_to(run.resolve()):
+    try:
+        resolved = _resolved(run / name)
+        inside = resolved.is_relative_to(run.resolve())
+    except (OSError, RuntimeError):
+        return (
+            "which cannot be resolved -- a symlink loop or an unreadable link "
+            "-- so it was not read (SPEC.md section 5.4)"
+        )
+    if not inside:
         return (
             "which resolves outside the run directory, so it is not part of "
             "this capture and was not read (SPEC.md section 5.4)"
         )
     return None
+
+
+def _resolved(path: Path) -> Path:
+    """`path` with its symlinks followed, raising if they cannot be.
+
+    Strict, so a symlink loop raises on every Python the zoo supports:
+    `RuntimeError` on 3.11 and 3.12, `OSError` on 3.13+, where a non-strict
+    resolve returns the looping path unchanged (Qodo 3 on PR #2, `SPEC.md`
+    §5.4). A path that does not exist is resolved as far as it goes, so a
+    missing file is still judged by where it would be -- reported as missing
+    by `verify` -- and a dangling symlink by where it points.
+    """
+    try:
+        return path.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        return path.resolve()
 
 
 def _listed(document: dict[str, Any]) -> set[str]:

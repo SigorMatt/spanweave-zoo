@@ -1037,6 +1037,10 @@ def _misplaced_copy(tmp_path: Path, case: str) -> tuple[Path, str]:
         entry = "raw/0001.body"
         (run / entry).unlink()
         (run / entry).symlink_to(beside / "outside.body")
+    elif case == "raw-loop":
+        entry = "raw/0001.body"
+        (run / entry).unlink()
+        (run / entry).symlink_to(run / entry)
     else:  # pragma: no cover - a typo in the parametrization
         raise AssertionError(case)
     (run / manifest.MANIFEST_NAME).write_text(
@@ -1072,6 +1076,28 @@ def test_a_manifest_path_outside_the_run_is_refused_and_nothing_sent(
     err = capsys.readouterr().err
     assert status == 2, err
     assert repr(entry) in err, err
+    assert "Nothing was sent" in err
+    assert server.bodies == []
+
+
+@pytest.mark.parametrize("side", ["--raw", "--json"])
+def test_a_manifest_entry_that_cannot_be_resolved_is_refused_and_nothing_sent(
+    tmp_path, capsys, side
+):
+    # Qodo 3 on PR #2 (decisions-zoo-2026-10-14b, commit 3): a `bodies` entry
+    # naming a symlink to itself cannot be resolved -- `RuntimeError` on 3.11
+    # and 3.12, `OSError` from a strict resolve on 3.13+. It is a refusal
+    # naming the entry, exit 2, on both sides (`SPEC.md` §5.4, §6.1), never a
+    # traceback.
+    run, entry = _misplaced_copy(tmp_path, "raw-loop")
+    with scripted(200) as (server, port):
+        status = cli.main(
+            ["replay", str(run), side, "--to", f"http://127.0.0.1:{port}"]
+        )
+    err = capsys.readouterr().err
+    assert status == 2, err
+    assert repr(entry) in err, err
+    assert "cannot be resolved" in err, err
     assert "Nothing was sent" in err
     assert server.bodies == []
 
