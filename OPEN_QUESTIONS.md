@@ -17,10 +17,12 @@ thing.
 Each entry says what was asked, what the options were, what was decided, who
 decided it, and where the decision now lives.
 
-A citation of `WORKPLAN.md` below is to series 1's plan, which was deleted at
-that series' close: its §3 (decisions log) and §4 (resume notes) are folded
-verbatim into `TASKS.md`, and the whole file as it last stood is
-`git show 22be077:WORKPLAN.md`.
+A citation of `WORKPLAN.md` below is to the plan of the series that asked the
+question — §1–§5 to series 1's, §6–§8 to series 2's — each deleted at its
+series' close. Their §3 (decisions log) and §4 (resume notes) are folded
+verbatim into `TASKS.md`, and each whole file as it last stood is
+`git show 22be077:WORKPLAN.md` (series 1) and `git show 1ed70a1:WORKPLAN.md`
+(series 2).
 
 ---
 

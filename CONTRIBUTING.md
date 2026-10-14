@@ -1,15 +1,17 @@
 # Contributing to spanweave-zoo
 
 Work here lands in **batches**: one batch is one concern and one commit, listed
-in `WORKPLAN.md` while a series is open and in `TASKS.md` afterwards. This file
+in `WORKPLAN.md` while a series is open and in `TASKS.md` afterwards (a closed
+series' plan is deleted, and `TASKS.md` says where it lives in git). This file
 is the bar a batch clears. `CLAUDE.md` is the contract it must not violate;
 `SPEC.md` is what to build.
 
 ## Before you write code
 
 Read, in order: `CLAUDE.md` (the standing rules, §0.6); while a series is
-open, the `WORKPLAN.md` row for your batch and §5, and between series, the
-batch's entry in `TASKS.md`; then the `SPEC.md` sections those name, then only
+open, the `WORKPLAN.md` row for your batch and whatever else its brief names,
+and between series, the batch's entry in `TASKS.md`; then the `SPEC.md`
+sections those name, then only
 the source and test files the batch touches.
 
 The standing rules are non-negotiable and a change that violates one is wrong

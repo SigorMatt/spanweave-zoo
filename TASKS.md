@@ -607,38 +607,493 @@ because a batch never edits this file:
 
 ---
 
-## Series 2 — the hardening series, and the five audits (opened 2026-10-12)
+## Series 2 — the hardening series, and the five audits (2026-10-12 → 2026-10-14)
 
-Branch `zoo`, opened from `main` at `25b2ef2`. While the series is open its
-batches are `WORKPLAN.md` §1; this section registers what the series was opened
-to close, each item with the batch that closes it. The registry and the folded
-logs land here at the close (B8).
+Branch `zoo`, opened from `main` at `25b2ef2`. The plan as it stood at the
+close is `git show 1ed70a1:WORKPLAN.md` (the parent of the `close:` commit that
+deleted it); its §1 rows are the full text of each batch below. The series
+closed what two reviews of series 1's close found — Qodo's twelve items on
+PR #1 and the close review's carried threads — and audited the five remaining
+pet projects (Z3, Z5, Z1, Z2, Z6) as their captures landed; at the close every
+captured project was audited again with one audit and `PROBES.md` was
+consolidated across all six (B8).
 
 The review that opened it is Qodo's of PR #1 (comment `6127903067`,
 2026-10-12, `qodo-code-review[bot]`: 12 bugs, 0 rule violations), kept byte for
 byte as `reviews/QODO-2026-10-12.md` — the comment's `body` exactly as the API
-returns it, without the trailing newline `gh api --jq .body` adds
-(`reviews/SHA256SUMS`, now 26 files; `cd reviews && sha256sum -c SHA256SUMS`).
-All twelve were accepted (`WORKPLAN.md` §3, 2026-10-12, "series").
+returns it, without the trailing newline `gh api --jq .body` adds. Qodo's PR
+summary of the same PR (comment `6127869987`, 2026-10-12), which carries the
+one design alternative Qodo raised, is kept the same way as
+`reviews/QODO-SUMMARY-2026-10-12.md` (B8). `reviews/SHA256SUMS` lists 27
+files: series 1's 25, and the two Qodo comments; `cd reviews && sha256sum -c
+SHA256SUMS`. All twelve items were accepted (decisions log below,
+2026-10-12, "series").
 
-### Qodo's twelve items
+### Registry
 
-- Q1 Startup signals leave a Collector running (`run_capture` installs its stop handlers after `running.start()` returns). **B2** (a).
-- Q2 A slow export invalidates its capture (a forward outcome appended to `forwards.jsonl` after the seal). **B3** (a).
-- Q3 Skipped exports distort replay timing (`previous` not advanced past an unreadable request). **B5** (c).
-- Q4 Unmatched records still produce findings (step 3 incomplete, its findings emitted anyway). **B6** (a).
-- Q5 The audit writes no report if `serve` cannot launch (`OSError` from `Popen` uncaught). **B6** (b).
-- Q6 Terminating the sink skips its manifest (no SIGTERM/SIGHUP handler in `run_sink`). **B2** (c).
-- Q7 Invalid journal bytes prevent completion (`UnicodeDecodeError` in `_journalled`). **B3** (b).
-- Q8 A failed start can leave the Collector running (`Capture.start`'s tail outside its `try/except`). **B2** (b).
-- Q9 Chunked exports get a stray 400 on the same connection (unframed body left on a keep-alive connection). **B5** (a).
-- Q10 `verify` crashes on some malformed manifests (`"files": 1`, `"problems": 1` → `TypeError`). **B4**.
-- Q11 Replay to an IPv6 address sends a bad `Host` (literal not bracketed). **B5** (b).
-- Q12 `verify` accepts files outside the capture (absolute, `..` or symlinked entries). **B4**.
+| ID | Batch | Closed by |
+|---|---|---|
+| B0 | The two reviews of the close, archived and dispositioned | `d0debab` |
+| B1 | The test harness does not lose a port race | `d99ba97` (question `b7165a0`, `OPEN_QUESTIONS.md` §6) |
+| B2 | Signals cover the whole life of a capture, and of the sink | `202556c` |
+| B2a | The per-body cost test measures the recorder, not the runner | `91e094d` |
+| B2b | The per-body cost is a count, not a clock | `63e44bc` |
+| B3 | Nothing writes to a capture after its seal | `12de782` |
+| B3a | Standalone `zoo sink` seals only once nothing can write | `cae8168` |
+| B4 | `verify` trusts nothing a manifest says about where a file is | `99edcbd` |
+| B4a | The replayer refuses a path outside the run | `3dcd17a` (question `7275b12`, `OPEN_QUESTIONS.md` §7) |
+| B5 | The wire is honest at its edges | `cafb8cd` |
+| B5a | A request with `Transfer-Encoding` is never read by its `Content-Length`, and a negative length closes | `558ec4a` |
+| B5b | A `Content-Length` is digits, once | `a48dfcc` |
+| B5c | A folded `Content-Length` is unframeable | `9bcbaa0` |
+| B5d | The sink frames by the record's own parse | `8aafdb4` |
+| B6 | The audit says "not run" when it cannot vouch | `290fc1b` |
+| B6a | The audit observes every policy and names every node | `07285bd` (question `a8502c3`, `OPEN_QUESTIONS.md` §8) |
+| B6b | The node table names the span | `390eb24` |
+| B6c | The node table names the record | `4b57f18` |
+| B7r | Every captured project audited once more, with the one audit | `b63c0cf` |
+| B7-Z3 | Audit Z3 (`echo-planner`) | `a180f06` |
+| B7-Z5 | Audit Z5 (`flaky-fetcher`) | `54703f2` |
+| B7-Z1 | Audit Z1 (`ledger-clerk`) | `184b70d` |
+| B7-Z2 | Audit Z2 (`fan-out-researcher`) | `aebff51` |
+| B7-Z6 | Audit Z6 (`crew-of-three`) | `13883dd` |
+| B8 | The series closes | the `close:` commit that adds this section and deletes `WORKPLAN.md` (this commit) |
 
-### The close review's carried threads
+B7 was the per-project template, instantiated as the five B7-Z rows. Not a
+batch, and in the series' history: the operator's captures — `9b0268f` (Z3),
+`f081997` (Z5), `c24ab69` (Z1), `45305a8` (Z2), `88dbcfd` (Z6) — and
+`691866a`, export contract 1.3 with the Z5 brief amendment.
 
-Carried from series 1's close (`ROADMAP.md`, "Threads for zoo series 2"):
+### Dispositions of the reviews
 
-- **The port race**: `test_the_collector_killed_by_hand_mid_capture_is_a_problem` failed once in CI (`e50a56e`, PR run attempt 1) with the Collector's port taken between the **harness's** pick and the Collector's bind; `zoo capture` picks no port (`OPEN_QUESTIONS.md` §6); green on re-run with no code change. **B1** (a bounded retry on bind failure).
-- **The PR wording**: PR #1's body says the merge is a fast-forward; `--merge` wrote `ebe12cf`. **B8** (the closing PR `zoo` → `main` is a merge commit, as PR #1 was, and its text says so).
+**Qodo's review of PR #1** (`reviews/QODO-2026-10-12.md`), twelve items, all
+accepted, each with the commit that closed it:
+
+- Q1 Startup signals leave a Collector running (`run_capture` installs its stop handlers after `running.start()` returns). **B2** (a), `202556c`.
+- Q2 A slow export invalidates its capture (a forward outcome appended to `forwards.jsonl` after the seal). **B3** (a), `12de782`; the standalone sink, **B3a**, `cae8168`.
+- Q3 Skipped exports distort replay timing (`previous` not advanced past an unreadable request). **B5** (c), `cafb8cd`.
+- Q4 Unmatched records still produce findings (step 3 incomplete, its findings emitted anyway). **B6** (a), `290fc1b`.
+- Q5 The audit writes no report if `serve` cannot launch (`OSError` from `Popen` uncaught). **B6** (b), `290fc1b`.
+- Q6 Terminating the sink skips its manifest (no SIGTERM/SIGHUP handler in `run_sink`). **B2** (c), `202556c`.
+- Q7 Invalid journal bytes prevent completion (`UnicodeDecodeError` in `_journalled`). **B3** (b), `12de782`.
+- Q8 A failed start can leave the Collector running (`Capture.start`'s tail outside its `try/except`). **B2** (b), `202556c`.
+- Q9 Chunked exports get a stray 400 on the same connection (unframed body left on a keep-alive connection). **B5** (a), `cafb8cd`; every framing case after it, **B5a**–**B5d** (`558ec4a`, `a48dfcc`, `9bcbaa0`, `8aafdb4`).
+- Q10 `verify` crashes on some malformed manifests (`"files": 1`, `"problems": 1` → `TypeError`). **B4**, `99edcbd`.
+- Q11 Replay to an IPv6 address sends a bad `Host` (literal not bracketed). **B5** (b), `cafb8cd`.
+- Q12 `verify` accepts files outside the capture (absolute, `..` or symlinked entries). **B4**, `99edcbd`; the replayer, **B4a**, `3dcd17a`.
+
+**Qodo's PR summary of PR #1** (`reviews/QODO-SUMMARY-2026-10-12.md`, "High-Level
+Assessment"): one alternative approach, a **wire-level TCP proxy** in place of
+the application-level sink ("could preserve transport framing and support
+requests beyond the current Content-Length-based HTTP sink"; "substantially
+complicates request accounting, Collector forwarding, and the documented
+OTLP/HTTP capture contract"). **Declined.** Qodo's own recommendation was to
+keep the application-level sink and the pinned stock Collector for the stated
+OTLP/HTTP scope, because they separate the authoritative request record from
+the optional re-encoding, and to consider a proxy only if preserving HTTP
+framing or chunked uploads became a requirement. Neither has: the record is
+the head's octets and the body as the sink read it (`SPEC.md` §2.3), a request
+the sink cannot frame is recorded as what it could see and its connection
+closed (decisions 2026-10-12 "B5(a)", 2026-10-13 "B5a", 2026-10-13 "B5d"), and
+the sink parses nothing (standing rule 3). Not reopened in this series; a
+thread only if a pet project ever exports something the sink cannot frame.
+
+**The close review of series 1** (`reviews/REVIEW-2026-10-12.md`): its findings
+and A5's items were dispositioned at series 1's close (above, "Close review").
+Its two threads carried into this series (`ROADMAP.md`, "Threads for zoo
+series 2", at series 1's close):
+
+- **The port race**: `test_the_collector_killed_by_hand_mid_capture_is_a_problem` failed once in CI (`e50a56e`, PR run attempt 1) with the Collector's port taken between the **harness's** pick and the Collector's bind; `zoo capture` picks no port (`OPEN_QUESTIONS.md` §6). **B1**, `d99ba97`: the harness picks no sink port (`--port 0`, `--json-port 0`) and retries a start lost to a race on `--collector-port`, bounded, naming every port tried.
+- **The PR wording**: PR #1's body says the merge is a fast-forward; `--merge` wrote `ebe12cf`. **B8**: the closing PR `zoo` → `main` is a merge commit, as PR #1 was, and its text says so. The PR itself is opened after this commit.
+
+No other review was taken in this series: no aux review file was written under
+`patches/`, so none is archived beyond the two Qodo comments.
+
+### Threads for series 3
+
+Registered here at the close. None is acted on in this series. Each says where
+it was raised.
+
+- **A head the derivation marks `unparsed`, or that carries a bare CR, may
+  close its connection** (decision 2026-10-14, "B5d"): after the answer,
+  defensively, without changing the record. A thread, not a row.
+- **The `PID set at arming:` wording** (`~/spanweave-ops/status_check.sh`):
+  owned by **spanweave-ops**, not this repository; not acted on here (as
+  series 1's R-8).
+- **Contract 1.4 candidates** (decision 2026-10-14, "B8"), each from a project
+  built against 1.3, to be weighed where contracts are issued (`CONTRIBUTING.md`,
+  "Captures"):
+  - a framework's own phone-home telemetry may be disabled, and the project
+    says so — Z6 sets `CREWAI_DISABLE_TELEMETRY=true` and
+    `CREWAI_TRACING_ENABLED=false` (its README, "Telemetry configuration");
+  - the Python range follows the framework — Z6 needs 3.10–3.13 because CrewAI
+    does not support 3.14 (its `pyproject.toml`, `requires-python =
+    ">=3.10,<3.14"`);
+  - a project that has never run has no manifest: one throwaway recorded run
+    to a dead port writes it (Z6; `ROADMAP.md`'s checklist, step 3).
+- **From `ROADMAP.md`, carried again** (series 1's close): contract 1.2
+  manifests — confirm `verify` accepts 1.1 and 1.2 project manifests and
+  records which; and a model pre-flight as a zoo command (`zoo preflight
+  --base-url --model`).
+- **Open in the resume notes, closed by no batch:**
+  - B1 (2026-10-12): tests that expect a refusal still pick a port without
+    retry, so a race there can change which refusal they see; and
+    `tests/test_replay.py` (~l.640) picks a port it needs closed — a different
+    race.
+  - B2 (2026-10-12): `collector.Binary.start` stops the child on any exit once
+    the process exists; a signal inside `Popen` itself can still leak it.
+  - B7r (2026-10-13), and the audit as it stands: `--cap`, and any non-zero
+    `--quiet` or `--root-grace`, are never run (decision 2026-10-13, "B6b":
+    a non-zero value fires or not by wall clock); L3's and L4's *to establish*
+    lines are what that leaves open.
+  - B8: the generation graphs `serve --quiet 0` writes are compared with
+    nothing, and the node table gives no id for a parent absent from the
+    graph; `PROBES.md` reads both beside the audit or leaves them *to
+    establish* (L3, S2, S12, S18).
+- **Closed without a batch:** the "two workflow runs named `CI`" check
+  (decision 2026-10-13, "ops"): `.github/workflows/` holds one file, `ci.yml`,
+  so there is no duplicate to delete. `patches/` was cleared of series 1's
+  files before series 2's set was written (decision 2026-10-13, "patches").
+- Series 1's threads above that series 2 did not close stay as series 1
+  registered them (notably A3b's `started_at` preference, `OPEN_QUESTIONS.md`
+  §3, and the run-1/run-2/run-2b review threads). Series 2 closed the macOS
+  wall-clock cost test (B2a, then B2b: a count, not a clock) and the port race
+  (B1).
+
+### Decisions log (`WORKPLAN.md` §3, folded verbatim)
+
+Section references inside (`§0.1`, `§3`, `§4`, a row) are to `WORKPLAN.md` as
+it stood at `1ed70a1`.
+
+| Date | Batch | Decision | By |
+|---|---|---|---|
+| 2026-10-12 | series | Qodo's twelve items on PR #1 are **all accepted**, each verified against the code at `25b2ef2` before this plan was written: Q1/Q8 (handlers after `start()`, the untried tail of `start`), Q2 (a late journal append after the seal), Q3 (`previous` not advanced), Q4 (findings emitted after a step-3 mismatch, against SPEC §7.3's own words), Q9 (unframed body left on a keep-alive connection) were confirmed by reading; Q5, Q6, Q7, Q10, Q11, Q12 are small and plausible and are taken on their tests. None conflicts with a series-1 decision: the Collector keeps its own session (A3e) and the fix for Q1 is to cover startup, not to rejoin the group; the seal still verifies a resealed manifest (2026-10-11) — B4 confines *where*, not *whether*. | maintainer |
+| 2026-10-12 | B1 | A refusal on a port taken between pick and bind is correct behaviour and bad luck at once; the retry is bounded and every port tried is named, so the refusal after N is as honest as the refusal after one. | maintainer |
+| 2026-10-12 | B5(a) | The sink still decodes no framing. Closing the connection is the only answer consistent with "the sink parses nothing": it records what it could see and refuses to guess where the next request begins. | maintainer |
+| 2026-10-12 | B7 | Audits are one batch per project, never one batch for several: each report is reproducible from its own pair of captures and the pins. | maintainer |
+| 2026-10-12 | B1 | **Option 4.** The 2026-10-12 "B1" row above described the harness, not `zoo capture`, and is read that way: the retry is bounded and every port tried is named — in the test harness. `zoo capture` picks no port and refuses a held one, as §4.6 says; a CLI meaning and a socket seam added for the test suite's convenience would be product scope the product does not need. `--port 0`/`--json-port 0` for the sinks, if accepted, is the one product-side allowance, because the sinks bind themselves and the ready lines already report their ports. | maintainer |
+| 2026-10-12 | B1 | The row's premise was the maintainer's error (it read the Collector's port as picked); the builder's correction under §0.1 step 5 was right, and the stop was right. | maintainer |
+| 2026-10-13 | B2 | A stop signal before readiness is a refusal and exits 2: a refusal writes nothing, and 2 is the refusal's status. Confirmed. | maintainer |
+| 2026-10-13 | B3 | A body arriving on a still-open connection after the journals close gets no answer and the connection is closed — **confirmed**, and stated as a rule rather than an exception: after the close the sink is, to a client, gone, exactly as a stopped listener is. "Answers every POST the same way" (0.6) applies to the POSTs the sink accepts; a closed sink accepts none. A `503` would be an answer without a record, which is the worse breach. SPEC §3.3/§5.5 say it this way. | maintainer |
+| 2026-10-13 | B3 | The row's verify criterion was wrong and the builder's correction stands: a late forward is a `problems` entry, and §5.6 fails any recorded problem; what the batch proves is that `verify` fails on *that* problem alone, never on a digest or the seal. | maintainer |
+| 2026-10-13 | B3a | Standalone `zoo sink` gets the same close-then-seal as `zoo capture`: "nothing writes after the seal" has no exception. | maintainer |
+| 2026-10-13 | B2a | `test_sixteen_hundred_bodies_cost_the_same_each` failed on the macOS leg again (B2's first CI run) and the series-1 ratification covered series 1 only. It is fixed now, as the registry names: the per-body cost measured by CPU time (`time.process_time`) or by the count of writes per body, never by wall clock; the bound and the method stated in the test. | maintainer |
+| 2026-10-13 | patches | `patches/` is gitignored and holds series 1's 63 files beside series 2's. At the next close-out step the builder clears `patches/*.patch` once before writing (review files stay); series 2's set then numbers from 0001 without overlap. | maintainer |
+| 2026-10-13 | B7 | Z3 (`SigorMatt/echo-planner` at `71bc477`, captures `9b0268f`) and Z5 (`SigorMatt/flaky-fetcher` at `2a3e778`, captures `f081997`) are captured; their audit rows are instantiated below and run as run 3, after run 2's hardening, so the audit code they exercise is the hardened one (B6). | maintainer |
+| 2026-10-13 | B3a | Confirmed: the row's test is a slow POST held past the bound (the standalone sink has no forward); `zoo sink` exits 1 when its sealed manifest records a problem, as `zoo capture` does. | maintainer |
+| 2026-10-13 | B5 | Confirmed: a POST the sink cannot frame is answered as every POST is and the connection is then closed, with `Connection: close` on that answer. Standing rule 3 reads: the **answer** — status and body — is the same for every POST; what happens to the connection after the answer is not part of the answer, and a request the sink could not frame must end its connection or the next request is a guess (SPEC §3.3). | maintainer |
+| 2026-10-13 | B6 | Confirmed: a step-3 mismatch withholds the findings of steps 3–5 only. Steps 1 and 2 report the receiver's answers to real bytes and stand on their own; the 415 of step 1 is never withheld. | maintainer |
+| 2026-10-13 | B4a | The replayer and the audit read manifest file paths with the same check as `verify` (B4): a path that is absolute, contains `..`, or resolves outside the run directory is refused and named. The manifest is the only thing between a capture's claims and a reader's filesystem. | maintainer |
+| 2026-10-13 | B5a | Two framing cases closed the same way as B5: a request carrying `Transfer-Encoding` is never read by `Content-Length`, whatever that header says — the sink decodes no framing, records a zero-byte body, answers, and closes the connection (that pair of headers is the request-smuggling shape, and the record says what the sink could see); a negative `Content-Length` is a zero-byte body and a closed connection too. | maintainer |
+| 2026-10-13 | B2a | Confirmed as built: median of the first and last hundred bodies by CPU time, bound 2.0. No re-run ratification remains. | maintainer |
+| 2026-10-13 | B4a | **Option 1.** The audit stands behind `verify` (§7.2): a run whose manifest fails `verify` is refused before the audit reads anything, and the refusal names the entry — the row's "incomplete report" was the maintainer's error, written before B4 made such a manifest fail `verify`. `replay` alone lacks the check and gets it; it refuses a bad entry on **either** side, the one it sends and the one it does not, because a manifest is one document and one bad claim makes all of it untrusted. | maintainer |
+| 2026-10-13 | B2b | `test_sixteen_hundred_bodies_cost_the_same_each` failed on macOS again at `7275b12` with CPU time (510 → 1,333 µs/body, ratio 2.6), so CPU time is not the measure either on that runner. The measure that cannot be noisy is structural: the **number of write operations per body**, counted through a seam on the recorder, must be **equal** for the first and the last body of the run — that is what "cost the same each" means. Wall-clock and CPU figures may still be printed, never asserted. | maintainer |
+| 2026-10-13 | run 3 | B2b runs first: a flaky leg blocks "CI green on the tip" for every batch after it. | maintainer |
+| 2026-10-13 | B2b | Confirmed: the count is the recorder's file operations per body, reads included — the mutation it exists to catch is a re-read. SPEC §3.6 says so. | maintainer |
+| 2026-10-13 | B4a | Confirmed as built: the audit's refusal shows `verify`'s first problem. The audit stands behind `verify`; what `verify` says is what the audit says. | maintainer |
+| 2026-10-13 | B7-Z3, B7-Z5 | The two row corrections stand. The 599 `Attributes dict is full` lines are the SDK's stderr and not part of the record; `droppedAttributesCount` is what the record carries of them (S8). Z5's real and recorded bodies are the same length, not the same bytes (S13) — timestamps and ids. | maintainer |
+| 2026-10-13 | B5b | A `Content-Length` is `1*DIGIT` and nothing else: `+5`, ` 5`, `5_0` are not lengths and make the request unframeable (zero-byte body, the answer, `Connection: close`). Two `Content-Length` headers with differing values are unframeable the same way; identical duplicates are one length (RFC 9110 §8.6). | maintainer |
+| 2026-10-13 | B6a | The audit's blind spots are the audit's. Step 2 runs `serve` under **each** completion policy — the end-of-input `Cap(0)` as today, then `--quiet` and `--root-grace` at the receiver's documented defaults — and records, per policy, every `completed` event with its index and reason, so what each policy did with a rootless trace (L4) or a root that arrived last (L3) is observed, not "to establish". Step 4 reports **per node**: id, kind, status, model, whether its parent is present, and the diagnostic codes on it — so S6, S10, S11 and S12's "the report names no node" is closed by the report. Span events are listed per node as the record carries them. The report's size may grow; a per-node table is what a stranger's trace needs. | maintainer |
+| 2026-10-13 | B7r | After B6a, every captured project is audited again with the one audit — Z4, Z3, Z5 — and the committed reports are **replaced**, never kept beside the old ones: a report is reproducible from the pins and the audit at one sha, and two audit versions in `audit/` would make PROBES.md cite two methods. PROBES.md's "to establish" lines that B6a makes observable get their observation; the rest stay. | maintainer |
+| 2026-10-13 | relay | Two of the run-3 prompts put `run 3` past the transcript's 200-character cap, against §0.5, so the watcher could not derive the builder. Every run prompt from now on starts `Run N of WORKPLAN.md …`. | maintainer |
+| 2026-10-13 | B6a | **Option 1, over a timed replay.** The row's "documented defaults" was the maintainer's error: the pinned receiver has none. The two policy runs use `--quiet 0` and `--root-grace 0` and replay with `--timing`, so the captured inter-body gaps — the SDK's 5-second batch ticks — separate the bodies and each body gets the policy's verdict; a gap that long always contains a receiver tick, so the sequence of `completed` events is deterministic. The end-of-input run (`--requests N`, untimed) stays as today and is the one whose graphs step 3 compares. The report's Method states the values are the audit's choice. Option 4 (defaults in the receiver) is declined: the pin is the record. If a re-run ever differs beyond the port and clock lines, that is a finding about the audit's method and is recorded as one. | maintainer |
+| 2026-10-13 | B5b | Confirmed: a leading space never reaches the sink (the test's vertical tab stands); trailing whitespace after the digits is a valid length (RFC 9110 §5.5 OWS). | maintainer |
+| 2026-10-13 | B5c | A `Content-Length` continued on a folded line (obs-fold) is unframeable: the stdlib would frame by it while the record's derivation lists the fold as `unparsed` with an empty value, and the record and the framing must agree. Zero-byte body, the answer, `Connection: close`. | maintainer |
+| 2026-10-13 | B6a | Confirmed as built: `audit()` takes `sleep` (a seam); the policy runs observe and produce no findings, step 3 judges; "reason" is the `completed` event's `detail` to its first colon and "generation" is counted from the receiver's own events, because the receiver carries neither field — both stated in the report's Method. The decision's premise was weaker than written: `serve` ticks after every request, so at `0` the sequence is the same timed or untimed; `--timing` is dropped from the policy runs by B6b. The observations stand: Z3 real under `--quiet 0` is four generations with three `late_arrival`s; under `--root-grace 0` one completion at the last request; Z5's two `error` tool nodes carry their exception events. | maintainer |
+| 2026-10-13 | B7r | Confirmed: reports replaced in place; a second run differs only in ports and timestamps, so no finding about the method. | maintainer |
+| 2026-10-13 | B5d | The sink frames a body by **its own parse of the head** — the strict CRLF-only rule `headers.json` is derived by — and never by the stdlib's header object, which splits on bare CR and LF. The record and the framing then cannot disagree by construction; B5a, B5b and B5c become cases of this one rule, and their tests stay. | maintainer |
+| 2026-10-13 | B6b | The per-node table gains span name, parent id, the unmapped keys on the node (names, not values) and payload presence, so "which node is which" is answered by the report. `--timing` leaves the policy runs. `--cap` and non-zero policy values stay out: a non-zero value fires or not by wall clock, and the audit asserts nothing a clock decides. | maintainer |
+| 2026-10-13 | ops | Two workflow runs named `CI` on `24e483a`: the aux checks whether two workflow files share the name and reports; not a zoo batch unless one is a duplicate to delete. | maintainer |
+| 2026-10-14 | B5d | Confirmed, both edge changes: a `Transfer-Encoding` the record's derivation does not see is not in the record, so the record's `Content-Length` frames the body; an LF-only head has no `Content-Length` in the record, so zero bytes and close. Thread for series 3, not a row: a head the derivation marks `unparsed`, or that carries a bare CR, may close the connection after the answer, defensively, without changing the record. | maintainer |
+| 2026-10-14 | B6b | Confirmed: `sleep` removed with the timed replay; the payload column shows spanweave's own states. | maintainer |
+| 2026-10-14 | B7-Z1 | Confirmed: the row correction stands. The two observations made beside the report name the node table's last gap, closed by B6c. | maintainer |
+| 2026-10-14 | B6c | The node table gains **record index and body** per node (`json/NNNN.json`, record *n*), so parent-before-child ordering (S14/S15) and "which body carried the root" (L3, Z6) are read from the report. | maintainer |
+| 2026-10-14 | captures | Z6's real run did not follow its one-send-back script (two delegations, one `Ask question to coworker`, four lint passes); the contract allows randomness in the real run and the recorded capture is the script. Recorded as the capture's own fact, not a defect. Z6 had no manifest before its first run; the operator's throwaway recorded run against a dead port wrote one and captured nothing — the method for any project that has never run, noted in ROADMAP's checklist. | maintainer |
+| 2026-10-14 | B8 | The close regenerates **all twelve** reports with the final audit (B6c), so every probe cites one method; PROBES.md is consolidated across six projects, grouped by owner, each probe with its captures and command; `ROADMAP.md`'s six rows are complete, repository shas read from the local checkouts (`git -C ~/git/<project> rev-parse HEAD`); contract 1.4 candidates registered as threads (a framework's phone-home telemetry may be disabled, Z6; the Python range follows the framework, Z6; a project that has never run has no manifest). `TASKS.md` carries the decline of Qodo's wire-level-proxy alternative (PR #1 summary, 2026-10-12) with its reason. | maintainer |
+
+### Resume notes (`WORKPLAN.md` §4, folded verbatim)
+
+Section references inside are to `WORKPLAN.md` as it stood at `1ed70a1`.
+
+- 2026-10-12: series 2 opened on `zoo` from `main` `25b2ef2`. Pet projects
+  Z3 and Z5 are being built in parallel; their captures arrive as operator
+  commits on `zoo` and instantiate B7 rows.
+- 2026-10-12 B0: `gh api --jq .body` appends a newline the raw body lacks;
+  the archive keeps the raw body (38083 bytes). `reviews/SHA256SUMS` gained
+  its 26th line at the end, so it is no longer in filename order — nothing
+  checks the order. The PR-wording thread is mapped to B8.
+- 2026-10-12 B1: premise wrong — `zoo capture` picks no Collector port; the
+  port is `--collector-port`, and SPEC §4.6 makes a held named port a refusal
+  (tested). The race was the harness's `free_port()` (CI run 38273980263, port
+  43383, Errno 98); the harness's raw/json sink ports share it. Row corrected;
+  four options in OPEN_QUESTIONS §6 (b7165a0). Run 1 stopped here per 0.1
+  step 6; B2 and B3 do not depend on B1 and can run once it is decided.
+- 2026-10-12: B1 decided (option 4, harness only). B2 and B3 did not depend
+  on B1 and were not run because the protocol stops a run at `awaiting
+  decision`; run 1 resumes B1 → B2 → B3.
+- 2026-10-12 B1 (d99ba97): `--port 0`/`--json-port 0` were already
+  accepted on the parent, so no CLI change; SPEC §4.6/§4.2 now say what `0`
+  means for the sinks. The harness also picks `--collector-grpc-port` (the
+  real Collector binds it), covered by the same retry. Tests that expect a
+  refusal still pick without retry, so a race there can change which
+  refusal they see; `tests/test_replay.py` (~l.640) picks a port it needs
+  closed — a different race, not B1. CI 38310803935 green.
+- 2026-10-12 B2 (202556c): the row named no exit status for a stop signal
+  during readiness; the batch made it a refusal (exit 2, `refusing to
+  start: <SIG> arrived before the capture was ready …`), reading "a refusal
+  still writes nothing" — a maintainer may revisit. Once the run directory
+  exists a signal only asks the run to stop, so the capture is sealed.
+  Beyond the row: `collector.Binary.start` stops the child on any exit once
+  the process exists; a signal inside `Popen` itself can still leak it.
+  CI 38311763209: macOS 3.12 failed once on
+  `test_sixteen_hundred_bodies_cost_the_same_each` (1054 vs 2×505 us/body,
+  a timing ratio on a shared runner; B2 touches no manifest code), green on
+  re-run of the failed job. The test is a flake candidate, not owned here.
+- 2026-10-12 B3 (12de782): row criterion wrong — "`zoo verify` is still
+  green" after a late forward cannot hold: (a) requires a `problems` entry
+  and §5.6 fails any recorded problem. Row corrected: verify fails only on
+  that problem, never on a digest or the seal. Beyond the row, for the
+  maintainer to confirm: a body arriving on a still-open keep-alive
+  connection after the journals close gets **no answer** and the
+  connection is closed (a `200` would claim "recorded", §3.3); written into
+  SPEC §3.3/§5.5 — it sits against 0.6's "answers every POST the same
+  way". Not done: `run_sink` (standalone `zoo sink`) neither settles nor
+  closes its journals before `finish`; a late write there still shows as
+  a verify failure. A separate row if wanted. CI 38312749085 green.
+- 2026-10-13: run 1 confirmed (B2's exit status, B3's no-answer rule);
+  B2a and B3a added from the run's open items; Z3 and Z5 captured by the
+  operator and their audits instantiated for run 3; `patches/` to be
+  cleared of series 1's files at the next close-out.
+- 2026-10-13 B2a (91e094d): CPU time (`time.process_time`), median of
+  first vs last hundred `record` calls, bound 2.0 kept; the write-count
+  option was not taken because the row's own mutation (an O(n) rescan) is
+  reads, not writes. Tests-only, so the parent run is vacuous (green, 1.07);
+  the rescan mutation fails it (6.89). `make check` runs pytest without
+  `-s`, so CI shows no ratio, only the pass. CI 38319431533 green (macOS too).
+- 2026-10-13 B3a (cae8168): row premise wrong — standalone `zoo sink`
+  has no forward; the test holds a POST handler past `FLUSH_WAIT` through
+  the `before_record` seam (a slow client still sending). Row corrected.
+  B3's mechanism reused (stop listening, settle, `Recorder.close()`, seal).
+  Beyond the row, for the maintainer to confirm: `zoo sink` now **exits 1**
+  when the sealed manifest records a problem (it always exited 0), as
+  `zoo capture` does; that includes an unreadable journal found by
+  `finish`. SPEC §3.7 says so. CI 38319984732 green.
+- 2026-10-13 B4 (99edcbd): SPEC §5.4 holds the path rule beside the
+  `file` key, §5.6 the `verify` behaviour. `"bodies": 1` was already
+  refused by `manifest.read`, so not tested. Open, beyond the row: the
+  replayer and the audit read `run / file` through `recorded_bodies`
+  without this confinement, so a crafted manifest can still point them
+  outside the run directory — a candidate row. CI 38320426656 green.
+- 2026-10-13 B5 (cafb8cd): for the maintainer to confirm: the unframed
+  answer carries one extra header, `Connection: close`, chosen by the
+  request's framing headers, never its bytes — SPEC §3.3 states it against
+  0.6's "answers every POST the same way". Still as before, outside the
+  row: a negative `Content-Length` without `Transfer-Encoding` keeps the
+  connection; a positive `Content-Length` with `Transfer-Encoding` is read
+  by length. `--timing` with no `headers.json` reports the next gap as not
+  computable. IPv6 test ran in CI (not skipped). CI 38321090784 green.
+- 2026-10-13 B6 (290fc1b): "no library finding" read as no finding from
+  steps 3–5; steps 1–2 findings (e.g. the 415) still appear because they
+  are `serve`'s answers seen directly — §7.3 says so. New `reread`
+  parameter on `audit.audit()` is the seam. The committed `audit/*.md`
+  reports were not regenerated (no Z4 capture hits a mismatch). Audit
+  tests ran locally (24, none skipped). CI 38321569193 green. Run 2 done;
+  run 3 (B7-Z3 → B7-Z5) is unblocked.
+- 2026-10-13: run 2 confirmed (B3a's two points, B5's `Connection: close`,
+  B6's reading); B4a and B5a added from run 2's open items and placed
+  before the audits, because B4a changes how the audit reads a capture.
+- 2026-10-13 B4a (7275b12): awaiting decision, `OPEN_QUESTIONS.md` §7.
+  Premise wrong for the audit half: since B4 a manifest with an absolute
+  or `..` entry fails `verify`, and SPEC §7.2 refuses an unverified run
+  (exit 2, no report) — tried on fixture copies, the refusal names the
+  entry. The live defect is `zoo replay`: it never runs the check, and
+  `raw/../../../outside.body` passes its `raw/` prefix filter. Options in
+  §7; the sub-agent recommends 1 (keep §7.2, the audit test asserts the
+  refusal; `replay.planned` gets B4's check). Run 3 stopped here per 0.1
+  step 6; B5a does not depend on B4a. CI 38322519071 on the docs-only
+  tip: macOS 3.12 failed `test_sixteen_hundred_bodies_cost_the_same_each`
+  (510 vs 1333 us/body CPU, bound 2.0) — B2a's CPU-time fix does not hold
+  on the macOS runner; a candidate row. The six other jobs passed.
+- 2026-10-13: B4a decided (option 1; the audit half of the row was the
+  maintainer's error, the replayer half stands); B2b added for the macOS
+  cost test, ahead of everything else in run 3.
+- 2026-10-13: B2b done (`63e44bc`), CI green on all seven jobs including
+  macOS 3.12. The counted cost is every file the recorder opens per body
+  through the `open_file` seam, as (mode, octets read, octets written) —
+  not writes alone: B2a's mutation is a rescan, a read, which a pure write
+  count (or open count) cannot see; the row's "file operations" allows it,
+  and §3.6 states the definition. Maintainer to confirm the reading.
+- 2026-10-13: B4a done (`3dcd17a`), CI green on all seven jobs. B4's
+  check is `manifest.outside_run`; `manifest.misplaced` applies it to every
+  `bodies`/`files` entry on both sides, and `replay.planned` calls it first
+  (so the audit's `serve` gets it too). At the parent a `raw/../` entry was
+  really sent. SPEC §7.2 now says the audit's refusal shows `verify`'s
+  *first* problem — the bad entry only when it is the run's one fault —
+  narrower than the decision's "names the entry"; maintainer to confirm.
+- 2026-10-13: B5a done (`558ec4a`), CI green on all seven jobs. SPEC §3.7
+  ends in a table of every framing case. At the parent, a POST with both
+  headers was read by its length and its chunk frames drew a stray `501`.
+  Two shapes no rule covers, left undecided (candidate rows): two
+  `Content-Length` headers (read by the first), and `int()` accepting
+  `+5`, ` 5`, `5_0` as a length.
+- 2026-10-13: B7-Z3 done (`a180f06`), CI green on all seven jobs. One
+  finding per report (spanweave-live: every protobuf body answered 415,
+  L1 again); probes L3, S3 again, S6–S10 added, observed only. B7-Z5's
+  status `awaiting B6` read as `todo` (B6 is done). The row's premise "the
+  599 `Attributes dict is full` lines" is not in the record: nothing under
+  `captures/z3/` holds those lines, so S8 says the audit cannot tie them to
+  a span. The figure stays in the row as the operator's report, not a
+  capture fact.
+- 2026-10-13: B7-Z5 done (`54703f2`), CI green on all seven jobs. F1 per
+  report (L1 again); S3, S7 again; L4, S11, S12, S13 new. The row's premise
+  "identical real and recorded bodies" was wrong: the two `raw/0001.body`
+  files are 5,934 bytes each and differ in 380 bytes (json bodies and
+  sha256s differ too), and the graphs differ at least by trace id — row
+  corrected. `Quiet`/`RootEnded` are not observable from the audit (it
+  passes no `--quiet`/`--root-grace`/`--cap`), nor is span status in the
+  report; both marked *to establish* in PROBES.md. Run 3 done.
+- 2026-10-13: run 3 confirmed; B5b from B5a's remainder; B6a and B7r from
+  the audits' own blind spots (L3, L4, S6, S10, S11, S12 all "to establish"
+  because the report could not show it). Run prompts now start `Run N of
+  WORKPLAN.md` so the watcher can read them.
+- 2026-10-13: B5b done (`a48dfcc`), CI 38407030173 green on all seven
+  jobs. Lengths go through `sink.declared_length`: each value trimmed of
+  SP/HTAB, then ASCII `1*DIGIT`; repeats count only if all equal. Row
+  premise corrected: a literal leading space (` 5`) never reaches the sink
+  as part of the value (the stdlib parse drops it; RFC 9110 §5.5, SPEC
+  §2.3), so the test uses a vertical tab, which `int()` ignored; a trailing
+  SP/HTAB (`5 `) is still a length — maintainer to confirm. Left open, a
+  candidate row: an obsolete folded `Content-Length:` with ` 5` on the
+  next line is framed by `5` by the stdlib, while `headers.json` records
+  an empty value and lists ` 5` as unparsed.
+- 2026-10-13: B6a awaiting decision (`a8502c3`, `OPEN_QUESTIONS.md` §8).
+  The row's premise "the receiver's documented defaults" fails: at the
+  pinned spanweave-live `cddc694`, `--quiet` and `--root-grace` are
+  `type=float` with no default, `serve --help` names none, and the README
+  says the number is the caller's (its 30 / 5 are examples). Options in §8;
+  the sub-agent recommends 1, `--quiet 0 --root-grace 0` (deterministic).
+  Every policy run still needs `--requests N` or `serve` never stops. The
+  per-node table half of the row does not depend on the question and was
+  not started (one commit). Nothing compares committed `audit/` reports to
+  a fresh audit, so B6a can land without B7r. CI 38407522096 green on
+  `a8502c3`. Run 4 stopped here per 0.1 step 6; B7r awaits B6a.
+- 2026-10-13: B6a decided (option 1 over a timed replay; the "documented
+  defaults" premise was the maintainer's); B5b confirmed; B5c added from
+  B5b's open case. Run 4 resumes B5c → B6a → B7r.
+- 2026-10-13: B5c done (`9bcbaa0`), CI 38410939714 green on all seven
+  jobs. `sink.folds_a_length(head)` reads the record's CRLF split: an empty
+  `Content-Length:` followed by an SP or HTAB continuation is unframed; a
+  digits-then-fold value was already unframed at the parent. Left open, a
+  candidate row: the stdlib also splits header lines on a bare CR or LF,
+  so it can still frame by a length the record does not show —
+  `Content-Length:\n 5` (record value `\n 5`) and `X: a\rContent-Length: 5`
+  (no `Content-Length` in the record). Not written to OPEN_QUESTIONS.
+- 2026-10-13: B6a done (`07285bd`), CI 38412476908 green on every job,
+  `audit` included. Choices the row did not settle, for the maintainer to
+  confirm: `audit.audit()` takes a required `sleep` seam (§7.6); the two
+  policy runs yield no findings, and one that fails makes the audit exit 1
+  while step 3 still runs; `completed` events carry no policy or
+  generation field, so "reason" is `detail` up to its first colon and
+  "generation" is counted from the receiver's own events (`forgotten`
+  resets it). Decision premise weaker than stated: `serve` ticks after
+  every request, so at `0` the policies fire at the same tick timed or
+  untimed — `--timing` costs wall clock (Z3 real ~23 s) and does not
+  change the sequence. A trial (scratchpad only) observes L3: on Z3 real
+  `--quiet 0` makes 4 generations with 3 `late_arrival`, `--root-grace 0`
+  completes once at the last request; Z5 real's node table shows its two
+  `error` tool nodes with their exception events. B7r is unblocked.
+- 2026-10-13: B7r done (`b63c0cf`), CI 38413673522 green on all seven
+  jobs. Six reports replaced in place; findings unchanged (Z4 3, Z3 1,
+  Z5 1); no new probe, counts stay (spanweave-live 4, spanweave 13,
+  agentgolden 0). Observed now: L3, L4 (at 0), S5, S9, S10, S11, S12;
+  further but still partly open: L2, S2, S3, S6, S13. Still open because
+  the node table carries no span name, parent id, unmapped key or payload
+  per node (S2/S12 parent identity, S6 names, S8's 18 nodes, S10 records,
+  S11 outputs, S13 graph bytes) — a candidate row widening the table; and
+  `--cap` or non-zero policy values are never run. Re-run differs only in
+  `listening` ports and the clocks of `completed` and `late_arrival`
+  (PROBES.md corrected to say `late_arrival` too, as SPEC §7.3 does): no
+  method finding. Run 4 done.
+- 2026-10-13: run 4 confirmed; B5d (the sink frames by its own parse) and
+  B6b (the node table names the span) added; run 5 waits for Z1's captures
+  so its audit is in the same run. Z1's captures landed at `c24ab69`, so B7-Z1 is `todo`.
+- 2026-10-14: B5d done (`8aafdb4`), CI 38484508107 green on all seven
+  jobs. `sink.framing_of(head)` frames from the record's CRLF split;
+  `folds_a_length` stays as one case. Two consequences of the rule beyond
+  the row's two heads, for the maintainer to confirm (SPEC §3.7 lists
+  both): a `Transfer-Encoding` only the stdlib sees (`X: a\rTransfer-
+  Encoding: chunked` beside `Content-Length: 5`) is now framed by its 5
+  bytes and keeps the connection — less strict than the parent; and an
+  LF-only head (A3g) has no `Content-Length` in the record, so its body is
+  now zero bytes and the connection closes. Two existing tests changed
+  for the latter (`test_an_lf_only_head_is_one_unparsed_entry_and_nothing_
+  else`, and the `lf-only` case of the replay host-line test); their head
+  assertions unchanged.
+- 2026-10-14: B6b done (`390eb24`), CI 38485122335 green on all seven
+  jobs. Beyond the row, for the maintainer to confirm: with no timed replay
+  left, `audit()`'s `sleep` seam is removed (SPEC §7.6 row gone, the policy
+  table's "gap slept" column too); the payload column shows spanweave's own
+  state, so `empty`, `redacted`, `truncated` can appear beside `present` /
+  `absent` (§7.5 says so); §7.5 states that a report keeps the layout it
+  was written with until audited again. Committed `audit/` reports not
+  regenerated, as the row says.
+- 2026-10-14: B7-Z1 done (`184b70d`), CI 38485886518 green on all seven
+  jobs. F1 per report (L1 again); L3, S3, S7, S9 again; S14 (PROMPT spans
+  become two `unknown` `ChatPromptTemplate` nodes) and S15 (the row's
+  points) new; counts spanweave-live 4, spanweave 15, agentgolden 0. One
+  trace of 31 records per capture, 30 explicit parent edges, no
+  `orphan_parent` at end of input; depth 8 edges to five `fx_rate` tool
+  nodes under `_fetch_rates`. Parent-before-child holds nowhere: every
+  child's record precedes its parent's (30 of 30), the root is the last
+  record of the last body. Ordering was observed beside the audit (records
+  fed one by one to a pinned `spanweave.Builder`; command in S15), as were
+  `serve`'s written graphs (`--quiet 0` first generation: 6
+  `orphan_parent`) — the report does not show which record a node came
+  from; marked in PROBES.md. Row premise wrong: `summarize` is a `chain`
+  node (depth 4, child of `categorize`) whose LLM child is `ChatOpenAI`,
+  off the `fx_rate` path — row corrected. PROBES.md's "re-running
+  reproduces the committed reports" corrected: since B6b, Z3/Z4/Z5's
+  committed reports keep the old layout until B8. Z1's project manifest
+  names no repository, so ROADMAP's Repository cell is "—". Run 5 done.
+- 2026-10-14: run 5 confirmed; Z2 and Z6 captured by the operator (Z6's
+  real run improvised past its script — recorded as its own fact); B6c
+  added so the final reports name the record; run 6 is the close.
+- 2026-10-14: B6c done (`4b57f18`), CI 38491811516 green on all seven
+  jobs. Body and Record sit after Node; both read *absent* when spanweave
+  does not place the node's record. They come from spanweave's
+  `Node.raw.line_number` (public, in memory only, not serialized — SPEC
+  §7.3 says so). Row premise: `tests/fixtures/capture` has one body, so
+  the two-body test uses the committed Z4 real capture; red on the parent
+  (5 failed), mutation (feed position for index) caught.
+- 2026-10-14: B7-Z2 done (`aebff51`), CI 38492770732 green on all seven
+  jobs. F1 per report (L1 again); L3, S3, S7, S9 again; S16 (the three
+  tool calls' order), S17 (the LLM streams), S18 (`--quiet 0` partial
+  graphs: sibling start-time edges join orphans whose stated parents
+  differ — to establish against spanweave SPEC §4.3) new; counts
+  spanweave-live 4, spanweave 18, agentgolden 0. One trace of 23 records
+  per capture, 22 parent and 14 temporal edges. Row premises wrong, row
+  corrected: the `acall` nodes are not siblings — each is the only child
+  of its own `call_tool` chain, the chains are siblings under the root;
+  they start A,B,C and end B,C,A, records arrive in end order, temporal
+  edges order the `call_tool` parents and touch no `acall`. The two
+  `astream_chat` per step are nested, beside a third `llm` node
+  (`_prepare_chat_with_tools`); each inner stream's first-token event is
+  stamped after its span ended. `unpaired_call` ×3 sits on the first
+  step's inner `astream_chat`; tool records carry no call id, so nothing
+  pairs (spanweave SPEC §4.4). Root record last of the last body.
+- 2026-10-14: B7-Z6 done (`13883dd`), CI 38493651797 green on all seven
+  jobs. F1 per report (L1 again, 11 of 11 real, 1 of 1 recorded); L3, S3,
+  S7, S9, S18 again, S6 in another shape; S19 (task-level nesting), S20
+  (delegation spans), S21 (record order within a body), S22 (real against
+  recorded, two shapes of one crew) new; counts spanweave-live 4,
+  spanweave 22, agentgolden 0. Row premises wrong, row corrected: tasks
+  are `<role>._execute_core` spans directly under the crew (two levels);
+  no model call appears twice — all 14 real and 8 recorded `llm` nodes are
+  the OpenAI instrumentor's. Delegation spans are `tool` nodes, each with
+  one `ChatCompletion` child; no `agent` node stands for the coworker.
+  Records carry `graph.node.parent_id` naming the previous agent while the
+  span parent is the crew; spanweave leaves it unmapped (S19, to
+  establish). `empty` payload state appears for the first time
+  (`list_commits.run` inputs `{}`). Z2's and Z6's Repository cells are
+  "—"; B8 fills them from the local checkouts (`~/git/crew-of-three` at
+  `78adcaf`). B8 is `todo`.

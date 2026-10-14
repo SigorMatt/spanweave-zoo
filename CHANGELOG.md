@@ -4,6 +4,54 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B8 — series 2 closes
+
+All twelve captures audited again with one audit, `PROBES.md` consolidated,
+and the series' plan folded into `TASKS.md` and deleted. No code changed (one
+test docstring's citation moved from `WORKPLAN.md` to `TASKS.md`), no
+`SPEC.md` section touched, no capture touched (`make verify` green), so no test
+red on a parent is owed.
+
+- **Reports:** `zoo audit` on the twelve captures under `captures/` (Z1–Z6,
+  real and recorded) with the audit as B6c left it (`4b57f18`), at the
+  `audit` extra's pins (unchanged); the twelve `audit/*.md` replaced in place.
+  Findings per report unchanged: Z4 3 (spanweave-live 2, spanweave 1), every
+  other 1 (spanweave-live: every `raw/` body answered 415). Two runs of all
+  twelve, normalised for the `listening` ports and the clocks of `completed`
+  and `late_arrival` events, are identical; Z2's and Z6's equal the reports
+  B7-Z2 and B7-Z6 committed. Z1, Z3, Z4 and Z5 differ from their old reports
+  only in the layout B6b and B6c gave the audit (the node table's new
+  columns; no `--timing` on the policy runs) — every `serve` event the same.
+- **`PROBES.md`:** one list across Z1–Z6, by owner — spanweave-live 4 (L1–L4),
+  spanweave 22 (S1–S22), agentgolden 0 — each probe with all its captures, a
+  command, observed, and expected or *to establish*; a captures table; the
+  "seen again" sections merged into the first occurrence. Answered from the
+  reports' node tables, where they were *to establish* or read beside the
+  audit: S6 (Z3's 50 `llm` nodes are 25 `generation` nodes each with one
+  `ChatCompletion` child), S8 (the 18 nodes are both nodes of the last nine
+  pairs), S10 (the nine model-less nodes are those `generation` nodes, no
+  unmapped key naming a model), S11 (the two absent outputs and the two
+  `<record>.events` are the failed `http_get` nodes'), S14/S15 (body and
+  record per node; every child's record before its parent's in every
+  capture, 350 edges), L3 (the root the last record of the last body, in
+  Z3, Z1, Z2 and Z6), and S21 seen in Z3 too. S2 and S12 stay open: the
+  table gives no id for a parent absent from the graph.
+- **`ROADMAP.md`:** the six rows complete — repository and sha from each
+  local checkout, contract version from the capture's project manifest,
+  captures commit, audited "series 2 (B8; audit code `4b57f18`)"; the
+  checklist's never-run-manifest step; Z6's two operating notes; the threads
+  section now series 3's.
+- **`TASKS.md`:** series 2's registry B0–B8, the reviews' dispositions
+  (Qodo's twelve items with their commits; Qodo's wire-level-proxy
+  alternative declined), threads for series 3, and `WORKPLAN.md` §3 and §4
+  folded verbatim.
+- **`reviews/`:** Qodo's PR summary of PR #1 (comment `6127869987`) archived
+  byte for byte as `reviews/QODO-SUMMARY-2026-10-12.md`; `SHA256SUMS` 27
+  files, `sha256sum -c` green.
+- **`CLAUDE.md`, `CONTRIBUTING.md`, `OPEN_QUESTIONS.md`:** read true with no
+  plan open; each closed series' plan is in git (`22be077`, `1ed70a1`).
+- **`WORKPLAN.md`** deleted.
+
 ## B7-Z6 — Z6 (`crew-of-three`) audited
 
 `zoo audit` on `captures/z6/2026-10-14-real` and `captures/z6/2026-10-14-recorded`

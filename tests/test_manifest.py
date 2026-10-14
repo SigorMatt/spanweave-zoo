@@ -703,7 +703,7 @@ def test_sixteen_hundred_bodies_cost_the_same_each(tmp_path):
     written to it -- and the cost of body 1,600 must EQUAL the cost of body 1.
 
     A count, not a clock: CPU time on the macOS runner put the last hundred
-    bodies at 2.6 times the first with no code change (`WORKPLAN.md` §3, B2b),
+    bodies at 2.6 times the first with no code change (`TASKS.md`, B2b),
     and a wall clock did worse (B2a). The count cannot be noisy, and it catches
     what the clock was there to catch: a manifest rewritten per POST writes
     more octets every body, an O(n) rescan of the journal reads more, and a
