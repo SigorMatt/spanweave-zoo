@@ -4,6 +4,37 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B7-Z2 — Z2 (`fan-out-researcher`) audited
+
+`zoo audit` on `captures/z2/2026-10-14-real` and `captures/z2/2026-10-14-recorded`
+with B6c's audit (`4b57f18`), at the `audit` extra's pins (unchanged). No
+`SPEC.md` section touched, no code or test changed, no capture touched
+(`make verify` green), so no test red on a parent is owed.
+
+- **Reports:** `audit/z2-2026-10-14-real.md` and `audit/z2-2026-10-14-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each, the first
+  reports with B6c's Body and Record columns. One finding each: every `raw/`
+  body answered 415 (spanweave-live). A second run differs only in the
+  `listening` ports and the clock readings of `completed` and `late_arrival`
+  events.
+- **Graphs:** one trace per capture, 23 records (`chain` 14, `llm` 6, `tool`
+  3), 22 explicit `parent` edges, 14 derived `temporal` edges, no
+  `orphan_parent`; live = batch = incremental (186,168 bytes real, 172,483
+  recorded); every record claimed by `openinference`; step 5 clean (23
+  steps). Real: the root's record is the last of the last of three bodies;
+  `--quiet 0` completes three times, `--root-grace 0` once by `RootEnded`.
+- **`PROBES.md`:** L1, L3, S3, S7 and S9 seen again in Z2; new S16 (the three
+  `FunctionTool.acall` nodes are not siblings — each under its own
+  `call_tool` chain; they start in one order and end in another, records in
+  end order; `temporal` edges order the `call_tool` parents by start; each
+  parent ends just after its `acall`, the root last), S17 (two
+  `astream_chat` `llm` nodes per step, the inner nested in the outer, beside
+  `_prepare_chat_with_tools`; each inner's first-token event after its span's
+  end) and S18 (in `--quiet 0`'s generation graphs, `sibling start_time
+  ordering` edges join orphans whose stated parents differ). Observations
+  only. Counts restated: spanweave-live 4, spanweave 18, agentgolden 0.
+- **`ROADMAP.md`:** Z2's row reads audited.
+
 ## B6c — the node table names the record
 
 The maintainer's decision of 2026-10-14 (B6c). `SPEC.md` §7.3, §7.5. No

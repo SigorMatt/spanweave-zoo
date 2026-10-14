@@ -13,7 +13,10 @@ marked *(B7r)*. B7-Z1 adds Z1's, written by the audit as B6b left it
 (`390eb24`: step 4's node table also names each node's span, its parent id,
 its unmapped keys and its payload state): `audit/z1-2026-10-13-real.md` and
 `audit/z1-2026-10-13-recorded.md`; observations from them are marked
-*(B7-Z1)*. This file consolidates them into the probe list each owning
+*(B7-Z1)*. B7-Z2 adds Z2's, written by the audit as B6c left it (`4b57f18`:
+the node table also names the body and the record each node came from):
+`audit/z2-2026-10-14-real.md` and `audit/z2-2026-10-14-recorded.md`;
+observations from them are marked *(B7-Z2)*. This file consolidates them into the probe list each owning
 repository's next series starts from.
 
 A probe is a reproduction, never a fix (`CLAUDE.md`, standing rule 7): a
@@ -25,12 +28,14 @@ The owner is named by `SPEC.md` §7.4's table.
 **Pins.** Every observation below was made at `spanweave@fec7da27af517ad8b58ae3ec57827916aae60674`
 (0.9.1), `spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d` (0.0.1) and
 `agentgolden@aa1847f2a2ad51a95b98ab3e180bc5d211e6b138` (0.1.0), the `audit`
-extra's pins, with the stock Collector 0.162.0 — Z4's, Z3's, Z5's and Z1's
-alike (each report's header records the three shas, pinned and installed).
+extra's pins, with the stock Collector 0.162.0 — Z4's, Z3's, Z5's, Z1's and
+Z2's alike (each report's header records the three shas, pinned and installed).
 The six Z4, Z3 and Z5 reports were all written by one audit, the zoo's at B6a
 (`07285bd`), re-run by B7r with the pins unchanged; Z1's two by the zoo's at
 B6b (`390eb24`), the pins unchanged, so their node table has B6b's columns
-and the other six keep B6a's (`SPEC.md` §7.5) until B8 audits them again; the step-2 policy runs' `--quiet 0` and
+and the other six keep B6a's (`SPEC.md` §7.5) until B8 audits them again;
+Z2's two by the zoo's at B6c (`4b57f18`), the pins unchanged, so theirs also
+has B6c's Body and Record columns; the step-2 policy runs' `--quiet 0` and
 `--root-grace 0` are the audit's values, not the receiver's (each report's
 "Method", `SPEC.md` §7.3).
 
@@ -54,6 +59,10 @@ uv run zoo verify captures/z1/2026-10-13-real
 uv run zoo verify captures/z1/2026-10-13-recorded
 uv run zoo audit captures/z1/2026-10-13-real --out "${TMPDIR:-/tmp}"/zoo-audit
 uv run zoo audit captures/z1/2026-10-13-recorded --out "${TMPDIR:-/tmp}"/zoo-audit
+uv run zoo verify captures/z2/2026-10-14-real
+uv run zoo verify captures/z2/2026-10-14-recorded
+uv run zoo audit captures/z2/2026-10-14-real --out "${TMPDIR:-/tmp}"/zoo-audit
+uv run zoo audit captures/z2/2026-10-14-recorded --out "${TMPDIR:-/tmp}"/zoo-audit
 ```
 
 The reports it writes differ from the committed ones only in the `listening`
@@ -67,14 +76,18 @@ changed as well: from B6b on, step 4's node table has B6b's columns and no
 replay is `--timing`. B7-Z1 checked Z1's two the same way: a second run,
 normalised for the `listening` ports and the `completed` and `late_arrival`
 events, was identical to the committed reports; each takes about a second.
+B7-Z2 checked Z2's two the same way, with the same result; from B6c on, step
+4's node table also has the Body and Record columns.
 Each probe also gives the step's own commands, as the reports print them.
 
-**Count.** spanweave-live: 4 (L1–L2 from Z4, L1 seen again in Z3, Z5 and Z1;
-L3 from Z3, seen again in Z1; L4 from Z5). spanweave: 15 (S1–S5 from Z4, S3
-seen again in Z3, Z5 and Z1; S6–S10 from Z3, S7 seen again in Z5 and Z1, S9
-seen again in Z1; S11–S13 from Z5; S14–S15 from Z1). agentgolden: 0 (step 5's
-`signature` ran clean on every written graph of all eight captures). B7-Z1
-added two probes (S14, S15) and one finding per Z1 report (L1's).
+**Count.** spanweave-live: 4 (L1–L2 from Z4, L1 seen again in Z3, Z5, Z1 and
+Z2; L3 from Z3, seen again in Z1 and Z2; L4 from Z5). spanweave: 18 (S1–S5
+from Z4, S3 seen again in Z3, Z5, Z1 and Z2; S6–S10 from Z3, S7 seen again in
+Z5, Z1 and Z2, S9 seen again in Z1 and Z2; S11–S13 from Z5; S14–S15 from Z1;
+S16–S18 from Z2). agentgolden: 0 (step 5's `signature` ran clean on every
+written graph of all ten captures). B7-Z1 added two probes (S14, S15) and one
+finding per Z1 report (L1's); B7-Z2 added three (S16–S18) and one finding per
+Z2 report (L1's).
 B7r's re-audit added no probe and no finding: each report's findings are the
 ones it had (Z4 3, Z3 1, Z5 1, per report), and its new observations are
 written into the probes they answer. A probe marked *to establish* is an
@@ -120,6 +133,12 @@ asserts nothing.
   `--requests 2`) and `captures/z1/2026-10-13-recorded` (`raw/0001.body`,
   `--requests 1`), the same commands with `z1/2026-10-13-*`. Every body
   answered 415, the same event and detail: 3 of 3 bodies across the two
+  captures.
+- **Seen again in Z2** (B7-Z2, finding F1 in both Z2 reports):
+  `captures/z2/2026-10-14-real` (`raw/0001.body`–`raw/0003.body`,
+  `--requests 3`) and `captures/z2/2026-10-14-recorded` (`raw/0001.body`,
+  `--requests 1`), the same commands with `z2/2026-10-14-*`. Every body
+  answered 415, the same event and detail: 4 of 4 bodies across the two
   captures.
 
 ### L2. A record `serve` routed reaches no graph, and no event says where it went
@@ -259,6 +278,31 @@ asserts nothing.
     and 8 explicit `parent` edges, its one parentless node the root
     `bd08a2148df084bc` `LangGraph`. Neither generation's graph is the
     end-of-input graph (31 nodes, 30 `parent` edges, no `orphan_parent`).
+- **Seen again in Z2** (B7-Z2, step 2 of both Z2 reports): the root's record
+  (`FunctionAgent.run`) is the last record of the last of **three** bodies —
+  `json/0003.json` record 5, the node table's Body and Record columns (B6c).
+  Real, 3 bodies (3, 15 and 5 records), all answered 200: the end-of-input
+  run completes once, at `index` 23, by `Cap(records=0)`; `--quiet 0`
+  completes three times — at `index` 3 (generation 1, 3 records), after a
+  `late_arrival` at `index` 4 at `index` 18 (generation 2, 15 records), and
+  after a `late_arrival` at `index` 19 at `index` 23 (generation 3, 5
+  records) — writing `graphs/666cfbfe677c2822ddc8ee532d0903e6.json`,
+  `.2.json` and `.3.json`; `--root-grace 0` completes once, at `index` 23, by
+  `RootEnded(grace_seconds=0.0)`. `finished` reports `routed: 23` in each
+  run. Recorded, 1 body of 23 records (the root its record 23): one
+  completion at `index` 23 under each of the three — `Cap(records=0)`,
+  `Quiet(seconds=0.0)`, `RootEnded(grace_seconds=0.0)`. Live, batch and
+  incremental equal on both (186,168 bytes real, 172,483 recorded).
+  - **Not in the report, observed beside it (B7-Z2):** the three generation
+    graphs `--quiet 0` writes, replayed by hand into `serve --port 0 --out
+    graphs --quiet 0 --requests 3` (`zoo replay ... --json`), then `spanweave
+    inspect` on each: generation 1 (3 nodes) carries `orphan_parent` × 3 and
+    no `parent` edge; generation 2 (15 nodes) `orphan_parent` × 10 and 5
+    `parent` edges, and the three `unpaired_call` of S9; generation 3 (5
+    nodes, the root among them) no `orphan_parent` and 4 `parent` edges.
+    Every generation carries derived `temporal` edges (2, 9 and 1); S18 says
+    which. None is the end-of-input graph (23 nodes, 22 `parent` edges, 14
+    `temporal`, no `orphan_parent`).
 
 ### L4. A trace with no root: completed by `Quiet(0)` under `--quiet 0`; under `--root-grace 0`, by the end-of-input `Cap(0)`, never by `RootEnded`
 
@@ -400,6 +444,11 @@ asserts nothing.
   milliseconds or nanoseconds. Every value is kept exactly as reported and
   nothing is rescaled`. Whether it is warranted on this input stays *to
   establish*.
+- **Seen again in Z2** (B7-Z2, step 4 of both Z2 reports):
+  `timestamp_unit_suspect` × 23 — once per node, every row — on
+  `graphs/666cfbfe677c2822ddc8ee532d0903e6.json` (real) and
+  `graphs/4af82ff37ed7031332c5112ccdfcdf39.json` (recorded), through
+  `openinference`.
 
 ### S4. `unmapped_attributes` on every span
 
@@ -505,6 +554,26 @@ asserts nothing.
   the two `unknown` `ChatPromptTemplate` nodes (S14), and `metadata` on every
   node. The two captures' tables are the same, key for key and count for
   count.
+- **Seen again in Z2** (B7-Z2, step 4 of both Z2 reports): 23
+  `unmapped_attributes` diagnostics on each graph — one per node — taking
+  12,509 bytes as compact sorted JSON on both captures. Keys: Z4's four
+  `<record>.*` keys (23 each); `llm.invocation_parameters`, `llm.provider`,
+  `llm.system` (6 each, every `llm` node); `llm.tools.0.tool.json_schema` (4,
+  the four `astream_chat` nodes); `tool.description`, `tool.parameters` (3
+  each, the three `FunctionTool.acall` nodes); `<record>.events` (2, S17);
+  `llm.finish_reason`, `llm.input_messages.{0,1}.message.{content,role}`,
+  `llm.output_messages.0.message.role` (2 each, the two inner
+  `astream_chat` nodes); and one each of
+  `llm.input_messages.2.message.{role,contents.0.message_content.{text,type},tool_calls.{0,1,2}.tool_call.{id,function.name,function.arguments}}`,
+  `llm.input_messages.{3,4,5}.message.content`,
+  `llm.output_messages.0.message.content`,
+  `llm.output_messages.0.message.contents.0.message_content.{text,type}` and
+  `llm.output_messages.0.message.tool_calls.{0,1,2}.tool_call.function.arguments`.
+  Named in no earlier report: the four `…contents.0.message_content.{text,type}`
+  keys, and `llm.output_messages.0.message.tool_calls.{1,2}.tool_call.function.arguments`
+  (one `llm` node's output naming three calls, S16). `metadata`, on every
+  node of Z5 and Z1, is on none here. The two captures' tables are the same,
+  key for key and count for count.
 
 ### S8. `<record>.droppedAttributesCount` on 18 nodes; what was dropped is absent
 
@@ -558,6 +627,29 @@ asserts nothing.
   tool nodes are called by a chain, not by an `llm` node, and no diagnostic
   names them. **To establish:** what the `categorize` tool span would have to
   carry for spanweave to pair it, and whether its record carries it.
+- **Seen again in Z2** (B7-Z2, step 4 of both Z2 reports): `unpaired_call` ×
+  3 on each graph, all three on one node — the inner `astream_chat` of the
+  first step (`55d6988ab7075459` real, `da618221c331ae9b` recorded; S17) —
+  whose unmapped keys include
+  `llm.output_messages.0.message.tool_calls.{0,1,2}.tool_call.function.arguments`.
+  Not in the report but in the graph (read beside the audit through the
+  public API, `Graph.diagnostics`): the three messages are `call
+  '<id>' was requested and no span in this input fulfils it; no edge is
+  invented`, sources `{"call_id": ..., "operation": "fetch_policy"}` with ids
+  `chatcmpl-tool-98de6bb2557bb32a`, `chatcmpl-tool-bf153eeb0a4ae1db`,
+  `chatcmpl-tool-bfa245421393e6da` (real) and `call_fetch_policy_0`, `_1`,
+  `_2` (recorded). The graph holds three `tool` nodes whose `operation` is
+  `fetch_policy` (S16); the attribute keys their records carry are
+  `input.mime_type`, `input.value`, `openinference.span.kind`,
+  `output.mime_type`, `output.value`, `tool.description`, `tool.name` and
+  `tool.parameters` — names only; none is a call-id key. No `call_result`
+  edge is in either graph. This is what spanweave's own `SPEC.md` §4.4 states
+  for an unmatched call ("never a fallback to guessing by name or
+  proximity"). The second step's inner `astream_chat` carries the three ids
+  again only as `llm.input_messages.2.message.tool_calls.{0,1,2}.tool_call.id`
+  (unmapped, history) and no `unpaired_call`. **To establish:** whether
+  LlamaIndex's OpenInference instrumentation records the call id anywhere on
+  a `FunctionTool.acall` span — these records do not, by key name.
 
 ### S10. Nine `llm` steps carry no model
 
@@ -782,13 +874,167 @@ asserts nothing.
   its batch graph. What a consumer that completes early sees of this order is
   L3's.
 
+### S16. Z2's fan-out: three `FunctionTool.acall` nodes start in one order and end in another; spanweave orders their parents by start
+
+- **From:** step 4 of both Z2 reports, and the nodes' timestamps and edges
+  read beside the audit. B7-Z2's first and second points of interest,
+  reported as observed; not a finding.
+- **Captures:** `captures/z2/2026-10-14-real` (3 bodies, 3 + 15 + 5
+  records), `captures/z2/2026-10-14-recorded` (1 body, 23 records).
+- **Command:** both `zoo audit` commands above; and for the timestamps and
+  the derived edges, a `spanweave.Builder` fed the records step 3 feeds:
+
+  ```bash
+  uv run python -c '
+  import sys; from pathlib import Path; import spanweave; from spanweave_zoo import audit
+  run = Path(sys.argv[1]); files = sorted(f"json/{p.name}" for p in (run / "json").glob("[0-9][0-9][0-9][0-9].json"))
+  for part in audit.reread(run, files).partitions:
+      b = spanweave.Builder()
+      for rec in part.feed: b.feed(rec)
+      g = b.graph(); t0 = min(n.started_at for n in g.nodes())
+      for n in sorted(g.nodes(), key=lambda n: n.started_at):
+          print(n.id, part.origins[n.raw.line_number - 1], n.name, n.kind.value, n.started_at - t0, n.ended_at - t0, g.parents(n.id, spanweave.EdgeKind.PARENT))
+      for e in g.edges():
+          if e.kind != spanweave.EdgeKind.PARENT: print(e.kind.value, e.warrant.value, e.basis, e.src, "->", e.dst)
+  ' captures/z2/2026-10-14-real
+  ```
+
+  (Times in ns from the root's start; the audit's report carries none.)
+- **Observed — the row's premise:** the three `FunctionTool.acall` nodes are
+  **not siblings** in either graph. Each is the only child of its own
+  `BaseWorkflowAgent.call_tool` `chain` node; the three `call_tool` nodes are
+  the siblings, children of the root `FunctionAgent.run`, beside the
+  `run_agent_step`, `parse_agent_output`, `aggregate_tool_results` and
+  `setup_agent` chains. The three `tool` nodes' `operation` is
+  `fetch_policy`; step 5 names three `tool:fetch_policy` steps.
+- **Observed — start and end order (real):** by start, `2f42891bc379dbb4`
+  (15.057 s), `1d1e1964ed3f7c4e` (15.060 s), `20788a74b1c43ece` (15.062 s);
+  by end, `1d1e1964ed3f7c4e` (15.162 s), `20788a74b1c43ece` (15.264 s),
+  `2f42891bc379dbb4` (15.360 s) — the first started is the last to end
+  (about 0.10, 0.20 and 0.30 s long). Their records are `json/0002.json`
+  records 11, 5 and 8, in start order: the exporter sent them in end order.
+  Recorded: by start `dbe920d1658b385c`, `253264b8d31b6e8d`,
+  `4a08209acab845ee`; by end `253264b8d31b6e8d`, `4a08209acab845ee`,
+  `dbe920d1658b385c`; records 14, 8 and 11 of `json/0001.json` — the same
+  shape. In both captures the order of the records fed is the order of the
+  spans' ends, all 23 of them, and every child's record precedes its
+  parent's (22 of 22 `parent` edges).
+- **Observed — how spanweave orders them:** 14 derived `temporal` edges per
+  graph, every one `sibling start_time ordering`, each between two children
+  of one parent (spanweave's `SPEC.md` §4.3). None touches a
+  `FunctionTool.acall` node (each has no sibling). Among the root's
+  children the chain runs `parse_agent_output` → `call_tool`
+  (`0b76f56ee6e637fb`, parent of the first-started `acall`) →
+  `call_tool` (`6610971780590a14`) → `call_tool` (`00889eb3593de58c`) →
+  `aggregate_tool_results` × 3 → `setup_agent` → `run_agent_step` →
+  `parse_agent_output` (real; the recorded chain is the same by name): start
+  order, not end order and not record order. The edge `00889eb3593de58c` →
+  `a6dd7bd6e5d950e6` (`aggregate_tool_results`) joins a `call_tool` still
+  running when the `aggregate_tool_results` started (15.264 s end, 15.163 s
+  start) — an order, not a precedence, as §4.3 says. `unpaired_call` × 3:
+  the three calls the first step's model requested name no span (S9).
+- **Observed — the parent that ends after them:** each `call_tool` ends after
+  its own `acall`, by 0.385, 0.289 and 0.281 ms (real; 0.323, 0.335 and
+  0.501 ms recorded), and its record follows that `acall`'s directly (records
+  5→6, 8→9, 11→12 real; 8→9, 11→12, 14→15 recorded). Their common parent, the
+  root `FunctionAgent.run`, ends last of all 23 spans (20.941 s real, 1.140 s
+  recorded) and its record is the last record fed (`json/0003.json` record 5
+  real, `json/0001.json` record 23 recorded; L3). The first step's
+  `run_agent_step` ends (15.053 s real) before any `acall` starts; it is not
+  their parent.
+- **To establish:** nothing for spanweave from the order alone: child-first
+  records in end order rebuilt every `parent` edge, and incremental equals
+  batch. Whether the three tool nodes could be paired with their calls is
+  S9's.
+
+### S17. Two `astream_chat` `llm` nodes per agent step, one nested in the other, and a third `llm` node beside them
+
+- **From:** steps 4 and 5 of both Z2 reports, and timestamps read beside the
+  audit (S16's command). B7-Z2's third point of interest, reported as
+  observed; not a finding.
+- **Captures and command:** as S16.
+- **Observed:** 6 `llm` nodes per graph, 3 under each of the two
+  `BaseWorkflowAgent.run_agent_step` chains: `OpenAILike._prepare_chat_with_tools`
+  and `OpenAILike.astream_chat` (the **outer**), siblings, joined by one
+  `temporal` edge; and a second `OpenAILike.astream_chat` (the **inner**),
+  the outer's only child. The two streams are nested, not side by side. All
+  six carry the model (`Qwen/Qwen3-235B-A22B-Instruct-2507` real,
+  `stub-model` recorded), status `ok`; step 5 names three consecutive `llm`
+  steps per agent step. The inner's record precedes the outer's in the feed
+  (e.g. real `json/0002.json` records 1 and 2).
+  - Outer (`da6c5422d132ace1`, `659be38850f33552` real): outputs `absent`,
+    no span events, unmapped keys the three `llm.*` of every `llm` node and
+    `llm.tools.0.tool.json_schema`.
+  - Inner (`55d6988ab7075459`, `db1c06636eb889b0` real; `da618221c331ae9b`,
+    `72dca99b6ea6d9b6` recorded): outputs `present`, the input and output
+    message keys (S7), `<record>.events` — one span event each, `First Token
+    Stream Event` — and, on the first step's, the three `unpaired_call` (S9).
+  - The streams' spans are short beside their step: real, the first step's
+    inner spans 0.214–0.266 s and its `run_agent_step` 0.209–15.053 s; the
+    second's 15.369–15.370 s within 15.366–20.936 s. Each inner node's
+    `First Token Stream Event` `timeUnixNano` falls **after** that span's
+    own end: 6.887 s (real, step 1; ended 0.266 s) and 15.855 s (step 2;
+    ended 15.370 s); recorded 0.805 s (ended 0.254 s) and 1.130 s (ended
+    1.124 s). spanweave keeps the event as the record carries it (an
+    unmapped `<record>.events`, the node table's Span events block).
+- **To establish:** whether the span intervals the instrumentation reports
+  for a stream cover the stream at all — the timestamps are the exporter's,
+  and spanweave neither checks nor rescales them; and whether an `llm` node
+  wrapping another `llm` node of the same call is a shape the `openinference`
+  adapter is meant to say anything about.
+
+### S18. A partial graph orders orphans whose stated parents differ
+
+- **From:** the generation graphs `serve --quiet 0` writes for the real Z2
+  capture, read beside the audit (B7-Z2; L3's "seen again in Z2"). Step 3
+  compares the end-of-input graph only, so the report does not show it.
+- **Capture:** `captures/z2/2026-10-14-real`.
+- **Command:**
+
+  ```bash
+  uv run spanweave-live serve --port <port> --out graphs --quiet 0 --requests 3
+  uv run zoo replay captures/z2/2026-10-14-real --to http://127.0.0.1:<port> --json
+  uv run python -c '
+  import json, sys
+  d = json.load(open(sys.argv[1])); name = {n["id"]: n["name"] for n in d["nodes"]}
+  stated = {x["node_id"]: x["source"] for x in d["diagnostics"] if x["code"] == "orphan_parent"}
+  for e in d["edges"]:
+      if e["kind"] == "temporal": print(e["src"], name[e["src"]], stated.get(e["src"]), "->", e["dst"], name[e["dst"]], stated.get(e["dst"]), e["basis"])
+  ' graphs/666cfbfe677c2822ddc8ee532d0903e6.json
+  ```
+
+  (`.2.json` for generation 2.)
+- **Observed:** generation 1 (3 nodes, no `parent` edge, `orphan_parent` ×
+  3) has two `temporal` edges, basis `sibling start_time ordering`:
+  `c53d458dde4e4a12` `init_run` → `315ed06c6c80d472` `setup_agent` (both
+  stating parent `86a464c4b18af821`, the root), and `315ed06c6c80d472`
+  `setup_agent` → `013c6a9b437679a2` `_prepare_chat_with_tools`, whose
+  record states parent `539a254a824d5e2a` (`run_agent_step`, not in that
+  input). Generation 2 (15 nodes, `orphan_parent` × 10) has 9; one of them,
+  `c617d3f115e8801c` `setup_agent` (stating the root) →
+  `716ca47344fbdff2` `_prepare_chat_with_tools` (stating
+  `727933145969a7fe`, the second `run_agent_step`), again joins nodes whose
+  stated parents differ; the other 8 join nodes that both state the root. Neither cross-parent edge is in the end-of-input
+  graph, where the two `_prepare_chat_with_tools` nodes are ordered only
+  against their own siblings.
+- **Expected (the owner's spec, at `fec7da2`):** spanweave's `SPEC.md` §4.3
+  — "nodes with no parent are siblings of each other at trace root". The
+  observation agrees with it if a node whose stated parent is absent counts
+  as having no parent.
+- **To establish:** whether it does — whether `orphan_parent` nodes with
+  different stated parents are meant to form one sibling group — and what
+  a consumer of an early completion (L3) is to make of an order the
+  complete graph does not assert. Not looked for in earlier captures'
+  generation graphs.
+
 ---
 
 ## agentgolden
 
 None. Step 5 (`agentgolden.signature.signature(graph)`, no rules) returned
 four `llm` steps on each written graph of Z4's, 102 steps on each of Z3's,
-4 steps on each of Z5's and 31 on each of Z1's, and raised on none — again in
-all six re-audited reports (B7r), and in both Z1 reports (B7-Z1). S10's `llm:-` steps were *to establish* as possibly
+4 steps on each of Z5's, 31 on each of Z1's and 23 on each of Z2's, and
+raised on none — again in all six re-audited reports (B7r), in both Z1
+reports (B7-Z1) and in both Z2 reports (B7-Z2). S10's `llm:-` steps were *to establish* as possibly
 agentgolden's; the re-audit's node table shows the graph itself carries no
 model on those nine nodes, so the signature reads it as it is.
