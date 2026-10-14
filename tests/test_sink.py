@@ -920,6 +920,92 @@ WELL_FORMED = (
 ) + PROTOBUF
 
 
+def test_a_post_accepted_before_its_head_is_read_is_named_when_refused(
+    tmp_path, monkeypatch, capsys
+):
+    # Qodo 2 on PR #2, `SPEC.md` §3.7, §5.5. A POST was counted as under way
+    # only once `handling()` began -- after its head was read. A connection
+    # accepted before the listener closed, whose handler had not reached
+    # `handling()` while `settle()` and `close()` ran, was in neither: the
+    # wait did not wait for it, `close()` did not name it, and its body was
+    # then refused with nothing in the sealed manifest saying a POST was
+    # lost. Now a POST counts from the handler's `setup()`, before a byte of
+    # its head is read: the wait waits for it, and when the bound runs out it
+    # is the one problem, `a POST not yet recorded`. The handler is held just
+    # after `setup()` -- accepted, its head not yet read -- so nothing sleeps
+    # but the sink's own bound, shortened.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    accepted = threading.Event()
+    release = threading.Event()
+    servers: list[Any] = []
+    bound = threading.Event()
+
+    real_setup = sink._Handler.setup
+
+    def held_setup(self: Any) -> None:
+        real_setup(self)
+        accepted.set()
+        assert release.wait(TIMEOUT), "the test never released the handler"
+
+    real_make_server = sink.make_server
+
+    def make_server(*args: Any, **kwargs: Any) -> Any:
+        server = real_make_server(*args, **kwargs)
+        servers.append(server)
+        bound.set()
+        return server
+
+    monkeypatch.setattr(sink._Handler, "setup", held_setup)
+    monkeypatch.setattr(sink, "make_server", make_server)
+    monkeypatch.setattr(capture, "FLUSH_WAIT", 0.2)
+
+    answers: list[bytes] = []
+
+    def client() -> None:
+        assert bound.wait(TIMEOUT), "the sink never bound"
+        port = servers[0].server_address[1]
+        head = (
+            b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\nConnection: close\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(PROTOBUF)
+        )
+        try:
+            answers.append(send_octets(port, head, PROTOBUF))
+        except OSError as error:  # a reset is no answer too
+            answers.append(repr(error).encode())
+
+    def stopper() -> None:
+        # The signal handler's act, once the connection has been accepted.
+        assert accepted.wait(TIMEOUT), "the sink never accepted the connection"
+        servers[0].shutdown()
+
+    threads = [threading.Thread(target=t, daemon=True) for t in (client, stopper)]
+    for thread in threads:
+        thread.start()
+    try:
+        status = cli.run_sink("127.0.0.1", 0, raw)
+        sealed = snapshot(raw.parent)
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=TIMEOUT)
+    assert not any(thread.is_alive() for thread in threads)
+
+    # Released after the seal, the handler read its head, was refused, and
+    # wrote and answered nothing.
+    assert answers == [b""], answers
+    assert snapshot(raw.parent) == sealed, "something was written after the seal"
+    assert not (raw / "0001.body").exists()
+
+    document = manifest.read(raw.parent)
+    assert manifest.ENDED_AT in document
+    problems = document.get(manifest.PROBLEMS, [])
+    late = [p for p in problems if sink.STILL_HANDLED in p]
+    assert late == [f"{sink.NOT_YET_RECORDED}: {sink.STILL_HANDLED}"], document
+    assert f"  ! {late[0]}" in capsys.readouterr().out
+    assert status == 1
+    assert cli.verify(raw.parent) == 1
+
+
 def statuses(answer: bytes) -> list[bytes]:
     """Every status line in what came back, in order."""
     return re.findall(rb"HTTP/1\.[01] \d{3}", answer)
@@ -1120,6 +1206,31 @@ def test_identical_lengths_are_one_length_and_keep_the_connection(tmp_path, fram
     assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
     assert answer.count(b"Connection: close") == 0
     assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]
+
+
+def test_a_length_too_long_to_convert_is_unframed(tmp_path):
+    # Qodo 1 on PR #2, `SPEC.md` §3.7: an all-digit `Content-Length` longer
+    # than Python's int-string conversion limit passes the digits check, and
+    # `int()` then raised `ValueError` out of the handler -- no body recorded,
+    # no answer, a traceback. It is a value the sink cannot read as a length,
+    # so it is unframed as any non-length is: a zero-byte body, the answer,
+    # `Connection: close`. The limit is pinned to the interpreter's default
+    # for the test, so `PYTHONINTMAXSTRDIGITS=0` cannot make it vacuous.
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    try:
+        raw = tmp_path / "run" / "raw"
+        framing = b"Content-Length: " + b"9" * 4301 + b"\r\n"
+        head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+        with running(raw) as (_, port):
+            answer = send_octets(port, head + b"hello" + LAST)
+    finally:
+        sys.set_int_max_str_digits(previous)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
 
 
 # --- B5c: a folded `Content-Length` is unframeable ---------------------------

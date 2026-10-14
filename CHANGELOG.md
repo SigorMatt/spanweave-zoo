@@ -4,6 +4,30 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## decisions-zoo-2026-10-14b, commit 1 — Qodo 1 and Qodo 2 on PR #2
+
+The sink's two findings from Qodo's review of PR #2, as
+`patches/decisions-zoo-2026-10-14b.md` accepted them. `SPEC.md` §3.3, §3.7
+and §5.5 touched. No capture touched (`make verify` green), no committed
+report regenerated.
+
+- **Qodo 1:** an all-digit `Content-Length` longer than Python's int-string
+  conversion limit (4300 digits by default) passed the digits check and
+  `int()` raised `ValueError` out of the handler: nothing recorded, nothing
+  answered. `declared_length` now catches it and declares no length, so the
+  request is unframed as any non-length is — a zero-byte body, the answer,
+  `Connection: close` (§3.7's table gains the row). Test:
+  `test_a_length_too_long_to_convert_is_unframed`.
+- **Qodo 2:** a POST was counted as under way only from `handling()`, after
+  its head was read, so a connection accepted just before the listener
+  closed could miss both `settle()`'s wait and `close()`'s snapshot and then
+  be refused with nothing in the sealed manifest. The handler now counts it
+  from `setup()` — the accept, before a byte of the head — until it is
+  answered, refused, or its connection ends; a further POST on a kept-alive
+  connection still counts from its head (§5.5). One refused that way is the
+  `a POST not yet recorded` problem. Test:
+  `test_a_post_accepted_before_its_head_is_read_is_named_when_refused`.
+
 ## B8 — series 2 closes
 
 All twelve captures audited again with one audit, `PROBES.md` consolidated,

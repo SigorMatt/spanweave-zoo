@@ -147,7 +147,10 @@ def declared_length(values: list[str]) -> int | None:
     (`_OWS`, as §2.3's split removes it), must be one or more ASCII digits;
     repeats count as one length only when they are all equal. No value, a
     value that is not digits, or two that differ declare nothing, and the
-    request is unframed. Pure: the values decide it, never the body.
+    request is unframed. So do digits too many for `int()` to convert -- past
+    the interpreter's int-string conversion limit it raises `ValueError`
+    (Qodo 1 on PR #2): a value the sink cannot read as a length is no length.
+    Pure: the values decide it, never the body.
     """
     distinct = {value.strip(_OWS) for value in values}
     if len(distinct) != 1:
@@ -155,7 +158,10 @@ def declared_length(values: list[str]) -> int | None:
     (value,) = distinct
     if not value or not set(value) <= _DIGITS:
         return None
-    return int(value)
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def folds_a_length(head: bytes) -> bool:
@@ -387,20 +393,47 @@ class Recorder:
         if create_directory:
             self.raw.mkdir(parents=True, exist_ok=True)
 
-    @contextmanager
-    def handling(self) -> Iterator[None]:
-        """Count one POST as under way for as long as the block runs."""
+    def admit(self) -> None:
+        """Count the calling handler's POST as under way, if it is not yet.
+
+        Called from a handler's `setup()`, once its connection is accepted and
+        before a byte of the head is read (`SPEC.md` §5.5; Qodo 2 on PR #2):
+        a POST accepted just before the listener closed is then waited for by
+        `settle()` and, if the wait gives up on it, named by `close()` --
+        never refused with nothing in the capture to say a POST was lost.
+        """
         handler = threading.get_ident()
         with self._quiet:
-            self._busy += 1
-            self._open[handler] = None
+            if handler not in self._open:
+                self._busy += 1
+                self._open[handler] = None
+
+    def release(self) -> None:
+        """The calling handler's POST is over: answered, refused, or none came.
+
+        Idempotent, so every way out of a handler can call it.
+        """
+        handler = threading.get_ident()
+        with self._quiet:
+            if handler in self._open:
+                self._busy -= 1
+                del self._open[handler]
+                self._quiet.notify_all()
+
+    @contextmanager
+    def handling(self) -> Iterator[None]:
+        """Count one POST as under way for as long as the block runs.
+
+        The first POST on a connection is already counted, from `admit()`; a
+        further one on a kept-alive connection is counted from here, once its
+        head has been read -- until then the connection is idle, and an idle
+        connection is not a POST (`SPEC.md` §5.5).
+        """
+        self.admit()
         try:
             yield
         finally:
-            with self._quiet:
-                self._busy -= 1
-                self._open.pop(handler, None)
-                self._quiet.notify_all()
+            self.release()
 
     def settle(self, timeout: float) -> bool:
         """Wait, at most `timeout` seconds, for every POST under way to finish.
@@ -420,8 +453,10 @@ class Recorder:
         refused and recorded nowhere -- so a handler the waits gave up on can
         no longer append to a journal the sealed manifest has already hashed.
 
-        Returns one line per POST still being handled at the close, naming the
-        body it had recorded, or saying it had recorded none: each is a
+        Returns one line per POST still being handled at the close -- counted
+        from its connection's accept (`admit`), so one whose head had not yet
+        been read is among them -- naming the body it had recorded, or saying
+        it had recorded none: each is a
         `problems` entry, because what that handler had yet to write -- a
         forward's outcome, or the whole body -- is not in the capture.
         """
@@ -627,16 +662,37 @@ class _Handler(BaseHTTPRequestHandler):
     _unframed: bool = False
 
     def setup(self) -> None:
-        """Wrap the request stream before anything reads a byte off it."""
+        """Wrap the request stream before anything reads a byte off it.
+
+        And count this connection's POST as under way from here, its accept,
+        before its head is read (`SPEC.md` §5.5; Qodo 2 on PR #2), so a
+        shutdown that closes the journals before the head arrives names it.
+        """
         super().setup()
         self._stream = _Head(self.rfile)
         self.rfile = self._stream
+        self._recorder.admit()
 
     def handle_one_request(self) -> None:
-        """One request on this connection, so one head (`SPEC.md` §2.3)."""
+        """One request on this connection, so one head (`SPEC.md` §2.3).
+
+        Whatever it was -- a POST, another method, or a connection closed with
+        no request at all -- it is over when this returns, so the count
+        `setup()` began ends here if `do_POST` did not end it already.
+        """
         self._head = b""
         self._stream.begin()
-        super().handle_one_request()
+        try:
+            super().handle_one_request()
+        finally:
+            self._recorder.release()
+
+    def finish(self) -> None:
+        """Close the streams, and end the count if nothing else has."""
+        try:
+            super().finish()
+        finally:
+            self._recorder.release()
 
     def parse_request(self) -> bool:
         """The stdlib's parse, and the octets it was made from, kept both.

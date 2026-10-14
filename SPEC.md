@@ -378,7 +378,10 @@ A POST that reaches a sink after its journals have closed (§5.5) — `zoo
 sink`'s or either of `zoo capture`'s — is not recorded, so it is **not
 answered**: the connection is closed
 with no status, since a `200` there would say "recorded" of a body the
-capture does not hold.
+capture does not hold. A POST on a connection the sink had **accepted** before
+the close — the first on that connection — is counted as under way from that
+accept, before its head is read (§5.5), so the sealed manifest names it as a
+`problems` entry rather than losing it silently (Qodo 2).
 
 ### 3.4 Any other path: `404`, and still recorded
 
@@ -520,7 +523,11 @@ which is not part of a value. What remains must be one or more ASCII
 digits `0`–`9` and nothing else: `+5`, `-3`, `5_0`, `5, 5`, a digit from
 another script, or a `5` with any other whitespace beside it (a vertical tab,
 a no-break space) is not a length, although Python's `int()` reads several
-of them as one. A request carrying **more than one** `Content-Length` declares
+of them as one. Digits too many for the interpreter to convert to an
+integer — Python refuses a string of more than 4300 digits by default — are
+not a length either: the value cannot be read as one, so the request is
+unframed as any non-length is (Qodo 1), never an error out of the handler
+that records nothing and answers nothing. A request carrying **more than one** `Content-Length` declares
 a length only if every value is the same once that whitespace is removed —
 then it is one length — and none if any two differ, whichever comes first.
 
@@ -544,6 +551,7 @@ split alone (B5d) and never by the bytes:
 | present, any value | any, or absent | zero bytes | closed (unframed) |
 | absent | absent | zero bytes | closed (unframed) |
 | absent | not `1*DIGIT` (`five`, `+5`, `5_0`, `-3`, empty, …) | zero bytes | closed (unframed) |
+| absent | `1*DIGIT`, too many digits to convert to an integer | zero bytes | closed (unframed) |
 | absent | repeated, two values differ | zero bytes | closed (unframed) |
 | absent | continued on a folded line (obs-fold) | zero bytes | closed (unframed) |
 | absent | repeated, every value the same | as for that one value | as for that one value |
@@ -575,11 +583,13 @@ sealed (§5.5) before `zoo sink` exits.
 
 It **seals the way `zoo capture` does** (B3a): close, then seal, with no
 exception for the sink alone. Once the loop has returned and the listening
-socket is closed, every POST the sink is still handling is waited for, for at
+socket is closed, every POST the sink has accepted and not yet answered —
+counted from the accept, before its head is read (§5.5) — is waited for, for at
 most the bound `zoo capture` gives its sinks (10 seconds, §4.6); then the
 recorder **closes its journals**, and only then is the manifest assembled.
 A POST still being handled at the close — a client whose body was still
-arriving past the bound — is one `problems` entry naming the body it had
+arriving past the bound, or one accepted whose head the sink had not yet
+read — is one `problems` entry naming the body it had
 recorded or `a POST not yet recorded` (§5.5), printed after the stop line as
 
 ```text
@@ -1476,7 +1486,7 @@ still does.
 | each forward, as it completes (§4.5) | `forwards.jsonl` | one line |
 | the Collector child is seen to have exited (§4.6) | `MANIFEST.json` | one `problems` entry |
 | the run directory is made, before the manifest is labelled (§4.2) | `collector.log` | the Collector's output so far, and then each line as it is written |
-| `zoo capture` stops, after both sinks and the Collector have (§4.6); `zoo sink` stops (§3.7) | `MANIFEST.json` | one `problems` entry per POST still being handled when the journals close (below); then `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
+| `zoo capture` stops, after both sinks and the Collector have (§4.6); `zoo sink` stops (§3.7) | `MANIFEST.json` | one `problems` entry per POST accepted and still being handled when the journals close (below); then `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
 
 The declaration is written **first** so that a run stopped the hard way still
 says what it was. The bodies go to a journal rather than into the document, so
@@ -1511,7 +1521,16 @@ assembly, naming the body it had recorded (`raw/0001.body: still being handled
 when the journals closed; …`), or `a POST not yet recorded` when it had
 recorded none: what that handler had yet to write is not in the capture, and
 the capture says so rather than letting a late line break every digest after
-the fact. So a capture whose forward outlived the shutdown is sealed, every
+the fact. **A POST is being handled from the moment its connection is
+accepted**, not from when its head has been read (Qodo 2): the handler counts
+it in its setup, before a byte of the head arrives, until it is answered,
+refused, or its connection ends without one. A connection accepted just
+before the listener closed is waited for
+like any other, and one the waits gave up on before its head was read is
+that `a POST not yet recorded` entry — never a body refused with nothing in
+the capture to say a POST was lost. A further POST on a kept-alive
+connection is counted from when its head has been read: until then the
+connection is idle, and an idle connection is not a POST. So a capture whose forward outlived the shutdown is sealed, every
 digest holds, and `zoo verify` (§5.6) names the one problem the run recorded.
 
 **A journal line that cannot be read is a problem, not an abort.** The
