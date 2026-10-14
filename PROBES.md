@@ -16,7 +16,10 @@ its unmapped keys and its payload state): `audit/z1-2026-10-13-real.md` and
 *(B7-Z1)*. B7-Z2 adds Z2's, written by the audit as B6c left it (`4b57f18`:
 the node table also names the body and the record each node came from):
 `audit/z2-2026-10-14-real.md` and `audit/z2-2026-10-14-recorded.md`;
-observations from them are marked *(B7-Z2)*. This file consolidates them into the probe list each owning
+observations from them are marked *(B7-Z2)*. B7-Z6 adds Z6's, written by the
+same audit (`4b57f18`): `audit/z6-2026-10-14-real.md` and
+`audit/z6-2026-10-14-recorded.md`; observations from them are marked
+*(B7-Z6)*. This file consolidates them into the probe list each owning
 repository's next series starts from.
 
 A probe is a reproduction, never a fix (`CLAUDE.md`, standing rule 7): a
@@ -28,14 +31,14 @@ The owner is named by `SPEC.md` §7.4's table.
 **Pins.** Every observation below was made at `spanweave@fec7da27af517ad8b58ae3ec57827916aae60674`
 (0.9.1), `spanweave-live@cddc694b8b2a365434c0d97889f6e303e08a0b6d` (0.0.1) and
 `agentgolden@aa1847f2a2ad51a95b98ab3e180bc5d211e6b138` (0.1.0), the `audit`
-extra's pins, with the stock Collector 0.162.0 — Z4's, Z3's, Z5's, Z1's and
-Z2's alike (each report's header records the three shas, pinned and installed).
+extra's pins, with the stock Collector 0.162.0 — Z4's, Z3's, Z5's, Z1's, Z2's
+and Z6's alike (each report's header records the three shas, pinned and installed).
 The six Z4, Z3 and Z5 reports were all written by one audit, the zoo's at B6a
 (`07285bd`), re-run by B7r with the pins unchanged; Z1's two by the zoo's at
 B6b (`390eb24`), the pins unchanged, so their node table has B6b's columns
 and the other six keep B6a's (`SPEC.md` §7.5) until B8 audits them again;
-Z2's two by the zoo's at B6c (`4b57f18`), the pins unchanged, so theirs also
-has B6c's Body and Record columns; the step-2 policy runs' `--quiet 0` and
+Z2's and Z6's four by the zoo's at B6c (`4b57f18`), the pins unchanged, so
+theirs also has B6c's Body and Record columns; the step-2 policy runs' `--quiet 0` and
 `--root-grace 0` are the audit's values, not the receiver's (each report's
 "Method", `SPEC.md` §7.3).
 
@@ -63,6 +66,10 @@ uv run zoo verify captures/z2/2026-10-14-real
 uv run zoo verify captures/z2/2026-10-14-recorded
 uv run zoo audit captures/z2/2026-10-14-real --out "${TMPDIR:-/tmp}"/zoo-audit
 uv run zoo audit captures/z2/2026-10-14-recorded --out "${TMPDIR:-/tmp}"/zoo-audit
+uv run zoo verify captures/z6/2026-10-14-real
+uv run zoo verify captures/z6/2026-10-14-recorded
+uv run zoo audit captures/z6/2026-10-14-real --out "${TMPDIR:-/tmp}"/zoo-audit
+uv run zoo audit captures/z6/2026-10-14-recorded --out "${TMPDIR:-/tmp}"/zoo-audit
 ```
 
 The reports it writes differ from the committed ones only in the `listening`
@@ -77,17 +84,20 @@ replay is `--timing`. B7-Z1 checked Z1's two the same way: a second run,
 normalised for the `listening` ports and the `completed` and `late_arrival`
 events, was identical to the committed reports; each takes about a second.
 B7-Z2 checked Z2's two the same way, with the same result; from B6c on, step
-4's node table also has the Body and Record columns.
+4's node table also has the Body and Record columns. B7-Z6 checked Z6's two
+the same way, with the same result.
 Each probe also gives the step's own commands, as the reports print them.
 
-**Count.** spanweave-live: 4 (L1–L2 from Z4, L1 seen again in Z3, Z5, Z1 and
-Z2; L3 from Z3, seen again in Z1 and Z2; L4 from Z5). spanweave: 18 (S1–S5
-from Z4, S3 seen again in Z3, Z5, Z1 and Z2; S6–S10 from Z3, S7 seen again in
-Z5, Z1 and Z2, S9 seen again in Z1 and Z2; S11–S13 from Z5; S14–S15 from Z1;
-S16–S18 from Z2). agentgolden: 0 (step 5's `signature` ran clean on every
-written graph of all ten captures). B7-Z1 added two probes (S14, S15) and one
-finding per Z1 report (L1's); B7-Z2 added three (S16–S18) and one finding per
-Z2 report (L1's).
+**Count.** spanweave-live: 4 (L1–L2 from Z4, L1 seen again in Z3, Z5, Z1, Z2
+and Z6; L3 from Z3, seen again in Z1, Z2 and Z6; L4 from Z5). spanweave: 22
+(S1–S5 from Z4, S3 seen again in Z3, Z5, Z1, Z2 and Z6; S6–S10 from Z3, S6
+seen again in Z6, S7 seen again in Z5, Z1, Z2 and Z6, S9 seen again in Z1, Z2
+and Z6; S11–S13 from Z5; S14–S15 from Z1; S16–S18 from Z2, S18 seen again in
+Z6; S19–S22 from Z6). agentgolden: 0 (step 5's `signature` ran clean on every
+written graph of all twelve captures). B7-Z1 added two probes (S14, S15) and
+one finding per Z1 report (L1's); B7-Z2 added three (S16–S18) and one finding
+per Z2 report (L1's); B7-Z6 added four (S19–S22) and one finding per Z6 report
+(L1's).
 B7r's re-audit added no probe and no finding: each report's findings are the
 ones it had (Z4 3, Z3 1, Z5 1, per report), and its new observations are
 written into the probes they answer. A probe marked *to establish* is an
@@ -139,6 +149,12 @@ asserts nothing.
   `--requests 3`) and `captures/z2/2026-10-14-recorded` (`raw/0001.body`,
   `--requests 1`), the same commands with `z2/2026-10-14-*`. Every body
   answered 415, the same event and detail: 4 of 4 bodies across the two
+  captures.
+- **Seen again in Z6** (B7-Z6, finding F1 in both Z6 reports):
+  `captures/z6/2026-10-14-real` (`raw/0001.body`–`raw/0011.body`,
+  `--requests 11`) and `captures/z6/2026-10-14-recorded` (`raw/0001.body`,
+  `--requests 1`), the same commands with `z6/2026-10-14-*`. Every body
+  answered 415, the same event and detail: 12 of 12 bodies across the two
   captures.
 
 ### L2. A record `serve` routed reaches no graph, and no event says where it went
@@ -303,6 +319,36 @@ asserts nothing.
     Every generation carries derived `temporal` edges (2, 9 and 1); S18 says
     which. None is the end-of-input graph (23 nodes, 22 `parent` edges, 14
     `temporal`, no `orphan_parent`).
+- **Seen again in Z6** (B7-Z6, step 2 of both Z6 reports): the root's record
+  (`release-notes.kickoff`) is the last record of the last of **eleven**
+  bodies — `json/0011.json` record 3, the node table's Body and Record
+  columns. Real, 11 bodies (2, 2, 4, 1, 2, 2, 3, 3, 2, 2 and 3 records), all
+  answered 200: the end-of-input run completes once, at `index` 26, by
+  `Cap(records=0)`; `--quiet 0` completes **eleven** times, once per body —
+  at `index` 2, 4, 8, 9, 11, 13, 16, 19, 21, 23 and 26, generations 1 to 11,
+  each after the first opened by a `late_arrival` at the body's first record
+  (`index` 3, 5, 9, 10, 12, 14, 17, 20, 22, 24; generation 4's one-record
+  body has its `late_arrival` and its `completed` at the same `index`, 9) —
+  writing `graphs/a5e74188438ca56d4f12f94d2651b49b.json` and `.2.json` to
+  `.11.json`; `--root-grace 0` completes once, at `index` 26, by
+  `RootEnded(grace_seconds=0.0)`. `finished` reports `routed: 26` in each
+  run. Recorded, 1 body of 16 records (the root its record 16): one
+  completion at `index` 16 under each of the three — `Cap(records=0)`,
+  `Quiet(seconds=0.0)`, `RootEnded(grace_seconds=0.0)`. Live, batch and
+  incremental equal on both (1,304,658 bytes real, 305,886 recorded).
+  - **Not in the report, observed beside it (B7-Z6):** the eleven generation
+    graphs `--quiet 0` writes, replayed by hand into `serve --port 0 --out
+    graphs --quiet 0 --requests 11` (`zoo replay ... --json`) and read as
+    JSON (S18's command): generations 1–10 hold 2, 2, 4, 1, 2, 2, 3, 3, 2
+    and 2 nodes and carry `orphan_parent` × 2, 1, 3, 1, 1, 2, 2, 3, 1 and 2
+    with 0, 1, 1, 0, 1, 0, 1, 0, 1 and 0 `parent` edges; generation 11 (3
+    nodes: the root, `Release Notes Reviewer._execute_core` and its last
+    `ChatCompletion`) no `orphan_parent` and 2 `parent` edges. The
+    `unpaired_call` of S9 are spread over generations 1, 3, 4, 6, 7, 8 (2)
+    and 10. Derived `temporal` edges: 1, 0, 2, 0, 0, 1, 1, 2, 0, 1, 0; S18
+    says which one joins orphans whose stated parents differ. None is the
+    end-of-input graph (26 nodes, 25 `parent` edges, 18 `temporal`, no
+    `orphan_parent`).
 
 ### L4. A trace with no root: completed by `Quiet(0)` under `--quiet 0`; under `--root-grace 0`, by the end-of-input `Cap(0)`, never by `RootEnded`
 
@@ -449,6 +495,11 @@ asserts nothing.
   `graphs/666cfbfe677c2822ddc8ee532d0903e6.json` (real) and
   `graphs/4af82ff37ed7031332c5112ccdfcdf39.json` (recorded), through
   `openinference`.
+- **Seen again in Z6** (B7-Z6, step 4 of both Z6 reports):
+  `timestamp_unit_suspect` × 26 (real) and × 16 (recorded) — once per node,
+  every row — on `graphs/a5e74188438ca56d4f12f94d2651b49b.json` and
+  `graphs/8766332238a4971b8dc6ffef5b6fb97c.json`, through `openinference`,
+  on the records of both instrumentation scopes (S6).
 
 ### S4. `unmapped_attributes` on every span
 
@@ -509,6 +560,23 @@ asserts nothing.
   span's name or its parent's id, so whether they are one `generation` and one
   `ChatCompletion` per turn, and whether spanweave relates the two of a pair,
   is still not shown by it.
+- **Seen again in Z6, in another shape** (B7-Z6, steps 4 and 5 of both Z6
+  reports, and the records' scopes read beside the audit — S19's command,
+  printing `Node.raw.source["scope_spans"]["scope"]`): Z6 also runs two
+  instrumentors (`openinference-instrumentation-crewai==1.1.21` and
+  `openinference-instrumentation-openai==0.1.65`, the capture's project
+  manifest), and Z6's brief and the B7-Z6 row expect the same model client
+  "seen through two instrumentors". **The captures do not show a client seen
+  twice.** Every `llm` node — 14 real, 8 recorded, all named
+  `ChatCompletion` — comes from the `openinference.instrumentation.openai`
+  scope (0.1.65); every `chain`, `agent` and `tool` node — 12 real, 8
+  recorded — from `openinference.instrumentation.crewai` (1.1.21), which
+  contributes no `llm` node. No two `llm` nodes' intervals overlap, in
+  either capture; the only adjacent `llm` steps in step 5's signature are a
+  delegation tool's `ChatCompletion` child followed by the delegating
+  agent's next call (S20), and those two have different parents. Every record is claimed by `openinference`, `unknown` 0. Whether
+  the CrewAI instrumentor would emit an `llm` span of its own under another
+  configuration is not shown: the record carries what was exported.
 
 ### S7. `unmapped_attributes` on every node, 363 kB of OpenInference keys
 
@@ -574,6 +642,32 @@ asserts nothing.
   (one `llm` node's output naming three calls, S16). `metadata`, on every
   node of Z5 and Z1, is on none here. The two captures' tables are the same,
   key for key and count for count.
+- **Seen again in Z6** (B7-Z6, step 4 of both Z6 reports): 26 (real) and 16
+  (recorded) `unmapped_attributes` diagnostics — one per node — taking 39,622
+  and 17,128 bytes as compact sorted JSON; 74 distinct keys real, 50
+  recorded, the recorded set a subset of the real one. Keys: Z4's four
+  `<record>.*` keys (every node); `llm.finish_reason`,
+  `llm.input_messages.{0,1}.message.{content,role}`,
+  `llm.invocation_parameters`, `llm.output_messages.0.message.role`,
+  `llm.system` (every `llm` node: 14 real, 8 recorded); the history keys
+  `llm.input_messages.<n>.message.{role,tool_calls.0.tool_call.{id,function.name,function.arguments}}`
+  and `llm.input_messages.<n>.message.{content,name}`, growing with each turn
+  of a task as Z3's do, up to `<n>` = 15 real and 7 recorded;
+  `llm.tools.{0,1,2}.tool.json_schema`; `tool.description` and
+  `tool.parameters` with `tool.cache_function`, `tool.current_usage_count`,
+  `tool.description_updated` and `tool.result_as_answer` (every `tool` node:
+  8 real, 4 recorded); `crew_id`, `crew_key` (the root and the three
+  `_execute_core` nodes), `crew_agents`, `crew_inputs`, `crew_tasks` (the
+  root), `task_id`, `task_key`, `graph.node.id` (the three `_execute_core`
+  nodes) and `graph.node.parent_id` (two of them; S19). Named in no earlier
+  report: `crew_agents`, `crew_id`, `crew_inputs`, `crew_key`, `crew_tasks`,
+  `task_id`, `task_key`, `graph.node.parent_id`, the four `tool.*` keys
+  `cache_function`, `current_usage_count`, `description_updated`,
+  `result_as_answer`, `llm.tools.2.tool.json_schema`, and
+  `llm.input_messages.<n>.message.name` for `<n>` = 5, 7, 9, 11, 13, 15.
+  `metadata` is on no node, nor `<record>.events` (no record carries span
+  events: the node table's Span events column is *absent* on every row of
+  both).
 
 ### S8. `<record>.droppedAttributesCount` on 18 nodes; what was dropped is absent
 
@@ -650,6 +744,22 @@ asserts nothing.
   (unmapped, history) and no `unpaired_call`. **To establish:** whether
   LlamaIndex's OpenInference instrumentation records the call id anywhere on
   a `FunctionTool.acall` span — these records do not, by key name.
+- **Seen again in Z6** (B7-Z6, step 4 of both Z6 reports): `unpaired_call` ×
+  8 (real) and × 4 (recorded), one on each `ChatCompletion` whose unmapped
+  keys include `llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments`
+  — every `llm` node whose model requested a tool, and no other. The graph
+  holds as many `tool` nodes (8 real, 4 recorded) and no `call_result` edge.
+  Not in the report but in the graph (`Graph.diagnostics`, read beside the
+  audit): the sources name the operations `list_commits`, `lint_markdown`
+  (4 real, 2 recorded), `delegate_work_to_coworker` (2 real, 1 recorded) and
+  `ask_question_to_coworker` (1, real) with ids `chatcmpl-tool-…` (real) and
+  `call_<n>_<operation>` (recorded); the `tool` nodes' `tool.name` values
+  are `list_commits`, `lint_markdown`, `Delegate work to coworker` and `Ask
+  question to coworker` — for the two delegation tools not the operation's
+  spelling — and their records carry no key containing `id` (names only).
+  As in Z2, spanweave's §4.4 ("never a fallback to guessing by name or
+  proximity") describes what was observed. **To establish:** whether
+  CrewAI's OpenInference instrumentation records a call id on a tool span.
 
 ### S10. Nine `llm` steps carry no model
 
@@ -1026,6 +1136,165 @@ asserts nothing.
   a consumer of an early completion (L3) is to make of an order the
   complete graph does not assert. Not looked for in earlier captures'
   generation graphs.
+- **Seen again in Z6** (B7-Z6, the generation graphs of L3's "seen again in
+  Z6", S18's command on each): one of the 8 `temporal` edges across the
+  eleven generations joins orphans whose stated parents differ — generation
+  3's `0cc839c55998fd72` `Release Notes Writer._execute_core` (stating
+  `34c04caf3b53b381`, the root `release-notes.kickoff`) →
+  `89e56db8cdd3d86d` `ChatCompletion` (stating `961eb676dd44c052`, the
+  Reviewer's `_execute_core`), basis `sibling start_time ordering`. The
+  other 7 join nodes that state the same parent. The end-of-input graph has
+  no such edge: there the Writer's node is ordered only against the other
+  two `_execute_core` nodes.
+
+### S19. Z6's nesting: one `agent` node per task, under the crew's `chain`; the records' `graph.node.parent_id` names the previous agent
+
+- **From:** step 4 of both Z6 reports, and the records read beside the audit.
+  B7-Z6's first point of interest, reported as observed; not a finding.
+- **Captures:** `captures/z6/2026-10-14-real` (11 bodies, 26 records),
+  `captures/z6/2026-10-14-recorded` (1 body, 16 records).
+- **Command:** both `zoo audit` commands above; and for times, scopes and the
+  records' attributes, a `spanweave.Builder` fed the records step 3 feeds:
+
+  ```bash
+  uv run python -c '
+  import sys; from pathlib import Path; import spanweave; from spanweave_zoo import audit
+  run = Path(sys.argv[1]); files = sorted(f"json/{p.name}" for p in (run / "json").glob("[0-9][0-9][0-9][0-9].json"))
+  for part in audit.reread(run, files).partitions:
+      b = spanweave.Builder()
+      for rec in part.feed: b.feed(rec)
+      g = b.graph(); t0 = min(n.started_at for n in g.nodes())
+      for n in sorted(g.nodes(), key=lambda n: n.started_at):
+          src = n.raw.source; a = src.get("attributes") or {}
+          print(n.id, part.origins[n.raw.line_number - 1], n.name, n.kind.value, n.started_at - t0, n.ended_at - t0,
+                g.parents(n.id, spanweave.EdgeKind.PARENT), src["scope_spans"]["scope"], a.get("openinference.span.kind"),
+                {k: a[k] for k in ("graph.node.id", "graph.node.parent_id", "tool.name") if k in a})
+  ' captures/z6/2026-10-14-real
+  ```
+
+  (Times in ns from the root's start; the audit's report carries none.)
+- **Observed — the row's premise:** "tasks nested under agents nested under
+  the crew" is **not** three levels in either capture. The root is
+  `release-notes.kickoff`, a `chain` node (`34c04caf3b53b381` real,
+  `4f7e2c35179f73b8` recorded). Its only children are three `agent` nodes
+  named `<agent role>._execute_core` — `Commit Collector`, `Release Notes
+  Writer`, `Release Notes Reviewer` — siblings ordered by two `temporal`
+  edges in that order. Each is **one** span per task: its record's
+  `openinference.span.kind` is `AGENT` and it carries `task_id`, `task_key`,
+  `crew_id`, `crew_key` and `graph.node.id` (the agent's role); no separate
+  task span or agent span is in either capture. Under each, the `llm` and
+  `tool` nodes of that task. The deepest path is 3 `parent` edges: root →
+  Reviewer's `_execute_core` → a delegation `tool` node → its
+  `ChatCompletion` (S20). `_execute_core` under `release-notes.kickoff`, as
+  the row says, holds.
+- **Observed — two statements of structure:** the Writer's and the
+  Reviewer's records carry `graph.node.parent_id` naming the **previous
+  agent** (`Commit Collector` and `Release Notes Writer` respectively) — the
+  crew's sequential order — while their span parent is the crew's kickoff.
+  The Commit Collector's carries none. spanweave builds the `parent` edges
+  from the spans' parent ids and leaves `graph.node.id` and
+  `graph.node.parent_id` unmapped (S7); the sequence they state appears in
+  the graph only as the `temporal` edges between the three siblings, which
+  are derived from start times, not from those attributes.
+- **Observed — intervals (real):** the three tasks run 0.052–2.806 s,
+  2.814–7.309 s and 7.331–48.277 s inside the root's 0–48.300 s (recorded
+  0.052–0.543, 0.552–0.574, 0.594–0.812 inside 0–0.825 s). The kickoff's
+  inputs are *absent* (its record has no `input.value`), its outputs
+  `present`.
+- **To establish:** whether the `openinference` adapter is meant to map
+  OpenInference's `graph.node.id` / `graph.node.parent_id`, and what it would
+  do where they state a relation other than the span parent.
+
+### S20. Delegation is a `tool` node with the coworker's `ChatCompletion` as its only child; no `agent` node for the coworker
+
+- **From:** steps 4 and 5 of both Z6 reports, and the records read beside the
+  audit (S19's command). B7-Z6's second point of interest, reported as
+  observed; not a finding.
+- **Captures and command:** as S19; for the persona, each `ChatCompletion`
+  record's `llm.input_messages.0.message.content` (its system message), of
+  which only the opening words were read.
+- **Observed:** the delegation spans are `tool` nodes (`openinference.span.kind`
+  `TOOL`, scope `crewai`), children of the Reviewer's `_execute_core`:
+  real, `Delegate work to coworker.run` × 2 (`853c794192f0bb63`,
+  `a20b4dfd274d45e2`) and `Ask question to coworker.run` × 1
+  (`ca55b967aa976a9b`); recorded, `Delegate work to coworker.run` × 1
+  (`449398542054a6e1`). Each has exactly one child, a `ChatCompletion` `llm`
+  node (`05fee439adbecf19`, `344735450e29f7e9`, `b9bffcf46a373332` real;
+  `d713a1c08b316e89` recorded) whose system message opens "You are Release
+  Notes Writer." — the coworker's persona — while every other
+  `ChatCompletion` under the Reviewer's task opens "You are Release Notes
+  Reviewer." No `_execute_core` or other `agent` node stands for the
+  coworker's work: the coworker is visible only as that `llm` node, under
+  a `tool` node, under the delegating agent's task. Its interval lies
+  inside the tool's (real: 16.327–19.482 s in 16.313–19.494 s; 27.367–29.720
+  in 27.354–29.732; 34.956–39.868 in 34.945–39.879). None of the three
+  carries an `unpaired_call`; the delegating `ChatCompletion` before each
+  tool does (S9). Step 5 names the steps `tool:Delegate work to coworker`
+  and `tool:Ask question to coworker`, each followed by the coworker's
+  `llm` step.
+- **To establish:** whether a consumer can tell the coworker's model call
+  from the delegator's other than by its parent being a delegation tool —
+  the graph carries no agent identity on an `llm` node (its normalized
+  attributes are `model` alone).
+
+### S21. Records in a Z6 body are grouped by instrumentation scope, not in end order
+
+- **From:** step 3's list of records fed and step 4's Body and Record
+  columns, both Z6 reports, with end times read beside the audit (S19's
+  command). Observed; not a finding.
+- **Captures and command:** as S19.
+- **Observed:** in every real body that holds records of both scopes, the
+  `openai` scope's records come first and the `crewai` scope's after them,
+  each scope's in the order its spans ended — so where a `crewai` span ended
+  before an `openai` span of the same body, its record still comes later:
+  `json/0003.json` records 1–4 are `ChatCompletion` (the Writer's, ended
+  7.296 s), `ChatCompletion` (the Reviewer's, 11.463 s), `Release Notes
+  Writer._execute_core` (7.309 s), `lint_markdown.run` (11.466 s);
+  `json/0008.json` records 1–3 are `ChatCompletion` (32.794 s),
+  `ChatCompletion` (34.943 s), `lint_markdown.run` (32.797 s) — each span's
+  end, from the root's start. The recorded capture's
+  one body: records 1–8 are the eight `ChatCompletion`s, records 9–16 the
+  eight `crewai` spans, the root last. In both captures every child's
+  record precedes its parent's (25 of 25 `parent` edges real, 15 of 15
+  recorded), as in Z1 (S15) and Z2 (S16).
+- **To establish:** nothing for spanweave: it rebuilt every `parent` edge and
+  incremental equals batch. Records reach a receiver in the exporter's order,
+  not the spans' (L3).
+
+### S22. Real and recorded: two shapes of one crew
+
+- **From:** both Z6 reports, side by side. B7-Z6's fourth point of interest,
+  reported as observed. That the real run did not follow its script is the
+  capture's own fact (`WORKPLAN.md` §3, 2026-10-14, "captures"; the contract
+  allows randomness in the real run), not a defect of anything audited.
+- **Captures and command:** both `zoo audit` commands above.
+- **Observed — the same:** the root `release-notes.kickoff` and its three
+  `_execute_core` children in the same order; the Commit Collector's task
+  as `ChatCompletion`, `list_commits.run`, `ChatCompletion`; the Writer's
+  as one `ChatCompletion`; every node status `ok`; every record claimed by
+  `openinference`; the same diagnostic codes (S3, S7, S9), no `unknown`
+  node, no `orphan_parent` at end of input; the `list_commits.run` node's
+  inputs `empty` (its `input.value` is `{}`) on both — the first `empty`
+  payload state in any zoo report — and the root's inputs *absent*.
+- **Observed — the departure (the Reviewer's task):** recorded, 7 children in
+  start order — `ChatCompletion`, `lint_markdown.run`, `ChatCompletion`,
+  `Delegate work to coworker.run` (with the Writer's `ChatCompletion`),
+  `ChatCompletion`, `lint_markdown.run`, `ChatCompletion` — two lint passes
+  and one send-back, as Z6's brief scripts ("the reviewer sends the draft
+  back exactly once, then approves"). Real, 15 children — `ChatCompletion`,
+  `lint_markdown.run`, `ChatCompletion`, `Delegate work to coworker.run`,
+  `ChatCompletion`, `lint_markdown.run`, `ChatCompletion`, `Delegate work to
+  coworker.run`, `ChatCompletion`, `lint_markdown.run`, `ChatCompletion`,
+  `Ask question to coworker.run`, `ChatCompletion`, `lint_markdown.run`,
+  `ChatCompletion` — four lint passes, two delegations and one question.
+  Totals: 26 nodes (`agent` 3, `chain` 1, `llm` 14, `tool` 8), 25 `parent`
+  and 18 `temporal` edges, 60 diagnostics, 26 signature steps real; 16 nodes
+  (3, 1, 8, 4), 15 and 10, 36, 16 steps recorded. Real ran 48.3 s in 11
+  bodies; recorded 0.825 s in 1. By span name, the recorded Reviewer's seven
+  children are the real one's first seven; where the recorded run approves
+  after its first send-back, the real one goes on.
+- **To establish:** nothing for any of the three libraries: both shapes were
+  read without a finding beyond L1, and each is what its run exported.
 
 ---
 
@@ -1033,8 +1302,9 @@ asserts nothing.
 
 None. Step 5 (`agentgolden.signature.signature(graph)`, no rules) returned
 four `llm` steps on each written graph of Z4's, 102 steps on each of Z3's,
-4 steps on each of Z5's, 31 on each of Z1's and 23 on each of Z2's, and
-raised on none — again in all six re-audited reports (B7r), in both Z1
-reports (B7-Z1) and in both Z2 reports (B7-Z2). S10's `llm:-` steps were *to establish* as possibly
+4 steps on each of Z5's, 31 on each of Z1's, 23 on each of Z2's, and 26
+(real) and 16 (recorded) on Z6's, and raised on none — again in all six
+re-audited reports (B7r), in both Z1 reports (B7-Z1), in both Z2 reports
+(B7-Z2) and in both Z6 reports (B7-Z6). S10's `llm:-` steps were *to establish* as possibly
 agentgolden's; the re-audit's node table shows the graph itself carries no
 model on those nine nodes, so the signature reads it as it is.

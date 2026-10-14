@@ -4,6 +4,44 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B7-Z6 — Z6 (`crew-of-three`) audited
+
+`zoo audit` on `captures/z6/2026-10-14-real` and `captures/z6/2026-10-14-recorded`
+with B6c's audit (`4b57f18`), at the `audit` extra's pins (unchanged). No
+`SPEC.md` section touched, no code or test changed, no capture touched
+(`make verify` green), so no test red on a parent is owed.
+
+- **Reports:** `audit/z6-2026-10-14-real.md` and `audit/z6-2026-10-14-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each. One finding
+  each: every `raw/` body answered 415 (spanweave-live). A second run differs
+  only in the `listening` ports and the clock readings of `completed` and
+  `late_arrival` events.
+- **Graphs:** one trace per capture. Real: 26 records in 11 bodies (`agent`
+  3, `chain` 1, `llm` 14, `tool` 8), 25 explicit `parent` and 18 derived
+  `temporal` edges; recorded: 16 records in 1 body (3, 1, 8, 4), 15 and 10.
+  No `orphan_parent`; live = batch = incremental (1,304,658 bytes real,
+  305,886 recorded); every record claimed by `openinference`; step 5 clean
+  (26 and 16 steps). The root's record is the last of the last body; real,
+  `--quiet 0` completes eleven times, once per body, `--root-grace 0` once by
+  `RootEnded`.
+- **`PROBES.md`:** L1, L3, S3, S7, S9 and S18 seen again in Z6, and S6 in
+  another shape (two instrumentors, but every `llm` node from the OpenAI
+  instrumentor and none from CrewAI's: no model call seen twice); new S19
+  (one `agent` node per task, `<role>._execute_core`, directly under the
+  crew's `release-notes.kickoff` `chain` — no separate task level; the
+  records' `graph.node.parent_id` names the previous agent, unmapped), S20
+  (`Delegate work to coworker.run` and `Ask question to coworker.run` are
+  `tool` nodes, each over one `ChatCompletion` carrying the coworker's
+  persona, no `agent` node for the coworker), S21 (records in a body grouped
+  by instrumentation scope, `openai` before `crewai`, not in end order) and
+  S22 (real and recorded as two shapes of one crew: the Reviewer's task has
+  15 children real — four lint passes, two delegations, one question — and
+  7 recorded, the scripted one send-back; the departure is the capture's own
+  fact). Observations only. Row premises shown not to hold: tasks are not
+  nested under agents, and the client is not seen twice. Counts restated:
+  spanweave-live 4, spanweave 22, agentgolden 0.
+- **`ROADMAP.md`:** Z6's row reads audited.
+
 ## B7-Z2 — Z2 (`fan-out-researcher`) audited
 
 `zoo audit` on `captures/z2/2026-10-14-real` and `captures/z2/2026-10-14-recorded`
