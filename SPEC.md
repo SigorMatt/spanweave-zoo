@@ -2078,8 +2078,15 @@ written `<port>` because the audit lets the kernel choose one.
    diagnostics by size (the number of diagnostics naming each key, largest
    first, and the bytes those diagnostics take in the graph document as
    compact sorted JSON), and every node of kind `unknown` by name. Then **one
-   row per node** (B6a, B6b), in the graph's order: its id; its **span
-   name** (`Node.name`); its kind; its status; its `model` (the key of that
+   row per node** (B6a, B6b, B6c), in the graph's order: its id; the
+   **body** and the **record** it came from — the `json/NNNN.json` file and
+   the record's 1-based index among the records the pinned `Endpoint` read
+   from that body, both from step 3's reconstruction, located by
+   `Node.raw.line_number` (the pinned library's: the 1-based position, in the
+   partition's feed, of the record the node was built from), or *absent* in
+   both where that number is missing or indexes no record of the feed — so
+   the order of records across and within bodies is read from the report;
+   its **span name** (`Node.name`); its kind; its status; its `model` (the key of that
    name in `Node.attributes`, spanweave's normalized subset), or *absent*;
    whether its parent is present — *yes* where a `parent` edge points at it,
    *absent from graph* where an `orphan_parent` diagnostic names it (its
@@ -2151,8 +2158,10 @@ owner, then one section per step with its command, a table and every event.
 Step 2's section holds its three runs, the end-of-input run first, each
 policy run under a heading naming its flag; step 4's holds, per graph, the
 inspect output, the diagnostic tables and the node table (§7.3), whose
-columns are, in order: Node, Span name, Kind, Status, Model, Parent, Parent
-id, Diagnostics, Unmapped keys, Inputs, Outputs, Span events (B6b). Reports
+columns are, in order: Node, Body, Record, Span name, Kind, Status, Model,
+Parent, Parent id, Diagnostics, Unmapped keys, Inputs, Outputs, Span events
+(B6b, B6c). Step 3's list of each partition's records, in the order fed, is
+where a row's body and record are read back to the feed. Reports
 written by an earlier audit keep the layout they were written with: a report
 records its audit at one sha, and is replaced only by being audited again.
 Written whole at the end; a second audit of the same capture overwrites it.

@@ -410,7 +410,9 @@ class Partition:
     three serializations of its graph (`SPEC.md` §7.3)."""
 
     trace_id: str | None
-    origins: list[str] = field(default_factory=list)
+    #: Where each record of `feed` came from: its `json/` body and its
+    #: 1-based index among the records the receiver read from that body.
+    origins: list[tuple[str, int]] = field(default_factory=list)
     feed: list[Any] = field(default_factory=list)
     live: bytes | None = None
     batch: bytes | None = None
@@ -490,17 +492,21 @@ def reread(run: Path, files: Sequence[str]) -> Reread:
         exchange = endpoint.handle(_request(run, file))
         found.statuses.append(exchange.response.status)
         for position, record in enumerate(exchange.records.records, start=1):
-            origin = f"{file} record {position}"
             trace_id = trace_id_of(record)
             if trace_id not in by_trace:
                 by_trace[trace_id] = Partition(trace_id)
             by_trace[trace_id].feed.append(record)
-            by_trace[trace_id].origins.append(origin)
+            by_trace[trace_id].origins.append((file, position))
             if not classify(record):
-                found.unclaimed.append(origin)
+                found.unclaimed.append(origin_text((file, position)))
     identified = [p for key, p in by_trace.items() if key is not None]
     found.partitions = identified + ([by_trace[None]] if None in by_trace else [])
     return found
+
+
+def origin_text(origin: tuple[str, int]) -> str:
+    """`json/NNNN.json record n`."""
+    return f"{origin[0]} record {origin[1]}"
 
 
 def _refusal(error: Exception) -> str:
@@ -740,7 +746,9 @@ def partition_findings(
                     capture=str(run),
                     commands=commands,
                     observed=(
-                        "\n".join(f"- {origin}" for origin in partition.origins)
+                        "\n".join(
+                            f"- {origin_text(origin)}" for origin in partition.origins
+                        )
                         + f"\n\nRouted to the no-trace builder; `finished` "
                         f"reports `routed: {routed}`, and the graphs serve "
                         f"wrote hold "
@@ -863,9 +871,27 @@ def _span_events(node: spanweave.Node) -> object | None:
     return None
 
 
-def node_table(graph: spanweave.Graph) -> list[str]:
+def _origin(
+    node: spanweave.Node, origins: Sequence[tuple[str, int]]
+) -> tuple[str, str]:
+    """The body and record index the node's record came from (B6c).
+
+    `RawRecord.line_number` is the pinned library's: the 1-based position in
+    the feed of the record the node was built from, and `origins` is that
+    feed's provenance in the same order. A number that indexes no record of
+    the feed places nothing, and both cells say *absent*.
+    """
+    position = node.raw.line_number
+    if position is None or not 1 <= position <= len(origins):
+        return "absent", "absent"
+    body, index = origins[position - 1]
+    return f"`{_cell(body)}`", str(index)
+
+
+def node_table(graph: spanweave.Graph, origins: Sequence[tuple[str, int]]) -> list[str]:
     """Step 4's row per node (`SPEC.md` §7.3), then each node's span events
-    as its record carries them, as compact sorted JSON."""
+    as its record carries them, as compact sorted JSON. `origins` is where
+    each record the graph was built from came from, in the order fed."""
     on: dict[str, Counter[str]] = {}
     keys: dict[str, set[str]] = {}
     for diagnostic in graph.diagnostics:
@@ -877,9 +903,9 @@ def node_table(graph: spanweave.Graph) -> list[str]:
                 )
     orphans = {n for n, codes in on.items() if codes.get(ORPHAN_PARENT)}
     lines = [
-        "| Node | Span name | Kind | Status | Model | Parent | Parent id | "
-        "Diagnostics | Unmapped keys | Inputs | Outputs | Span events |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Node | Body | Record | Span name | Kind | Status | Model | Parent | "
+        "Parent id | Diagnostics | Unmapped keys | Inputs | Outputs | Span events |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     carried: list[tuple[str, object]] = []
     for node in graph.nodes():
@@ -896,8 +922,10 @@ def node_table(graph: spanweave.Graph) -> list[str]:
         unmapped_keys = ", ".join(
             f"`{_cell(key)}`" for key in sorted(keys.get(node.id, ()))
         )
+        body, record = _origin(node, origins)
         lines.append(
-            f"| `{_cell(node.id)}` | {_cell(node.name)} | {node.kind.value} | "
+            f"| `{_cell(node.id)}` | {body} | {record} | "
+            f"{_cell(node.name)} | {node.kind.value} | "
             f"{node.status.value} | {_model(node)} | "
             f"{_parent(graph, node, orphans)} | {_parent_ids(graph, node)} | "
             f"{codes or 'none'} | {unmapped_keys or 'none'} | "
@@ -1129,7 +1157,7 @@ def render(
         w("")
         for p in found.partitions:
             w(f"Records of `{p.name}`, in the order fed:", "")
-            w(*(f"- {origin}" for origin in p.origins), "")
+            w(*(f"- {origin_text(origin)}" for origin in p.origins), "")
 
     w("## Step 4 -- `spanweave inspect`", "")
     graphs = [p for p in (found.partitions if found else []) if p.live is not None]
@@ -1172,7 +1200,7 @@ def render(
             + ".",
             "",
         )
-        w(*node_table(p.graph))
+        w(*node_table(p.graph, p.origins))
 
     w("## Step 5 -- `agentgolden` signature", "")
     if not graphs:

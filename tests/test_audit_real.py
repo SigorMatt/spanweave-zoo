@@ -305,11 +305,18 @@ def _cells(row: str) -> list[str]:
     return [cell.strip() for cell in row.strip().strip("|").split("|")]
 
 
+# Where `_error_graph`'s two records came from, in the order fed: one body
+# each, as a capture of two bodies would carry them.
+ERROR_ORIGINS = [("json/0001.json", 1), ("json/0002.json", 1)]
+
+
 def test_the_node_table_names_an_error_node_with_its_status():
-    lines = audit.node_table(_error_graph())
+    lines = audit.node_table(_error_graph(), ERROR_ORIGINS)
     [error] = [row for row in lines if row.startswith("| `a1` |")]
     assert _cells(error) == [
         "`a1`",
+        "`json/0001.json`",
+        "1",
         "chat m-1",
         "llm",
         "error",
@@ -323,7 +330,9 @@ def test_the_node_table_names_an_error_node_with_its_status():
         "1",
     ]
     [child] = [row for row in lines if row.startswith("| `b1` |")]
-    assert _cells(child)[1:7] == [
+    assert _cells(child)[1:9] == [
+        "`json/0002.json`",
+        "1",
         "execute_tool x",
         "tool",
         "ok",
@@ -331,7 +340,7 @@ def test_the_node_table_names_an_error_node_with_its_status():
         "yes",
         "`a1`",
     ]
-    assert _cells(child)[8:] == ["`<record>.kind`", "present", "absent", "absent"]
+    assert _cells(child)[10:] == ["`<record>.kind`", "present", "absent", "absent"]
     # The events, as the record carries them, beneath the table.
     assert '[{"name":"exception","timeUnixNano":"1"}]' in "\n".join(lines)
 
@@ -350,29 +359,87 @@ def test_a_node_whose_record_states_no_parent_and_carries_no_events():
             "status": "UNSET",
         }
     )
-    [row] = [r for r in audit.node_table(builder.graph()) if r.startswith("| `r1` |")]
+    [row] = [
+        r
+        for r in audit.node_table(builder.graph(), [("json/0003.json", 7)])
+        if r.startswith("| `r1` |")
+    ]
     cells = _cells(row)
-    assert cells[1] == "invoke_agent"
-    assert cells[3] == "unset"
-    assert cells[5:7] == ["no", "—"]
-    assert cells[11] == "absent"
+    assert cells[1:3] == ["`json/0003.json`", "7"]
+    assert cells[3] == "invoke_agent"
+    assert cells[5] == "unset"
+    assert cells[7:9] == ["no", "—"]
+    assert cells[13] == "absent"
+
+
+def test_a_node_whose_record_the_feed_does_not_place_says_absent():
+    # B6c, degenerate: a node whose `line_number` indexes no record of the
+    # feed it is given is not placed by a guess -- both cells say *absent*.
+    lines = audit.node_table(_error_graph(), ERROR_ORIGINS[:1])
+    [child] = [row for row in lines if row.startswith("| `b1` |")]
+    assert _cells(child)[1:3] == ["absent", "absent"]
+    [error] = [row for row in lines if row.startswith("| `a1` |")]
+    assert _cells(error)[1:3] == ["`json/0001.json`", "1"]
 
 
 def test_the_report_carries_a_row_for_every_node(recorded_audit):
     result, text = recorded_audit
     step4 = text.split("## Step 4 ", 1)[1].split("## Step 5 ", 1)[0]
     assert (
-        "| Node | Span name | Kind | Status | Model | Parent | Parent id | "
-        "Diagnostics | Unmapped keys | Inputs | Outputs | Span events |"
+        "| Node | Body | Record | Span name | Kind | Status | Model | Parent | "
+        "Parent id | Diagnostics | Unmapped keys | Inputs | Outputs | Span events |"
     ) in step4
     for partition in result.partitions:
         if partition.graph is None or partition.live is None:
             continue
         for node in partition.graph.nodes():
-            assert (
-                f"| `{node.id}` | {node.name} | {node.kind.value} | "
-                f"{node.status.value} |"
-            ) in step4, node.id
+            [row] = [r for r in step4.splitlines() if r.startswith(f"| `{node.id}` |")]
+            assert _cells(row)[3:6] == [
+                node.name,
+                node.kind.value,
+                node.status.value,
+            ], node.id
+
+
+@pytest.fixture(scope="module")
+def real_audit(tmp_path_factory):
+    out = tmp_path_factory.mktemp("audit")
+    result = audit.audit(REAL, out=out)
+    return result, result.path.read_text(encoding="utf-8")
+
+
+def test_the_node_table_names_the_body_and_record_each_node_came_from(real_audit):
+    # B6c, on a capture of two bodies: Z4's real run, whose one trace is fed
+    # three records from json/0001.json and one from json/0002.json. Each
+    # node's record is found here by value among the records the partition
+    # fed -- independently of the audit's own reading -- and the row must
+    # name that record's body and its index within it.
+    result, text = real_audit
+    assert result.exit == 0, result.incomplete
+    step4 = text.split("## Step 4 ", 1)[1].split("## Step 5 ", 1)[0]
+    placed = []
+    for partition in result.partitions:
+        if partition.graph is None or partition.live is None:
+            continue
+        section = step4.split(f"### `{partition.name}`", 1)[1].split("\n### ", 1)[0]
+        for node in partition.graph.nodes():
+            [index] = [
+                i
+                for i, record in enumerate(partition.feed)
+                if record == node.raw.source
+            ]
+            body, position = partition.origins[index]
+            [row] = [
+                r for r in section.splitlines() if r.startswith(f"| `{node.id}` |")
+            ]
+            assert _cells(row)[1:3] == [f"`{body}`", str(position)], node.id
+            placed.append((body, position))
+    assert sorted(placed) == [
+        ("json/0001.json", 1),
+        ("json/0001.json", 2),
+        ("json/0001.json", 3),
+        ("json/0002.json", 1),
+    ]
 
 
 # --- the owner rules (SPEC.md section 7.4) ------------------------------------

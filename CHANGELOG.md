@@ -4,6 +4,29 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## B6c — the node table names the record
+
+The maintainer's decision of 2026-10-14 (B6c). `SPEC.md` §7.3, §7.5. No
+capture touched, and no committed report under `audit/` regenerated: they keep
+the layout they were written with until B8 audits all twelve again.
+
+- **Step 4's node table gains two columns after Node**: Body (the
+  `json/NNNN.json` the node's record came from) and Record (its 1-based index
+  among the records the pinned `Endpoint` read from that body). Both come from
+  step 3's reconstruction, located by the pinned library's
+  `Node.raw.line_number` (the record's position in the partition's feed); a
+  node whose number is missing or indexes no record says *absent* in both. The
+  audit reads no payload to place it.
+- `Partition.origins` is now `(body, index)` pairs; step 3's list and the
+  routed-but-unwritten finding render them as before (`json/0001.json record 3`).
+- Tests: on Z4's real capture (two bodies), every node's Body and Record match
+  the record found independently by value in the partition's feed, and the
+  four rows span both bodies; the fixture graph's two nodes named from two
+  bodies; a node the feed does not place reads *absent* (degenerate); the
+  report's header row. Red on the parent.
+- Mutation shown caught: the record's position in the feed shown in place of
+  its index within its body.
+
 ## B7-Z1 — Z1 (`ledger-clerk`) audited
 
 `zoo audit` on `captures/z1/2026-10-13-real` and `captures/z1/2026-10-13-recorded`
