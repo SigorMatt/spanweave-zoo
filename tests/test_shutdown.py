@@ -33,12 +33,13 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from spanweave_zoo import capture, cli, collector, manifest
-from tests import otlp
+from tests import otlp, ports
 
 REPO = Path(__file__).resolve().parent.parent
 COLLECTOR_DIR = REPO / "collector"
@@ -49,13 +50,20 @@ COLLECTOR_READY = "Everything is ready. Begin running and processing data."
 # How long a test waits on another process before calling it hung. Generous,
 # because CI machines are slow; a pass never waits this long.
 PATIENCE = 60.0
+# How long the `slow` stand-in takes to say it is ready after binding its port:
+# long enough that a signal sent once it has bound lands in the readiness wait,
+# short enough that a zoo which waited it out would still see it ready -- the
+# readiness budget is 150 looks a tenth of a second apart (`collector.py`).
+SLOW_READY = 5.0
 
 # A stand-in for the Collector's *lifecycle* (`SPEC.md` §4.9): it binds the
 # receiver port it is given, answers every forward 200, logs the stock ready
 # line, and on `SIGINT` or `SIGTERM` logs which one it got and exits 0 -- as
 # the stock Collector does. `stubborn` ignores `SIGTERM`, which is the child
-# `zoo capture` has to `SIGKILL`. It writes its pid beside itself so a test can
-# kill it by hand.
+# `zoo capture` has to `SIGKILL`; `slow` binds its port and then takes `SLOW`
+# seconds -- well inside the readiness budget -- to log its ready line, which
+# is the window B2 signals into. It writes its pid beside itself, once its
+# port is bound, so a test can kill it by hand or see whether it is alive.
 STUB_BODY = """
 import os
 import signal
@@ -108,8 +116,12 @@ signal.signal(
 host, _, port = os.environ["ZOO_COLLECTOR_OTLP_HTTP"].rpartition(":")
 server = Server((host, int(port)), Answer)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pid"), "w") as f:
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "pid.tmp"), "w") as f:
     f.write(str(os.getpid()))
+os.replace(os.path.join(here, "pid.tmp"), os.path.join(here, "pid"))
+if BEHAVIOUR == "slow":
+    time.sleep(SLOW)
 sys.stderr.write("info\\tservice.go:256\\t" + READY + "\\n")
 sys.stderr.flush()
 while True:
@@ -134,17 +146,12 @@ def stand_in(tmp_path: Path, behaviour: str = "obliging") -> Path:
         f"#!{sys.executable}\n"
         f"VERSION = {pinned_version()!r}\n"
         f"BEHAVIOUR = {behaviour!r}\n"
-        f"READY = {COLLECTOR_READY!r}\n" + STUB_BODY,
+        f"READY = {COLLECTOR_READY!r}\n"
+        f"SLOW = {SLOW_READY!r}\n" + STUB_BODY,
         encoding="utf-8",
     )
     script.chmod(0o755)
     return directory
-
-
-def free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind((HOST, 0))
-        return int(probe.getsockname()[1])
 
 
 def post(port: int, body: bytes) -> int:
@@ -179,12 +186,35 @@ class ZooCapture:
     `start_new_session` makes the zoo the leader of a fresh process group, so
     `os.killpg` reaches exactly what a terminal's Ctrl-C would -- the zoo and
     everything it left in its group -- and nothing of the test's own.
+
+    Constructing one **starts it and waits until it is up** (B1): the sinks
+    are given `--port 0 --json-port 0` and the ports they got are read from
+    the two lines after the readiness line (`SPEC.md` §4.2), and the
+    Collector's two ports -- which it must be told before it exists -- are
+    picked, the whole start retried, bounded, when the refusal names an
+    address in use (`tests/ports.py`). `tried` is every pair picked.
+
+    `becoming_ready=True` (B2) returns earlier: as soon as the stand-in
+    Collector has bound its port and written its pid -- the `slow` one then
+    takes `SLOW_READY` seconds to say it is ready, so `zoo capture` is in its
+    readiness wait -- with the pid in `collector_pid`. A port taken under the
+    pick is retried the same way, because the stand-in that could not bind
+    exits before it writes a pid, and `zoo capture` refuses naming the port.
     """
 
-    def __init__(self, tmp_path: Path, collector_dir: Path) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        collector_dir: Path,
+        *,
+        pick: Callable[[], int] = ports.free_port,
+        log: Callable[[str], object] = print,
+        becoming_ready: bool = False,
+    ) -> None:
         self.run = tmp_path / "captures" / "z4" / "run-1"
-        self.port = free_port()
-        command = [
+        self._pid = collector_dir / "pid"
+        self._becoming_ready = becoming_ready
+        self._base = [
             sys.executable,
             "-m",
             "spanweave_zoo.cli",
@@ -202,16 +232,27 @@ class ZooCapture:
             "--collector-dir",
             str(collector_dir),
             "--port",
-            str(self.port),
+            "0",
             "--json-port",
-            str(free_port()),
-            "--collector-port",
-            str(free_port()),
-            "--collector-grpc-port",
-            str(free_port()),
+            "0",
         ]
+        self.tried: list[tuple[int, ...]] = []
+        ports.with_picked_ports(self._start, count=2, pick=pick, log=log)
+
+    def _start(self, picked: tuple[int, ...]) -> None:
+        self.tried.append(picked)
+        collector_port, grpc_port = picked
+        self.command = [
+            *self._base,
+            "--collector-port",
+            str(collector_port),
+            "--collector-grpc-port",
+            str(grpc_port),
+        ]
+        if self._becoming_ready:
+            self._pid.unlink(missing_ok=True)
         self.process = subprocess.Popen(
-            command,
+            self.command,
             cwd=REPO,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -220,7 +261,51 @@ class ZooCapture:
         )
         self.printed: list[str] = []
         self._lines: queue.Queue[str] = queue.Queue()
-        threading.Thread(target=self._read, daemon=True).start()
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
+        if self._becoming_ready:
+            if not self._pid_written():
+                self._refused()
+            self.collector_pid = int(self._pid.read_text(encoding="utf-8"))
+            return
+        if self._next(READY_LINE) is None:
+            self._refused()
+        raw = self._next("zoo capture: recording POST ")
+        json_sink = self._next("zoo capture: collector ")
+        if raw is None or json_sink is None:
+            self.kill()
+            pytest.fail("no ports after the readiness line:\n" + self._output())
+        self.port = bound_port(r" on http://[^ ]+:(\d+) -> ", raw)
+        self.json_port = bound_port(r", via http://[^ ]+:(\d+)$", json_sink)
+
+    def _refused(self) -> None:
+        """Not up: a port taken under the pick is retried, anything else fails."""
+        try:
+            self.process.wait(timeout=PATIENCE)
+        except subprocess.TimeoutExpired:
+            self.kill()
+            pytest.fail("never printed the readiness line:\n" + self._output())
+        self._reader.join(timeout=PATIENCE)
+        output = self._output()
+        if self.process.returncode == 2 and ports.in_use(output):
+            raise ports.PortTaken(output)
+        pytest.fail(
+            f"zoo capture exited {self.process.returncode} before it was up:\n" + output
+        )
+
+    def _pid_written(self) -> bool:
+        """Whether the stand-in wrote its pid before `zoo capture` exited."""
+        deadline = time.monotonic() + PATIENCE
+        while time.monotonic() < deadline:
+            if self._pid.exists():
+                return True
+            if self.process.poll() is not None:
+                return self._pid.exists()
+            time.sleep(0.02)
+        return False
+
+    def _output(self) -> str:
+        return "\n".join(self.printed)
 
     def _read(self) -> None:
         assert self.process.stdout is not None
@@ -229,20 +314,25 @@ class ZooCapture:
             self.printed.append(line)
             self._lines.put(line)
 
-    def wait_for(self, wanted: str) -> None:
-        """Block until a printed line contains `wanted`, or fail naming it."""
+    def _next(self, wanted: str) -> str | None:
+        """The next printed line containing `wanted`; `None` if it never comes."""
         deadline = time.monotonic() + PATIENCE
         while time.monotonic() < deadline:
             try:
                 line = self._lines.get(timeout=0.5)
             except queue.Empty:
                 if self.process.poll() is not None:
-                    break
+                    return None
                 continue
             if wanted in line:
-                return
-        self.kill()
-        pytest.fail(f"never printed {wanted!r}; printed:\n" + "\n".join(self.printed))
+                return line
+        return None
+
+    def wait_for(self, wanted: str) -> None:
+        """Block until a printed line contains `wanted`, or fail naming it."""
+        if self._next(wanted) is None:
+            self.kill()
+            pytest.fail(f"never printed {wanted!r}; printed:\n" + self._output())
 
     def ctrl_c(self) -> int:
         """`SIGINT` to the process group, as a terminal sends it."""
@@ -257,10 +347,129 @@ class ZooCapture:
             self.kill()
             pytest.fail(f"zoo capture did not end on {signal.Signals(number).name}")
 
+    def signal_process(self, number: int) -> int:
+        """`number` to `zoo capture` alone, as a supervisor sends it, and the
+        exit status that follows."""
+        self.process.send_signal(number)
+        try:
+            status = self.process.wait(timeout=PATIENCE)
+        except subprocess.TimeoutExpired:
+            self.kill()
+            pytest.fail(f"zoo capture did not end on {signal.Signals(number).name}")
+        self._reader.join(timeout=PATIENCE)
+        return status
+
     def kill(self) -> None:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.process.pid, signal.SIGKILL)
         self.process.wait(timeout=PATIENCE)
+
+
+def bound_port(pattern: str, line: str) -> int:
+    """The port a §4.2 line names, which is the one the sink actually got."""
+    found = re.search(pattern, line)
+    assert found is not None, f"no port in {line!r}"
+    return int(found.group(1))
+
+
+# --- B1: the harness does not lose a port race -----------------------------
+
+
+class Picks:
+    """A `pick` that hands out `first` before it picks for real."""
+
+    def __init__(self, *first: int) -> None:
+        self.first = list(first)
+
+    def __call__(self) -> int:
+        return self.first.pop(0) if self.first else ports.free_port()
+
+
+def held_port() -> socket.socket:
+    """A listener on a port nobody else can bind until it is closed."""
+    held = socket.socket()
+    held.bind((HOST, 0))
+    held.listen(8)
+    return held
+
+
+def test_a_collector_port_taken_before_the_bind_is_picked_again(tmp_path):
+    # The close review's race, made to happen: the first Collector port the
+    # harness picks is already held, so the stand-in's bind fails with the
+    # address-in-use line and `zoo capture` refuses (SPEC.md section 4.6). The
+    # harness starts the whole run again on new picks; the second start
+    # reaches readiness, and both ports tried are on record.
+    held = held_port()
+    taken = int(held.getsockname()[1])
+    try:
+        zoo = ZooCapture(tmp_path, stand_in(tmp_path), pick=Picks(taken))
+    finally:
+        held.close()
+    try:
+        assert len(zoo.tried) == 2, zoo.tried
+        assert zoo.tried[0][0] == taken
+        assert zoo.tried[1][0] != taken
+        assert post(zoo.port, PROTOBUF) == 200
+        zoo.wait_for("raw/0001.body")
+    except BaseException:
+        zoo.kill()
+        raise
+    assert zoo.ctrl_c() == 0, "\n".join(zoo.printed)
+
+
+def test_sinks_on_port_0_print_two_ports_a_test_can_post_to(tmp_path):
+    # The harness picks no sink port: `--port 0 --json-port 0`, and the ports
+    # the sinks got are read back from the two lines after the readiness line
+    # (SPEC.md sections 4.2, 4.6). Each is POSTed to and records a body.
+    zoo = ZooCapture(tmp_path, stand_in(tmp_path))
+    try:
+        assert zoo.command[zoo.command.index("--port") + 1] == "0"
+        assert zoo.command[zoo.command.index("--json-port") + 1] == "0"
+        assert 0 not in (zoo.port, zoo.json_port)
+        assert zoo.port != zoo.json_port
+        assert post(zoo.port, PROTOBUF) == 200
+        zoo.wait_for("raw/0001.body")
+        assert post(zoo.json_port, b"{}") == 200
+        zoo.wait_for("json/0001.json")
+    except BaseException:
+        zoo.kill()
+        raise
+    assert zoo.ctrl_c() == 0, "\n".join(zoo.printed)
+    assert (zoo.run / "raw" / "0001.body").read_bytes() == PROTOBUF
+    assert (zoo.run / "json" / "0001.json").read_bytes() == b"{}"
+
+
+def test_a_refusal_that_names_no_address_in_use_is_not_retried(tmp_path):
+    # Degenerate: a refusal for any other reason -- here, no binary -- is the
+    # test's to see, once. Retrying it would only hide it five times.
+    collector_dir = stand_in(tmp_path)
+    (collector_dir / collector.BINARY_NAME).unlink()
+    logged: list[str] = []
+    with pytest.raises(pytest.fail.Exception) as failed:
+        ZooCapture(tmp_path, collector_dir, log=logged.append)
+    assert "make collector" in str(failed.value)
+    assert len([line for line in logged if "harness: start" in line]) == 1
+
+
+def test_the_retry_is_bounded_and_names_every_port_tried():
+    # Degenerate: an address that is in use on every start. Five starts, then
+    # a failure naming each pick -- as honest as the refusal after one.
+    picks = iter(range(40001, 40100))
+    logged: list[str] = []
+
+    def refused(picked: tuple[int, ...]) -> None:
+        raise ports.PortTaken(f"bind: address already in use: {picked}")
+
+    with pytest.raises(pytest.fail.Exception) as failed:
+        ports.with_picked_ports(
+            refused, count=2, pick=lambda: next(picks), log=logged.append
+        )
+    message = str(failed.value)
+    assert f"{ports.ATTEMPTS} starts" in message
+    for port in range(40001, 40001 + 2 * ports.ATTEMPTS):
+        assert str(port) in message
+    assert str(40001 + 2 * ports.ATTEMPTS) not in message
+    assert len([line for line in logged if "refused" in line]) == ports.ATTEMPTS
 
 
 def listed(run: Path) -> set[str]:
@@ -274,7 +483,6 @@ def test_ctrl_c_to_the_process_group_stops_the_capture_and_nothing_else(tmp_path
     # never heard the keystroke, which is what its own log says.
     zoo = ZooCapture(tmp_path, stand_in(tmp_path))
     try:
-        zoo.wait_for(READY_LINE)
         assert post(zoo.port, PROTOBUF) == 200
         zoo.wait_for("raw/0001.body")
     except BaseException:
@@ -319,7 +527,6 @@ def test_a_hang_up_to_the_process_group_stops_the_capture_as_ctrl_c_does(tmp_pat
     collector_dir = stand_in(tmp_path)
     zoo = ZooCapture(tmp_path, collector_dir)
     try:
-        zoo.wait_for(READY_LINE)
         pid = int((collector_dir / "pid").read_text(encoding="utf-8"))
         assert post(zoo.port, PROTOBUF) == 200
         zoo.wait_for("raw/0001.body")
@@ -348,7 +555,6 @@ def test_the_collector_killed_by_hand_mid_capture_is_a_problem(tmp_path):
     collector_dir = stand_in(tmp_path)
     zoo = ZooCapture(tmp_path, collector_dir)
     try:
-        zoo.wait_for(READY_LINE)
         pid = int((collector_dir / "pid").read_text(encoding="utf-8"))
         os.kill(pid, signal.SIGKILL)
         zoo.wait_for("collector exited: -9")
@@ -364,6 +570,38 @@ def test_the_collector_killed_by_hand_mid_capture_is_a_problem(tmp_path):
     assert cli.verify(zoo.run) == 1
 
 
+# --- B2: signals cover the whole life of a capture --------------------------
+
+
+@pytest.mark.parametrize("number", cli.STOP_SIGNALS, ids=lambda n: n.name)
+def test_a_stop_signal_while_the_collector_becomes_ready_leaves_nothing_behind(
+    tmp_path, number
+):
+    # B2 (a), Qodo Q1. `zoo capture` installed its stop handlers only once
+    # `start()` had returned, and the readiness wait can last most of a
+    # minute: a supervisor's SIGTERM or a terminal's SIGHUP in that window
+    # killed it by the default action, and the Collector -- in a session of
+    # its own (A3e) -- outlived it, holding its port. Signalled while the
+    # stand-in is bound and not yet ready, the zoo now stops the Collector,
+    # writes nothing, and exits as a refusal does (SPEC.md section 4.6).
+    collector_dir = stand_in(tmp_path, "slow")
+    zoo = ZooCapture(tmp_path, collector_dir, becoming_ready=True)
+    pid = zoo.collector_pid
+    try:
+        status = zoo.signal_process(number)
+        printed = "\n".join(zoo.printed)
+        assert not alive(pid), f"the Collector outlived {number.name}:\n{printed}"
+        assert not zoo.run.exists(), sorted(zoo.run.rglob("*"))
+        assert status == 2, printed
+        assert "zoo capture: refusing to start: " in printed
+        assert number.name in printed
+        assert READY_LINE not in printed
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        zoo.kill()
+
+
 # --- the shutdown sequence, in process --------------------------------------
 
 
@@ -377,29 +615,34 @@ class Clock:
 
 
 def in_process(tmp_path: Path, collector_dir: Path, *, stop_wait: float, log):
+    """A started in-process capture, its Collector on a picked port (B1)."""
     pinned = collector.pin(collector_dir)
-    port = free_port()
-    launcher = collector.Binary(
-        pinned,
-        host=HOST,
-        http_port=port,
-        grpc_port=0,
-        sleep=time.sleep,
-        pause=0.05,
-        stop_wait=stop_wait,
-    )
-    return capture.Capture(
-        tmp_path / "captures" / "z4" / "run-1",
-        now=Clock(),
-        launcher=launcher,
-        forward=lambda head, body: 200,
-        pin=pinned,
-        kind="recorded",
-        project_manifest=project_manifest(tmp_path),
-        raw_port=0,
-        json_port=0,
-        log=log,
-    )
+    copied = project_manifest(tmp_path)
+
+    def build(port: int) -> capture.Capture:
+        launcher = collector.Binary(
+            pinned,
+            host=HOST,
+            http_port=port,
+            grpc_port=0,
+            sleep=time.sleep,
+            pause=0.05,
+            stop_wait=stop_wait,
+        )
+        return capture.Capture(
+            tmp_path / "captures" / "z4" / "run-1",
+            now=Clock(),
+            launcher=launcher,
+            forward=lambda head, body: 200,
+            pin=pinned,
+            kind="recorded",
+            project_manifest=copied,
+            raw_port=0,
+            json_port=0,
+            log=log,
+        )
+
+    return ports.started_capture(build)
 
 
 def test_a_collector_that_ignores_sigterm_is_killed_and_that_is_not_a_problem(
@@ -412,7 +655,6 @@ def test_a_collector_that_ignores_sigterm_is_killed_and_that_is_not_a_problem(
     started = in_process(
         tmp_path, stand_in(tmp_path, "stubborn"), stop_wait=0.5, log=printed.append
     )
-    started.start()
     child = started.collector
     assert child is not None
     started.stop()
@@ -432,7 +674,6 @@ def test_the_collectors_log_is_the_run_directorys_and_not_the_terminals(tmp_path
     started = in_process(
         tmp_path, stand_in(tmp_path), stop_wait=10.0, log=printed.append
     )
-    started.start()
     started.stop()
 
     log = (started.run / collector.LOG_NAME).read_bytes()
@@ -544,6 +785,131 @@ def test_the_wait_for_a_forward_under_way_is_bounded(tmp_path):
         poster.join(timeout=PATIENCE)
 
 
+def snapshot(run: Path) -> dict[str, bytes]:
+    """Every file in a run directory, by its path under it, and its bytes."""
+    return {
+        path.relative_to(run).as_posix(): path.read_bytes()
+        for path in sorted(run.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_a_forward_that_completes_after_the_seal_writes_nothing_into_the_capture(
+    tmp_path,
+):
+    # B3 (a), Qodo Q2. A forward the Collector holds past every bounded wait
+    # of the shutdown (injected: `flush_wait`, and a forward a test releases)
+    # finishes after the manifest was sealed. Its outcome used to be appended
+    # to `forwards.jsonl` then, so the journal no longer hashed to what the
+    # sealed manifest said and the capture failed `zoo verify` for good. Now
+    # the journals are closed before the seal: the late outcome is refused and
+    # recorded nowhere, and the handler that was still running is the one
+    # thing the capture says went wrong (SPEC.md sections 5.5, 5.6).
+    forward = Held()
+    started, _ = held_capture(tmp_path, forward, flush_wait=0.05)
+    assert started.raw is not None
+    answers: list[int] = []
+    poster = threading.Thread(
+        target=lambda: answers.append(post(started.raw.port, PROTOBUF))
+    )
+    poster.start()
+    try:
+        assert forward.entered.wait(timeout=PATIENCE)
+        started.stop()
+        sealed = snapshot(started.run)
+    finally:
+        forward.release.set()
+        poster.join(timeout=PATIENCE)
+    # The forward has completed and its POST has been answered -- after the
+    # seal, since `stop()` returned before it was released.
+    assert answers == [200]
+
+    assert snapshot(started.run) == sealed, "something was written after the seal"
+    assert manifest.FORWARD_JOURNAL_NAME not in sealed
+    document = manifest.read(started.run)
+    assert manifest.FORWARDS not in document
+    late = [
+        problem for problem in document[manifest.PROBLEMS] if "raw/0001.body" in problem
+    ]
+    assert len(late) == 1, document[manifest.PROBLEMS]
+    assert late[0] in started.problems
+    # Every digest and the seal hold: `zoo verify`'s one complaint is the
+    # problem the run itself recorded (§5.6 fails any recorded problem).
+    assert manifest.problems(started.run) == [
+        f"{started.run}: {manifest.MANIFEST_NAME} records a problem from the run: "
+        f"{problem}"
+        for problem in document[manifest.PROBLEMS]
+    ]
+
+
+class Broken(Exception):
+    """What a failing step of `start()`'s tail raises, in the tests below."""
+
+
+def test_a_start_that_fails_after_the_collector_is_up_stops_it(tmp_path, monkeypatch):
+    # B2 (b), Qodo Q8. Everything in `start()` after the Collector was up and
+    # the run directory made -- the clock, the label, setting the sinks
+    # serving, the readiness line -- was outside the `try` that stops the
+    # Collector on the way out. A label that cannot be written left the child
+    # running and both sinks bound (SPEC.md section 4.6).
+    def unwritable(*args, **kwargs):
+        raise Broken("the manifest could not be labelled")
+
+    monkeypatch.setattr(capture.manifest, "label", unwritable)
+    launcher = Launcher()
+    started = capture.Capture(
+        tmp_path / "captures" / "z4" / "run-1",
+        now=Clock(),
+        launcher=launcher,
+        forward=lambda head, body: 200,
+        pin=collector.pin(COLLECTOR_DIR),
+        kind="recorded",
+        project_manifest=project_manifest(tmp_path),
+        raw_port=0,
+        json_port=0,
+        log=lambda line: None,
+    )
+    with pytest.raises(Broken):
+        started.start()
+    assert launcher.running.stopped == 1, "the Collector was left running"
+    assert started.raw is not None and started.json is not None
+    assert started.raw.server.socket.fileno() == -1, "the raw sink is still bound"
+    assert started.json.server.socket.fileno() == -1, "the json sink is still bound"
+    # Nothing was labelled, so there is no capture to close (SPEC.md 5.5).
+    assert not (started.run / manifest.MANIFEST_NAME).exists()
+
+
+def test_a_readiness_line_that_cannot_be_printed_still_ends_in_a_sealed_capture(
+    tmp_path,
+):
+    # Degenerate, B2 (b): the very last step of the tail fails -- the label is
+    # on disk and the sinks are serving -- and the run unwinds through the
+    # whole stop path: the Collector stopped, and the manifest closed rather
+    # than left without `ended_at`.
+    def log(line: str) -> None:
+        if line == READY_LINE:
+            raise Broken("the readiness line could not be printed")
+
+    launcher = Launcher()
+    started = capture.Capture(
+        tmp_path / "captures" / "z4" / "run-1",
+        now=Clock(),
+        launcher=launcher,
+        forward=lambda head, body: 200,
+        pin=collector.pin(COLLECTOR_DIR),
+        kind="recorded",
+        project_manifest=project_manifest(tmp_path),
+        raw_port=0,
+        json_port=0,
+        log=log,
+    )
+    with pytest.raises(Broken):
+        started.start()
+    assert launcher.running.stopped == 1, "the Collector was left running"
+    assert manifest.ENDED_AT in manifest.read(started.run)
+    assert cli.verify(started.run) == 0
+
+
 def test_the_summary_counts_bodies_by_where_they_are(tmp_path):
     # One export is one body. Its re-encoding is a body too, the Collector's,
     # and is counted where it is rather than added to the exporter's: the run-2
@@ -631,7 +997,6 @@ def test_every_line_zoo_capture_prints_is_one_spec_42_lists(tmp_path, capsys):
     # The operator's flow: a real process, an export, Ctrl-C.
     zoo = ZooCapture(tmp_path / "process", stand_in(tmp_path / "process"))
     try:
-        zoo.wait_for(READY_LINE)
         assert post(zoo.port, PROTOBUF) == 200
         zoo.wait_for("raw/0001.body")
     except BaseException:

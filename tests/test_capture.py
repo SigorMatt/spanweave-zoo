@@ -32,7 +32,7 @@ from spanweave_zoo import (
     manifest,
     sink,
 )
-from tests import otlp
+from tests import otlp, ports
 
 REPO = Path(__file__).resolve().parent.parent
 COLLECTOR_DIR = REPO / "collector"
@@ -782,18 +782,6 @@ time.sleep(600)
 """
 
 
-def free_port() -> int:
-    """A port a child process can be told to bind before it exists.
-
-    The Collector is given its receiver's port before it starts, so this cannot
-    be `port=0` the way every sink in the suite is. If something does take it in
-    between, that is the refusal these tests are about anyway.
-    """
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
-
-
 def stub_collector(tmp_path: Path, *, behaviour: str) -> collector.Pin:
     """A `collector/` directory whose binary is `STUB_BODY`."""
     directory = tmp_path / f"stub-collector-{behaviour}"
@@ -830,7 +818,7 @@ def stub_capture(
     by `attempts` rather than by a clock (`SPEC.md` §4.8).
     """
     pinned = stub_collector(tmp_path, behaviour=behaviour)
-    port = collector_port if collector_port is not None else free_port()
+    port = collector_port if collector_port is not None else ports.free_port()
     launcher = collector.Binary(
         pinned,
         host="127.0.0.1",
@@ -911,10 +899,17 @@ def test_a_ready_collector_makes_the_directory_and_prints_one_readiness_line(tmp
     # is labelled, and the readiness line is printed -- once, first.
     run = tmp_path / "captures" / "z4" / "run-1"
     printed: list[str] = []
-    started = stub_capture(
-        run, tmp_path, behaviour="ready", attempts=100, log=printed.append
+    # Started on a picked port, again if it was taken first (B1).
+    started = ports.started_capture(
+        lambda port: stub_capture(
+            run,
+            tmp_path,
+            behaviour="ready",
+            collector_port=port,
+            attempts=100,
+            log=printed.append,
+        )
     )
-    started.start()
     try:
         assert printed[0] == READINESS_LINE
         assert printed.count(READINESS_LINE) == 1

@@ -135,15 +135,30 @@ def planned(run: Path, source: str) -> list[str]:
     recovered by sorting the directory: `NNNN` is receipt order *because* a
     recorder assigned it in receipt order, and re-deriving that here would be
     deciding it again.
+
+    The manifest's paths are trusted only as far as `verify` would trust them
+    (B4a, `SPEC.md` §6.1): any `bodies` or `files` entry, on either side,
+    that is absolute, not normalized, resolves outside `run` or cannot be
+    resolved is a refusal naming it, raised before anything is read or sent.
     """
     try:
         recorded = manifest.recorded_bodies(run)
+        misplaced = manifest.misplaced(run)
     except (OSError, ValueError) as unreadable:
         raise ReplayRefused(
             f"{run} is not a capture this can replay: its "
             f"{manifest.MANIFEST_NAME} could not be read ({unreadable}). "
             f"Nothing was sent (SPEC.md section 6.1)."
         ) from None
+    if misplaced:
+        # B4a: the check `verify` applies (`SPEC.md` §5.4), on both sides,
+        # before a byte of a body or a head is read.
+        raise ReplayRefused(
+            f"{run}'s {manifest.MANIFEST_NAME} names a file that is not one "
+            f"of the run directory's, so none of its claims is one this follows: "
+            f"{'; '.join(misplaced)}. Nothing was sent, and no body or head "
+            f"was read (SPEC.md section 6.1)."
+        )
     prefix = source + "/"
     files = [file for file in recorded if file.startswith(prefix)]
     if not files:
@@ -291,6 +306,10 @@ def replay(
         except HeadUnreadable as unreadable:
             outcomes.append(Outcome(file=file, error=str(unreadable)))
             log(f"  {file}  not sent: {unreadable}")
+            # B5 (c), `SPEC.md` §6.3: the body was still received when the
+            # sink says it was, so the next gap is measured from this receipt
+            # -- or from none, when this one is not on record either.
+            previous = manifest.received_at(run, file)
             continue
         slept: float | None = None
         if timing and position:
@@ -322,10 +341,11 @@ def sender(host: str, port: int, *, timeout: float = forward.DEFAULT_TIMEOUT) ->
     """The real `send`, pointed at `--to` (`SPEC.md` §6.2).
 
     The captured head with its `Host` line naming `host:port` (`retarget`),
+    an IPv6 literal bracketed (`forward.authority`, B5),
     then the body, on one connection of `forward.send_head`'s. That is the
     only difference between the request the exporter made and this one.
     """
-    destination_host = f"{host}:{port}"
+    destination_host = forward.authority(host, port)
 
     def send(head: bytes, body: bytes) -> int:
         return forward.send_head(

@@ -162,10 +162,11 @@ matters:
   rule as §2.4's `json/`: if the two disagree, the octets are what arrived.
 
 It is **not** the stdlib's parse (A3f). Python's `http.server` parses the head
-to handle the request — its `Content-Length` frames the body, its
-`Content-Type` is echoed (§3.3), its path chooses the directory (§3.4) — and
-that parse is still what the sink *handled* the request with. Since A3g it is
-nothing more: the tee forwards the recorded octets, not the parse (§4.3). It
+to handle the request — its `Content-Type` is echoed (§3.3), its path chooses
+the directory (§3.4) — and that parse is still what the sink *handled* the
+request with. Since A3g it is nothing more: the tee forwards the recorded
+octets, not the parse (§4.3); and since B5d it frames nothing — a body is read
+by the framing headers on *this* split (§3.7). It
 is not what the record says the request carried, because it can say more than
 the request did. A **bare CR inside a header value** is the case: HTTP forbids
 it, real clients emit it, and `email`'s header parser splits the line on it.
@@ -363,6 +364,25 @@ for JSON, for gzip, for a truncated body and for a body no receiver would
 accept. The sink is not a receiver and its `200` means "recorded", never
 "understood".
 
+A POST the sink **could not frame** (§3.7) gets that same answer with one
+header more, **`Connection: close`**, and the connection is closed once the
+answer is sent (B5, Q9; every case is §3.7's table, B5a, B5b, B5c). The sink decodes no framing, so after such a request
+it does not know where the next one begins: kept alive, it read a chunked
+body's chunks as a request line and answered a `400` no exporter asked for.
+Closing records what it could see and guesses nothing about what follows
+(the decision of 2026-10-12, B5(a)); a client with more to send opens a new
+connection. Whether the answer says close depends on the framing headers the
+request carried and never on its bytes.
+
+A POST that reaches a sink after its journals have closed (§5.5) — `zoo
+sink`'s or either of `zoo capture`'s — is not recorded, so it is **not
+answered**: the connection is closed
+with no status, since a `200` there would say "recorded" of a body the
+capture does not hold. A POST on a connection the sink had **accepted** before
+the close — the first on that connection — is counted as under way from that
+accept, before its head is read (§5.5), so the sealed manifest names it as a
+`problems` entry rather than losing it silently (Qodo 2).
+
 ### 3.4 Any other path: `404`, and still recorded
 
 A POST to any other path is answered **`404`** — empty body, same echoed
@@ -430,9 +450,26 @@ does is injected and named here (`CLAUDE.md`, "Architecture invariants"):
 | the listener | the server is constructed by a factory a caller calls | a test binds `127.0.0.1` on port `0`, so the suite never collides with a port in use and never races a fixed one |
 | `before_record` | called with the body bytes once the body is read, before `NNNN` is assigned | a test can hold two POSTs in flight at a chosen point and make receipt order observable **without sleeping** — a sleep in a concurrency test is a race with a slow machine |
 | `after_record` | called with the manifest entry once the body is on disk | the same, from the other side; `cli.py` also uses it to print one line per recorded body |
+| `open_file` | opens a path in a binary mode (`wb`, `ab`) and returns the file; the default is the real filesystem | every file the recorder opens to record a body goes through it, so a test can count what recording one body costs (below) |
 
-The sink never reads the clock, never sleeps, never binds a socket and never
-draws a random number outside these.
+**What a body costs** (B2b), the one definition the §3.5 claim "the same work
+every time" is tested by: the files the recorder opens through `open_file`
+while recording that body, in order, each as its **mode**, the **octets read**
+from it and the **octets written** to it. Today that is four opens — the body,
+`NNNN.headers.raw`, `NNNN.headers.json` (its `.partial`, §5) and the journal
+append — and none reads. For bodies of equal length and a fixed `now`, the cost
+of the 1,600th body of a run **equals** the cost of the first: a manifest
+rewritten per POST writes more octets each time, and a rescan of the journal
+reads more. Creating a directory and the rename that makes `headers.json`
+atomic open nothing and are not counted. The recorder opens no file to record
+a body other than through `open_file`; the test fails on any file under the
+run that is opened some other way while it records, so a rescan cannot hide
+behind the seam. The cost is a count and never a clock: wall-clock and CPU
+time both grew with no code change on a shared runner (B2a, B2b), so no time
+is asserted anywhere.
+
+The sink never reads the clock, never sleeps, never binds a socket, never
+opens a file to record a body and never draws a random number outside these.
 
 ### 3.7 What the sink never does
 
@@ -443,12 +480,87 @@ never varies its answer by content; and never imports `spanweave` or
 mislabelled, double-compressed or not OTLP at all is recorded like any other,
 because the zoo records what exporters send and never improves it (§1).
 
-A POST that carries no `Content-Length` — or one whose `Content-Length` is not
-a number — is recorded as a **zero-byte** body with its headers beside it, and
-answered like any other. The sink reads the framing it was given and does not
-guess one it was not: decoding a `Transfer-Encoding` is decoding. What it could
-see is what the capture says it saw, and the header that said so is in the
-record.
+**The sink frames by the record's own parse** (B5d). The framing headers —
+`Transfer-Encoding` and `Content-Length`, either in any case — are read from
+§2.3's split of the recorded head, the one `NNNN.headers.json` shows: split on
+CRLF only, a header a line whose text before its first colon is a token, a
+value less the spaces and tabs around it. They are never read from the
+stdlib's parse, which splits on a bare CR and a bare LF and so can see a
+framing header the record does not show, or miss one it does. The record and
+the framing then cannot disagree, and every case below is a case of this one
+rule:
+
+- `Content-Length:` LF ` 5` is one line on the split, valued LF ` 5` — not
+  digits — although the stdlib's reader ends the line at the LF and joins
+  ` 5` to it as a fold.
+- `X: a` CR `Content-Length: 5` is one header, `X`, on the split, and no
+  length — although `email`'s parser splits the line at the CR and finds a
+  `Content-Length: 5`.
+- `X: a` CR `Transfer-Encoding: chunked` beside a `Content-Length: 5` is no
+  `Transfer-Encoding` on the split, so the request is framed by its `5`.
+- A head with no CRLF at all (§2.3) has no headers on the split, so no
+  `Content-Length`, and is unframed whatever its bare-LF lines say.
+
+The sink reads the framing it was given and does not guess one it was not:
+decoding a `Transfer-Encoding` is decoding. A POST whose body the sink cannot
+read by its `Content-Length` alone is recorded as a **zero-byte** body with its
+headers beside it, and answered like any other. What it could see is what the
+capture says it saw, and the header that said so is in the record.
+
+Such a POST is **unframed**: the sink cannot tell where its body ends, and so
+where the next request on the connection begins. An unframed POST is answered
+with `Connection: close`, and its connection is closed after the answer
+(§3.3): nothing sent after it on that connection is read, recorded or
+answered. A request carrying **any** `Transfer-Encoding` is unframed whatever
+its `Content-Length` says — the two together are the request-smuggling shape,
+and read by its length the sink would take the first octets of the chunk
+frames as a body and the rest as a request nobody sent (B5a).
+
+A `Content-Length` is **digits, once** (B5b; RFC 9110 §8.6, `1*DIGIT`). Its
+value is its value on §2.3's split (B5d), less the spaces and horizontal tabs
+around it — RFC 9110 §5.5's optional whitespace, which the split removes and
+which is not part of a value. What remains must be one or more ASCII
+digits `0`–`9` and nothing else: `+5`, `-3`, `5_0`, `5, 5`, a digit from
+another script, or a `5` with any other whitespace beside it (a vertical tab,
+a no-break space) is not a length, although Python's `int()` reads several
+of them as one. Digits too many for the interpreter to convert to an
+integer — Python refuses a string of more than 4300 digits by default — are
+not a length either: the value cannot be read as one, so the request is
+unframed as any non-length is (Qodo 1), never an error out of the handler
+that records nothing and answers nothing. A request carrying **more than one** `Content-Length` declares
+a length only if every value is the same once that whitespace is removed —
+then it is one length — and none if any two differ, whichever comes first.
+
+A `Content-Length` **continued on a folded line** declares no length (B5c).
+On §2.3's split of the recorded head, that is a `Content-Length` header line
+(any case) followed by a line beginning with a space or a horizontal tab —
+RFC 9112 §5.2's obsolete line folding. The stdlib's parse joins the fold into
+the value: for `Content-Length:` CRLF ` 5` it reads `5`, while the record's
+split says the header is empty and lists ` 5` as `unparsed`, part of no
+header. A fold beside a length is a line the record holds and cannot place,
+so the request is unframed whatever the split's own value reads as —
+`Content-Length: 5` CRLF ` 0` too; `NNNN.headers.json` is the split as ever,
+and the fold stays `unparsed`. A fold on any other header frames nothing and
+changes nothing.
+
+The table is every case, decided by the framing headers on the record's
+split alone (B5d) and never by the bytes:
+
+| `Transfer-Encoding` | `Content-Length` | Body recorded | Connection |
+|---|---|---|---|
+| present, any value | any, or absent | zero bytes | closed (unframed) |
+| absent | absent | zero bytes | closed (unframed) |
+| absent | not `1*DIGIT` (`five`, `+5`, `5_0`, `-3`, empty, …) | zero bytes | closed (unframed) |
+| absent | `1*DIGIT`, too many digits to convert to an integer | zero bytes | closed (unframed) |
+| absent | repeated, two values differ | zero bytes | closed (unframed) |
+| absent | continued on a folded line (obs-fold) | zero bytes | closed (unframed) |
+| absent | repeated, every value the same | as for that one value | as for that one value |
+| absent | `0` | zero bytes (an empty body) | kept |
+| absent | positive *n* | the *n* octets declared | kept |
+
+A `Content-Length: 0` with no `Transfer-Encoding` is a framing — an empty
+body — and keeps its connection, as does a positive one. A negative length is
+one case of "not `1*DIGIT`" (B5a decided it first).
 
 It **binds and resolves no name**. `http.server`'s own bind follows with
 `socket.getfqdn(host)` — a reverse lookup of the address it was just given,
@@ -459,6 +571,44 @@ one in a process took tens of seconds, during which the process's own signal
 handlers could not run, so a `zoo capture` started as its own process sat
 silent past its first bind. `tests/test_sink.py` fails if binding a sink
 resolves a name.
+
+It **stops on `SIGINT`, `SIGTERM` and `SIGHUP` alike** (B2, Q6), the three
+`zoo capture` stops on (§4.6): a supervisor ending a pet project's run sends
+the second, a terminal going away the third, and left to their default action
+either killed the sink before its manifest was assembled — bodies on disk and
+no `ended_at`, a capture `zoo verify` rightly fails. Each ends the serving loop
+the way Ctrl-C does: the handler only asks the server to shut down, the loop
+returns, the listening socket is closed, and the manifest is assembled and
+sealed (§5.5) before `zoo sink` exits. **It seals under its own handlers**
+(Qodo 4 on PR #2): they stay installed through the wait, the close and the
+seal below, as `zoo capture`'s do through its shutdown (§4.6), and the
+handlers they replaced are put back only once the manifest is sealed. A second
+signal in that time asks the server to shut down again, which does nothing
+since the loop has already returned. It does nothing else: a repeated Ctrl-C,
+or a supervisor's `SIGTERM` sent twice, does not get the default action and
+leave the capture unsealed.
+
+It **seals the way `zoo capture` does** (B3a): close, then seal, with no
+exception for the sink alone. Once the loop has returned and the listening
+socket is closed, every POST the sink has accepted and not yet answered —
+counted from the accept, before its head is read (§5.5) — is waited for, for at
+most the bound `zoo capture` gives its sinks (10 seconds, §4.6); then the
+recorder **closes its journals**, and only then is the manifest assembled.
+A POST still being handled at the close — a client whose body was still
+arriving past the bound, or one accepted whose head the sink had not yet
+read — is one `problems` entry naming the body it had
+recorded or `a POST not yet recorded` (§5.5), printed after the stop line as
+
+```text
+zoo sink: stopped. <n> body/bodies.
+  ! <the body, or a POST not yet recorded>: still being handled when the journals closed; what its handler had not yet written is not in this capture
+```
+
+and whatever that handler does afterwards is written nowhere and answered
+nothing (§3.3). `zoo sink` exits **0** when the sealed manifest records no
+problem and **1** when it records one — that one, or a journal line the
+assembly could not read (§5.5) — printing each on a `!` line, as `zoo capture`
+does: a capture `zoo verify` will fail (§5.6) does not end in a quiet 0.
 
 ## 4. The Collector, and the tee
 
@@ -586,6 +736,7 @@ zoo capture: collector <version> re-encoding to JSON into <run>/json/, via http:
   ! <file> forwarded, collector said <status>
   ! collector exited: <code> -- the raw bytes are still being recorded, json/ is not (SPEC.md section 4.6)
   ! a forward was still waiting on the Collector after <seconds>s; stopping it anyway
+  ! <the body, or a POST not yet recorded>: still being handled when the journals closed; what its handler had not yet written is not in this capture
   ! the Collector did not stop on SIGTERM and was sent SIGKILL: its last batch may not have reached json/
 zoo capture: stopping
 zoo capture: <n> body/bodies in raw/<, n in each other directory>, under <run>/, MANIFEST.json written: kind=<kind><what went wrong>
@@ -595,15 +746,17 @@ zoo capture: refusing to start: <why>
 - The **readiness line** is printed once, first, and only once the run
   directory exists (§4.6); the **two lines after it** name the raw sink's
   port and directory and the Collector's version, the json sink's directory
-  and its port.
+  and its port. Each port is the one the sink actually bound, so under
+  `--port 0` or `--json-port 0` these two lines are where it is read (§4.6).
 - **One line per recorded body**, on either side, as it lands (§3.6's
   `after_record`): its file relative to the run directory, its length and the
   start of its digest. A single export prints two, one in `raw/` and one in
   `json/`.
 - The **`!` lines** are the run's failures as they happen: a forward that did
   not happen or that the Collector answered with anything but a 2xx (§4.4), the
-  Collector exiting on its own (§4.6), and the two bounded waits of the
-  shutdown running out (§4.6).
+  Collector exiting on its own (§4.6), the two bounded waits of the
+  shutdown running out (§4.6), and a POST still being handled when the
+  journals closed (§5.5), which is also a `problems` entry.
 - **`zoo capture: stopping`** is printed when the run is asked to end, after an
   empty line, so that it does not share a line with the `^C` a terminal
   echoes.
@@ -639,8 +792,8 @@ The raw sink forwards every body it **accepts** (§3.2 — a POST to
   zoo, as the replay writes its head (§6.2), with two changes that name the
   connection rather than the payload, each a whole line of §2.3's split:
   - the **`Host` line** is substituted by §6.2's rule — the name as sent,
-    `: `, and the Collector's `host:port` — because the destination has
-    changed;
+    `: `, and the Collector's `host:port`, an IPv6 literal bracketed as
+    §6.2 says — because the destination has changed;
   - the **hop-by-hop header lines** are dropped with their CRLF, because
     they describe a connection the forward is not. Which lines those are is
     two rules, matched by field name in any case:
@@ -880,10 +1033,17 @@ which is the order that lets the Collector's last batch land:
    serving. It is given a bounded wait (10 seconds) to exit, then **`SIGKILL`**
    and another bounded wait. A `SIGKILL` is said, because a killed Collector
    may not have flushed;
-4. **the json sink stops**, once the requests it is handling have finished;
-5. **the manifest is assembled** (§5.5) — the journals, a digest for every
-   other file, `collector.log` included, the project's own manifest copied as
-   it stands now (§5.3), `ended_at` last.
+4. **every POST the raw sink is still handling is waited for again**, for at
+   most the same bounded wait: the Collector's stop has just failed every
+   forward still waiting on it, and this is where those failures reach
+   `forwards.jsonl`. Then **the json sink stops**, once the requests it is
+   handling have finished (the same bound);
+5. **both recorders close their journals**, and **the manifest is assembled**
+   (§5.5) — the journals, a digest for every other file, `collector.log`
+   included, the project's own manifest copied as it stands now (§5.3),
+   `ended_at` last. A POST still being handled at the close — one every
+   bounded wait gave up on — is a `problems` entry naming its body, and
+   nothing it does afterwards is written anywhere (§5.5).
 
 It then prints what it recorded — the bodies **counted by the directory they
 are in**, `1 body/bodies in raw/, 1 in json/`, `raw/` first and never summed
@@ -942,15 +1102,36 @@ Collector, in its own session, is not in. Left to its default action it killed
 left running, holding its port (run-2b review, N-2). It is handled as Ctrl-C
 is, and a line written to the terminal that hung up — which fails with `EIO`
 rather than `EPIPE` — is the closed stdout above by another errno: the run is
-already ending, and the line goes nowhere. A Ctrl-C during
-the readiness wait, before the handler is installed, still stops the child the
-launcher started before it propagates. This is installed
+already ending, and the line goes nowhere. This is installed
 rather than relied upon, and the caller waits in short hops rather than once
 and forever: a capture has three threads blocked in `select`, the kernel may
 hand the signal to any of them, and a main thread parked in an untimed wait
 never runs the Python handler that would have noticed. A run that cannot be
 stopped with Ctrl-C is not a detail — it is a Collector left holding 4320 and
 an operator who has to find it.
+
+**The handler is installed before `zoo capture` starts anything**, and so
+covers the readiness wait, which can last most of a minute (B2, Q1). Until the
+run directory is about to be made, a stop signal **ends the start**: the
+readiness wait is abandoned, the Collector child — already started, in its own
+session, and so deaf to whatever ended its parent — is stopped as it would be
+at the end of a run, both sinks are closed, and `zoo capture` exits **2**
+with `zoo capture: refusing to start: <signal> arrived before the capture was
+ready …` and **no run directory**: a start that was stopped is a refusal, and
+writes nothing a refusal would not. From the moment the directory is made the
+handler only asks the run to stop, as it does during the run: the start
+finishes, the readiness line is printed, and the shutdown above follows
+straight away, so a stop signal never leaves a run directory behind whose
+manifest was not completed. A second signal while the first is still unwinding the
+start only asks again; it does not interrupt the stopping of the Collector.
+
+**Every step of the start after the Collector is up is inside the same unwind**
+(B2, Q8): keeping its log, reading the clock, labelling the manifest, setting
+the sinks serving and printing the readiness line. Any of them failing stops
+the Collector and closes both sinks before the failure propagates, and a
+manifest that was already labelled is completed (§5.5). A directory made before
+the failure is left as it is — the zoo deletes nothing it wrote — and a run
+directory with no `ended_at` is one `zoo verify` fails (§5.6).
 
 | Option | Default | |
 |---|---|---|
@@ -966,6 +1147,17 @@ an operator who has to find it.
 | `--host` | `127.0.0.1` | what all three bind |
 | `--collector-dir` | `collector` | where `VERSION`, `SHA256SUMS` and `config.yaml` are |
 | `--forward-timeout` | `5.0` | seconds (§4.4) |
+
+**`0` for either sink is a port the kernel chooses.** `--port 0` and
+`--json-port 0` bind whatever free port the sink is given, and the two lines
+after the readiness line (§4.2) name the port each one got — a script, or the
+test suite, that passes `0` reads them there. `--collector-port` is not given
+that meaning: the forward and the child are both told the Collector's port
+before the child exists, so `zoo capture` picks no port of its own and names
+the one it was given in any refusal (`OPEN_QUESTIONS.md` §6). A test harness
+that picks one, and loses it to something else before the Collector binds it,
+gets §4.6's refusal like anyone else; retrying is the harness's business, not
+the zoo's.
 
 It **refuses to start**, writing nothing, when: the run directory already holds
 a body (§3.1, both sinks); any of `--port`, `--json-port` and
@@ -1276,6 +1468,31 @@ A1's three keys are untouched: `file`, `sha256` and `bytes` mean exactly what
 they meant, and `zoo verify`'s re-hash still reads only those. There is still
 exactly one home for a digest (§3.5).
 
+**`file` is a normalized relative path under the run directory** (B4), in
+`bodies` and `files` alike: POSIX separators, not absolute, no empty, `.` or
+`..` part — `raw/0001.body`, never `./raw/0001.body`, `raw/../raw/0001.body`
+or `/somewhere/0001.body` — and naming, with symlinks followed, a file inside
+the run directory. The zoo writes entries only of this shape — `bodies` from
+the names the sink gave its files, `files` from the walk — so the rule exists for every
+reader of the manifest: `zoo verify` (§5.6), `zoo replay` (§6.1, B4a) and,
+through `verify`, `zoo audit` (§7.2), each of which reads the entry as a claim
+and not as an instruction. One function holds it, and all three apply it. An
+entry that breaks it is a problem naming the entry, and the file it points at
+is **not read**: a manifest that could send the re-hash anywhere on the disk
+would let a capture be "verified" by bytes it does not hold. An entry that
+**cannot be resolved** — a symlink loop, or a link that cannot be read — is
+the same: a problem naming the entry ("which cannot be resolved"), the file
+not read, never a traceback. It is that on every Python the zoo supports:
+the path is resolved strictly, so a loop is refused whether the interpreter
+reports it as a `RuntimeError` (3.11, 3.12) or an `OSError` (3.13+); a path
+that merely does not exist is resolved as far as it goes and judged by where
+that lands, so a missing file stays a missing file (§5.6) and a dangling
+symlink out of the run stays a path outside it (Qodo 3 on PR #2,
+`decisions-zoo-2026-10-14b`). This confines
+*where* the seal's claims can point, not *whether* a resealed manifest
+verifies (§5, "What the seal is, and no more"): within the run directory, it
+still does.
+
 ### 5.5 When each field is written
 
 | When | Where | What |
@@ -1285,7 +1502,7 @@ exactly one home for a digest (§3.5).
 | each forward, as it completes (§4.5) | `forwards.jsonl` | one line |
 | the Collector child is seen to have exited (§4.6) | `MANIFEST.json` | one `problems` entry |
 | the run directory is made, before the manifest is labelled (§4.2) | `collector.log` | the Collector's output so far, and then each line as it is written |
-| `zoo capture` stops, after both sinks and the Collector have (§4.6) | `MANIFEST.json` | `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
+| `zoo capture` stops, after both sinks and the Collector have (§4.6); `zoo sink` stops (§3.7) | `MANIFEST.json` | one `problems` entry per POST accepted and still being handled when the journals close (below); then `bodies` and `forwards` from the journals, each body entry's `content_type` / `content_encoding` (§5.4), `files` — `collector.log` among them — `project_manifest` (§5.3), any further `problems`, `ended_at`, and `seal` |
 
 The declaration is written **first** so that a run stopped the hard way still
 says what it was. The bodies go to a journal rather than into the document, so
@@ -1304,8 +1521,47 @@ somebody forgot, and the seal as covering everything the run wrote. A run
 stopped the hard way has neither. `zoo sink` assembles its manifest the same
 way when it stops, so its captures are sealed too.
 
+**Writing ends before the seal, not at it.** The seal covers the files as the
+run left them, so nothing may be written into the run directory once the
+assembly has read them. `zoo capture` therefore **closes both recorders'
+journals** after the last bounded wait of its shutdown (§4.6) and before it
+assembles, and `zoo sink` closes its one recorder's the same way, after its
+own bounded wait (§3.7; B3a): from then on a recorder refuses every write — a body that arrives
+on a connection still open is recorded nowhere and answered nothing, the
+connection closed, because any status would say it was received into a
+capture that does not hold it; a forward that completes is journalled nowhere
+and is in no list. A POST still being handled at the close — a forward the
+Collector held past every bound, or under `zoo sink` a body still arriving
+past the bound — is one `problems` entry, written before the
+assembly, naming the body it had recorded (`raw/0001.body: still being handled
+when the journals closed; …`), or `a POST not yet recorded` when it had
+recorded none: what that handler had yet to write is not in the capture, and
+the capture says so rather than letting a late line break every digest after
+the fact. **A POST is being handled from the moment its connection is
+accepted**, not from when its head has been read (Qodo 2): the handler counts
+it in its setup, before a byte of the head arrives, until it is answered,
+refused, or its connection ends without one. A connection accepted just
+before the listener closed is waited for
+like any other, and one the waits gave up on before its head was read is
+that `a POST not yet recorded` entry — never a body refused with nothing in
+the capture to say a POST was lost. A further POST on a kept-alive
+connection is counted from when its head has been read: until then the
+connection is idle, and an idle connection is not a POST. So a capture whose forward outlived the shutdown is sealed, every
+digest holds, and `zoo verify` (§5.6) names the one problem the run recorded.
+
+**A journal line that cannot be read is a problem, not an abort.** The
+journals are decoded a line at a time: a line that is not UTF-8, or not a JSON
+object, is a `problems` entry naming the journal and the line (`bodies.jsonl
+line 2 is not UTF-8, so what it recorded is not listed in MANIFEST.json`), the
+lines around it are read as usual, and the assembly goes on to write
+`ended_at` and the seal. The file it was the record of is still on disk and is
+covered by `files` (§5.6), so nothing is unaccounted for and nothing is
+claimed; a capture whose own note could not be read is a reportable outcome,
+and one left without `ended_at` by it would not be.
+
 The assembly runs once per capture: `stop()` is also what a failed `start()`
-unwinds through, and a capture that never got as far as a labelled manifest is
+unwinds through — a failure at any step of it, the steps after the label
+included (§4.6), and a capture that never got as far as a labelled manifest is
 left with nothing written at all.
 
 Both timestamps come from the injected `now` (§3.6) and from nowhere else, so a
@@ -1383,7 +1639,10 @@ It then checks the manifest itself, and three things it says about itself:
 - **`problems` is empty or absent.** A run that recorded something going wrong
   which the capture could not fix does not pass a check whose whole job is
   trust. `zoo capture` already exited non-zero saying so; `verify` says it
-  again, every time.
+  again, every time. This is also how a capture whose forward outlived the
+  shutdown fails (§5.5): by the one problem the run recorded, and never by a
+  digest or a seal, because nothing was written after the seal for either to
+  disagree with.
 
 It exits non-zero, printing one line per problem, on any of those: a digest
 that differs, a length that differs, a listed file that is missing, a **file on
@@ -1391,6 +1650,17 @@ disk that the manifest does not list**, a seal that is absent or differs, a
 missing `ended_at`, a `kind` the spec does not name, a recorded problem, and a
 manifest that is absent or unreadable.
 A manifest it cannot read is a refusal, never a pass.
+
+Two more, both about the manifest's shape rather than the capture's bytes
+(B4). A `files` or `problems` that is present and **not a list** is a line
+saying so, never a crash: a `files` that is not a list accounts for no file,
+so every file on disk is also unlisted; a `problems` that is not a list is a
+problem in itself, because what the run recorded going wrong cannot be read
+(a `bodies` that is not a list is already a manifest that cannot be read).
+And a `file` entry that is not a normalized relative path under the run
+directory (§5.4) — absolute, with a `..`, a symlink resolving outside it, or
+one that cannot be resolved at all — is a line naming the entry, and that
+file is not read.
 
 The second direction is why the check walks the **directory** and not only the
 list. A verify that iterated the manifest can only ever confirm what the
@@ -1504,6 +1774,18 @@ and a replay that sent nothing must not read as a replay that worked
 path that is not a capture, or one whose `MANIFEST.json` is absent or
 unreadable, on §5.6's rule: nothing was sent.
 
+**Replay trusts a manifest's paths only as far as `verify` would** (B4a).
+Before it reads a body or a head, the replayer applies §5.4's rule — the same
+function `verify` uses — to every `file` entry of `bodies` and of `files`: an
+entry that is absolute, is not a normalized relative path (a `..`, a `.`, an
+empty part), resolves, symlinks followed, outside the run directory, or
+cannot be resolved (a symlink loop, §5.4) is a refusal naming the entry, exit **2**, nothing read and nothing sent. It
+checks **both sides**, the one it sends and the one it does not, and the
+`files` list beside them: a manifest is one document, and one claim pointing
+out of the run makes all of it untrusted (decided 2026-10-13,
+`OPEN_QUESTIONS.md` §7). Without it, `raw/../../elsewhere.body` passed the
+`raw/` filter above and a file outside the capture was sent as if recorded.
+
 ### 6.2 The head is the captured octets, with the `Host` line substituted
 
 Each request's head is its **`NNNN.headers.raw`** — the request line and the
@@ -1520,7 +1802,10 @@ then the body, and nothing else:
   nothing else — and a `Host` line is a line after the request line and before
   the empty line whose field name (§2.3's token rule) is `Host` in any case. It
   becomes the name as sent, `: `, and the `--to` destination as `host:port`;
-  its CRLF stays. Every such line is substituted, so a head that carried two
+  its CRLF stays. A host that is an IPv6 literal is written in brackets, as
+  RFC 9110 §7.2 and RFC 3986 §3.2.2 write one — `--to http://[::1]:4318`
+  names `Host: [::1]:4318` — because unbracketed its colons cannot be told
+  from the port's (B5, Q11). Every such line is substituted, so a head that carried two
   names the destination in both. A head that carried **none** gets none —
   adding a header is adding something — and a `Host:` that §2.3's split puts
   inside another line (after a bare LF, or in a head whose every line ends in
@@ -1586,6 +1871,15 @@ accepts them. With it, before each body after the first, the replayer sleeps
 the gap between that body's receipt time and the previous one's — so a receiver
 sees the export pattern the exporter actually had, batches and bursts included.
 
+"The previous one" is the body before it **in the capture**, whether or not
+that body was sent. A body whose head cannot be read (§6.2) is not sent, but
+the sink still received it when its `received_at` says, so the next gap is
+measured from that receipt (B5, Q3): skipping the first body does not cost
+the second its gap, and skipping a middle one does not stretch the next gap
+back to the body before it. A skipped body with no readable `received_at`
+leaves the next gap one that cannot be computed (below), rather than one
+measured from an earlier body.
+
 The receipt times come from `NNNN.headers.json`'s `received_at`, which is the
 one thing in that file the request did not say: it is the sink's own note of
 when the body landed, written from the injected `now` (§3.2, §3.6), and the
@@ -1625,7 +1919,7 @@ finding and not an error (`CLAUDE.md` §0.6 rule 7).
 |---|---|
 | **0** | every body was sent and every answer was a 2xx |
 | **1** | any answer was not a 2xx, or any body could not be sent at all — a head that is missing, empty or unterminated (§6.2), a body file the manifest lists that is not on disk, a connection that failed or an answer that never came |
-| **2** | nothing was sent: the path is not a capture, its manifest is unreadable, or it holds no body in the chosen directory |
+| **2** | nothing was sent: the path is not a capture, its manifest is unreadable, it names a file outside the run directory or one that cannot be resolved (§6.1), or it holds no body in the chosen directory |
 
 The summary line says how many were sent, how many of those did not answer
 2xx, and how many were not sent at all, and the problems are printed again
@@ -1646,7 +1940,10 @@ port with nothing on it said every body had been sent (run-2b review, N-10).
 
 It does not verify the capture it sends: `zoo verify` re-hashes bytes (§5.6)
 and `make verify` runs it on every gate, and a second re-hash here would be a
-second place for the rule to live. It does not parse, decode or validate a
+second place for the rule to live. The one check it shares with `verify` is
+*where* the manifest's entries point (§5.4, §6.1), and it shares it by calling
+the same function, not by restating it: a replayer that followed a path out of
+the run would be sending bytes the capture does not hold. It does not parse, decode or validate a
 body, does not look at a response beyond its status, does not retry, and does
 not record anything: a replay produces no capture, and a receiver that wants
 one points a `zoo capture` at itself.
@@ -1700,7 +1997,11 @@ written — when it could check nothing honestly:
 
 - `<run>` is not one run directory holding a readable `MANIFEST.json`;
 - the run does not verify (§5.6) — an audit of bytes that are not the bytes
-  recorded would be a reproduction of nothing;
+  recorded would be a reproduction of nothing. A `file` entry outside the run
+  directory (§5.4) is such a run: the refusal line carries `verify`'s first
+  problem — for a run whose one fault is such an entry, the entry itself —
+  and nothing is read (B4a; an incomplete report for it was declined,
+  `OPEN_QUESTIONS.md` §7);
 - the `audit` extra is not installed;
 - for any of the three libraries, the commit that is installed is not the
   commit `pyproject.toml` pins, or cannot be read. The pinned sha is read from
@@ -1725,15 +2026,60 @@ written `<port>` because the audit lets the kernel choose one.
    Recorded: every answer's status and every event line `serve` wrote to
    stderr, verbatim, and its exit status. A `415` on protobuf is a finding,
    not an error.
-2. **The Collector's JSON into `serve`.** The same, with `--json` and *N* the
-   number of `json/` bodies. **Completion** is `serve --requests N`: after the
-   *N*th request the input has ended, and the end of input runs
-   spanweave-live's `Run.finish()`, which replaces the completion with `Cap(0)`
-   and ticks once, so every trace still held completes and is written as
-   `graphs/<trace_id>.json` (its `SPEC.md` §8.5 at the pinned sha). That is the
-   `Cap(0)`-at-end the plan names, chosen by the receiver's own CLI and not by
-   the audit; the report says so once, in its method section. Recorded: the
-   statuses, every event, the exit status and every graph file's bytes.
+2. **The Collector's JSON into `serve`, three times** (B6a). The same, with
+   `--json` and *N* the number of `json/` bodies, under three completions, in
+   this order:
+   - **End of input.** `serve --port 0 --out graphs --requests N`, replayed
+     back to back as step 1 is. **Completion** is `serve --requests N`: after
+     the *N*th request the input has ended, and the end of input runs
+     spanweave-live's `Run.finish()`, which replaces the completion with
+     `Cap(0)` and ticks once, so every trace still held completes and is
+     written as `graphs/<trace_id>.json` (its `SPEC.md` §8.5 at the pinned
+     sha). That is the `Cap(0)`-at-end the plan names, chosen by the
+     receiver's own CLI and not by the audit; the report says so once, in its
+     method section. Recorded: the statuses, every event, the exit status and
+     every graph file's bytes. Step 2's findings are this run's, and it is
+     the run step 3 compares and checks against.
+   - **`--quiet 0`.** `serve --port 0 --out graphs --quiet 0 --requests N`,
+     and `zoo replay <run> --json` into it, back to back as step 1 is.
+   - **`--root-grace 0`.** The same, with `--root-grace 0`.
+
+   **Zero is the audit's value, not the receiver's.** The pinned
+   spanweave-live documents no default for either flag — absent is "no such
+   policy", and its README ("The CLI") calls every bound the caller's number
+   (`OPEN_QUESTIONS.md` §8) — so the audit chooses the smallest legal value,
+   at which each policy fires at the first tick its condition holds (its §5.3:
+   both boundaries inclusive, "`Quiet(0)` ... is legal"). `--requests N` is
+   still passed, so a trace a policy has not completed by the *N*th request
+   is completed at end of input by `Cap(0)`, and the `completed` event's reason
+   says which of the two it was: what each policy did with a root that arrived
+   last, or with a trace that has no root, is observed rather than to be
+   established. The receiver ticks once per request (its §8.5), so at `0`
+   the sequence of events is the capture's whether or not the replay sleeps
+   the captured gaps, and **no replay is `--timing`** (B6b; B6a's timed
+   replays rested on a premise that turned out weaker than written).
+   `--cap` and non-zero policy values are not run: a non-zero value fires or
+   not by wall clock, and the audit asserts nothing a clock decides. The
+   report's method states that the values are the audit's.
+
+   Recorded for each of the two: every answer's status, the replayer's own
+   lines, the exit status, every event verbatim, and one table of every `completed`,
+   `late_arrival`, `written` and `released` event in the order `serve` wrote
+   them — code, trace id, `index`, generation and reason — with the
+   `finished` event beneath it. The **reason** of a `completed` is the clause
+   of its `detail` before the first colon ("the quiet policy fired on
+   Quiet(seconds=0.0)"): at the pinned sha the event carries its policy in no
+   field of its own, and the clock readings follow the colon. A `written` or
+   `released` event's reason is its `detail`; a `late_arrival`'s is none, its
+   `detail` being clock readings. The **generation** is the receiver's (its
+   §5.5), counted from its events, which carry none: a trace's *n*th
+   `completed` completes generation *n*, a `late_arrival` opens the next one,
+   a `written` or `released` belongs to the generation just completed, and a
+   `forgotten` for the trace starts the count again (its `--max-completed`:
+   the next record opens generation 1). The two policy runs yield **no
+   finding**: they are an observation, and step 2's findings are the
+   end-of-input run's. One that could not be completed (§7.5) is an
+   incomplete step and exit 1, and stops nothing after it.
 3. **Live against batch.** For each trace, the records the receiver fed, in
    order, through `spanweave.build` — the live graph must equal the batch graph
    byte for byte (spanweave's `SPEC.md` §10.1, prefix consistency, on a
@@ -1753,14 +2099,51 @@ written `<port>` because the audit lets the kernel choose one.
    The reconstruction is checked before it is believed: the in-process status
    of each body must be the status `serve` answered, and the number of records
    must be the `routed` count in `serve`'s `finished` event. If either differs,
-   step 3 is **incomplete** rather than a finding about anyone.
+   step 3 is **incomplete** rather than a finding about anyone: a
+   reconstruction that is not what `serve` read vouches for nothing built from
+   it, so no partition is compared, steps 4 and 5 are not run, and none of the
+   three yields a finding. The report renders each of steps 3, 4 and 5 as
+   *not run*, step 3 naming the difference (the statuses against `serve`'s,
+   the records against `routed`), and the audit exits **1** (§7.5). Steps 1
+   and 2's findings stand: they are what `serve` answered and wrote, observed
+   directly.
 4. **`spanweave inspect` on each graph.** `spanweave inspect graphs/<trace_id>.json`
    on each live file (run as `python -m spanweave.cli`), its output recorded
    verbatim; and from the graph itself, through the public API: every
    diagnostic code with its count, the keys of the `unmapped_attributes`
    diagnostics by size (the number of diagnostics naming each key, largest
    first, and the bytes those diagnostics take in the graph document as
-   compact sorted JSON), and every node of kind `unknown` by name.
+   compact sorted JSON), and every node of kind `unknown` by name. Then **one
+   row per node** (B6a, B6b, B6c), in the graph's order: its id; the
+   **body** and the **record** it came from — the `json/NNNN.json` file and
+   the record's 1-based index among the records the pinned `Endpoint` read
+   from that body, both from step 3's reconstruction, located by
+   `Node.raw.line_number` (the pinned library's: the 1-based position, in the
+   partition's feed, of the record the node was built from), or *absent* in
+   both where that number is missing or indexes no record of the feed — so
+   the order of records across and within bodies is read from the report;
+   its **span name** (`Node.name`); its kind; its status; its `model` (the key of that
+   name in `Node.attributes`, spanweave's normalized subset), or *absent*;
+   whether its parent is present — *yes* where a `parent` edge points at it,
+   *absent from graph* where an `orphan_parent` diagnostic names it (its
+   record states a parent this graph does not hold), *no* where its record
+   states none; its **parent id** — the id of each node whose `parent` edge
+   points at it, or `—` where none does (an absent parent's stated id is
+   not a node of this graph, and the `orphan_parent` diagnostic is where it
+   is read); the codes of the diagnostics naming it (`Diagnostic.node_id`),
+   each once with its count where more than one; the **unmapped attribute
+   keys** on it — the keys the `unmapped_attributes` diagnostics naming it
+   list, each once, sorted, by **name only**, never a value — or *none*; its
+   **payload state**, inputs and outputs each, as `Payload.state` says it
+   (`present`, `absent`, and spanweave's `empty`, `redacted` and `truncated`,
+   never collapsed into one another); and its **span events as the record
+   carries them**:
+   the value under the `events` key of `Node.raw.source` — OTLP's span field,
+   kept verbatim on the record spanweave's reader flattened — written beneath
+   the table as compact sorted JSON, one block per node, and the row saying
+   how many; *absent* where the record has no such key. Nothing in a row is
+   read from a payload: every value is the pinned library's, through its
+   public API.
 5. **`agentgolden`'s signature on each graph.** `agentgolden.signature.signature(graph)`,
    as a smoke, no rules evaluated. Recorded: the number of steps and their
    tokens, or the exception it raised.
@@ -1774,8 +2157,9 @@ read.
 The audit parses no payload of its own (§1.1): bodies are read only by the
 pinned receiver and the pinned library, and the graphs only through their
 public API. The `listening` event's port and the clock readings a `completed`
-event carries (`seconds`, and the two readings in its `detail`) are the
-receiver's and differ from run to run; nothing else in a report does.
+or `late_arrival` event carries (`seconds`, and the two readings in its
+`detail`) are the receiver's and differ from run to run; nothing else in a
+report does.
 
 ### 7.4 Findings, and who owns them
 
@@ -1807,12 +2191,29 @@ understand, which is its job (`A6` turns the tables into probes).
 In order: the header (the capture, its `kind` and seal, the zoo's version, the
 three libraries' versions and shas), the method, the findings with a count per
 owner, then one section per step with its command, a table and every event.
+Step 2's section holds its three runs, the end-of-input run first, each
+policy run under a heading naming its flag; step 4's holds, per graph, the
+inspect output, the diagnostic tables and the node table (§7.3), whose
+columns are, in order: Node, Body, Record, Span name, Kind, Status, Model,
+Parent, Parent id, Diagnostics, Unmapped keys, Inputs, Outputs, Span events
+(B6b, B6c). Step 3's list of each partition's records, in the order fed, is
+where a row's body and record are read back to the feed. Reports
+written by an earlier audit keep the layout they were written with: a report
+records its audit at one sha, and is replaced only by being audited again.
 Written whole at the end; a second audit of the same capture overwrites it.
 
 | Exit | When |
 |---|---|
 | **0** | every step ran; the report is written (findings or not) |
-| **1** | the report is written and a step could not be completed: `serve` did not start, did not finish within its bound, the capture has no `json/` body, or step 3's reconstruction did not match what `serve` reported |
+| **1** | the report is written and a step could not be completed: `serve` did not start, did not finish within its bound (in step 1, or in any of step 2's three runs), the capture has no `json/` body, or step 3's reconstruction did not match what `serve` reported |
+
+`serve` did not start covers both a child that exits before its `listening`
+event and a command that cannot be executed at all — `Popen` raising
+`OSError` (a missing or non-executable program): that step's problem is
+`serve did not start: <the error>`, nothing is replayed, and the audit goes on
+to write the report. A step that could not be completed, and every later step
+that reads what it would have produced, is rendered in the report as *not
+run* with its reason; none of them yields a finding.
 | **2** | refused (§7.2): nothing was audited and no report was written |
 
 ### 7.6 The audit's seams
@@ -1825,7 +2226,8 @@ seam of §6's, named here:
 
 | Seam | What it is | Why |
 |---|---|---|
-| `serve_command` | the argv prefix that runs `spanweave-live`; the audit appends `serve --port 0 --out graphs --requests N` (§7.3). Default `SERVE_COMMAND`, `python -m spanweave_live.cli` on this interpreter | starting a process is touching the world. A test passes a command that never starts, or one that wraps the real `serve` and changes what it writes — which is how a live ≠ batch divergence is driven to the report |
+| `serve_command` | the argv prefix that runs `spanweave-live`; the audit appends `serve --port 0 --out graphs --requests N`, or for step 2's policy runs `serve --port 0 --out graphs --quiet 0 --requests N` and `... --root-grace 0 --requests N` (§7.3). Default `SERVE_COMMAND`, `python -m spanweave_live.cli` on this interpreter | starting a process is touching the world. A test passes a command that never starts or cannot be executed, or one that wraps the real `serve` and changes what it writes — which is how a live ≠ batch divergence is driven to the report |
+| `reread` | called with the run and its `json/` files; returns the in-process reconstruction step 3 checks against `serve` (the statuses, and the records by partition). Default `reread`, the pinned `Endpoint` and `trace_id_of` as above | a test passes one that returns statuses or records other than `serve`'s, so step 3's mismatch (§7.3) is driven without a defect in spanweave-live |
 | `inspect_command` | the argv prefix that runs `spanweave`; the audit appends `inspect graphs/<trace_id>.json`. Default `INSPECT_COMMAND`, `python -m spanweave.cli` | the same, for step 4 |
 | `signature` | called with each step-3 graph; returns agentgolden's `Signature` or raises. Default `agentgolden.signature.signature` | a test passes one that raises, so a step-5 finding and its owner (§7.4) are driven without a defect in agentgolden |
 | `installed` | called with a distribution name; returns the commit installed (its PEP 610 `direct_url.json`) or `None`. Default `installed_sha` | a test passes one that reports a sha other than the pin, so §7.2's refusal is driven without reinstalling anything |

@@ -342,20 +342,27 @@ class Binary:
             # `SIGKILL` -- rather than by the keystroke (`SPEC.md` §4.6).
             start_new_session=True,
         )
-        stream = process.stdout
-        if stream is None:  # pragma: no cover - `stdout=PIPE` always gives one
-            process.kill()
-            raise CollectorRefused("the Collector's output could not be read")
-        child_log = ChildLog(stream)
-        child_log.start()
-        running = _Process(process=process, log=child_log, stop_wait=self._stop_wait)
+        running: _Process | None = None
         try:
+            stream = process.stdout
+            if stream is None:  # pragma: no cover - `stdout=PIPE` always gives one
+                raise CollectorRefused("the Collector's output could not be read")
+            child_log = ChildLog(stream)
+            child_log.start()
+            running = _Process(
+                process=process, log=child_log, stop_wait=self._stop_wait
+            )
             self._wait_until_ready(running)
         except BaseException:
-            # Any way out, Ctrl-C during the wait included: a child in its own
-            # session no longer dies with the terminal's process group, so a
-            # start that does not return it must stop it.
-            running.stop()
+            # Any way out from the moment the child exists, a stop signal
+            # during the wait included (`SPEC.md` §4.6): a child in its own
+            # session does not die with its parent or with the terminal's
+            # process group, so a start that does not return it must stop it.
+            if running is not None:
+                running.stop()
+            else:
+                process.kill()
+                process.wait()
             raise
         return running
 

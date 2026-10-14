@@ -62,8 +62,8 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import IO, Any
 
 from spanweave_zoo import __version__
 
@@ -243,15 +243,38 @@ def seal_of(document: dict[str, Any]) -> str:
     return digest(canonical(unsealed))
 
 
-def write_json(path: Path, document: object) -> None:
+OpenFile = Callable[[Path, str], IO[bytes]]
+"""The `open_file` seam (`SPEC.md` §3.6): open a path in a binary mode.
+
+The mode is `"wb"` or `"ab"` -- every file the recorder opens to record a body
+goes through one of these, so a test can count each one and the octets it
+moves. The default is `open_binary`, the real filesystem.
+"""
+
+
+def open_binary(path: Path, mode: str) -> IO[bytes]:
+    """The real `open_file`: `path.open(mode)`, binary, nothing added."""
+    return path.open(mode)
+
+
+def write_bytes(path: Path, data: bytes, *, open_file: OpenFile = open_binary) -> None:
+    """Write `data` to `path` whole, through the `open_file` seam."""
+    with open_file(path, "wb") as handle:
+        handle.write(data)
+
+
+def write_json(
+    path: Path, document: object, *, open_file: OpenFile = open_binary
+) -> None:
     """Write JSON atomically, so a reader never sees half a document.
 
     The sink rewrites `MANIFEST.json` after every POST while an exporter is
     still sending, and `zoo verify` may be reading it. A rename within one
     directory is atomic, so the file on disk is always one whole manifest.
+    UTF-8, written as octets, so the bytes are the same on every platform.
     """
     temporary = path.with_name(path.name + ".partial")
-    temporary.write_text(dumps(document), encoding="utf-8")
+    write_bytes(temporary, dumps(document).encode("utf-8"), open_file=open_file)
     temporary.replace(path)
 
 
@@ -300,7 +323,9 @@ def _append(document: dict[str, Any], key: str, entry: object) -> None:
     document[key] = listed
 
 
-def _journal(run: Path, name: str, document: object) -> None:
+def _journal(
+    run: Path, name: str, document: object, open_file: OpenFile = open_binary
+) -> None:
     """Append one line to one of the run's journals, and flush it.
 
     Append, flush, close -- per line, under the run's lock, so two recorders
@@ -314,12 +339,14 @@ def _journal(run: Path, name: str, document: object) -> None:
     line = json.dumps(document, sort_keys=True) + "\n"
     with _lock_for(run):
         run.mkdir(parents=True, exist_ok=True)
-        with (run / name).open("a", encoding="utf-8") as journal:
-            journal.write(line)
+        with open_file(run / name, "ab") as journal:
+            journal.write(line.encode("utf-8"))
             journal.flush()
 
 
-def journal_body(run: Path, entry: BodyEntry) -> None:
+def journal_body(
+    run: Path, entry: BodyEntry, *, open_file: OpenFile = open_binary
+) -> None:
     """Write one recorded body down, now (`SPEC.md` §3.5).
 
     One line, flushed, in the order the bodies were recorded -- which is
@@ -328,16 +355,18 @@ def journal_body(run: Path, entry: BodyEntry) -> None:
     the run; until then the journal is where the digests are, which is why it
     is flushed rather than buffered.
     """
-    _journal(run, JOURNAL_NAME, entry.as_document())
+    _journal(run, JOURNAL_NAME, entry.as_document(), open_file)
 
 
-def journal_forward(run: Path, entry: ForwardEntry) -> None:
+def journal_forward(
+    run: Path, entry: ForwardEntry, *, open_file: OpenFile = open_binary
+) -> None:
     """Write one attempted forward down, now (`SPEC.md` §4.5).
 
     In the order the forwards *completed*, which is receipt order unless two
     exports were in flight at once.
     """
-    _journal(run, FORWARD_JOURNAL_NAME, entry.as_document())
+    _journal(run, FORWARD_JOURNAL_NAME, entry.as_document(), open_file)
 
 
 def _journalled(run: Path, name: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -348,14 +377,28 @@ def _journalled(run: Path, name: str) -> tuple[list[dict[str, Any]], list[str]]:
     loudly rather than silently. A half-written last line is what a run killed
     mid-write leaves, and "we could not read our own note" is a reportable
     outcome (`CLAUDE.md`, "Honest refusal beats a reassuring pass").
+
+    Decoded **line by line** (B3, Qodo Q7): a byte that is not UTF-8 is a
+    problem naming its line, like a line that is not JSON, and the lines around
+    it are still read. Decoding the whole file at once raised out of `finish`
+    before `ended_at` and the seal were written, so one bad byte left a capture
+    that was never completed (`SPEC.md` §5.5).
     """
     try:
-        text = (run / name).read_text(encoding="utf-8")
+        data = (run / name).read_bytes()
     except OSError:
         return [], []
     entries: list[dict[str, Any]] = []
     found: list[str] = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, octets in enumerate(data.splitlines(), start=1):
+        try:
+            line = octets.decode("utf-8")
+        except UnicodeDecodeError:
+            found.append(
+                f"{name} line {number} is not UTF-8, so what it recorded is "
+                f"not listed in {MANIFEST_NAME}"
+            )
+            continue
         if not line.strip():
             continue
         try:
@@ -794,6 +837,10 @@ def _rehashed(run: Path, document: dict[str, Any], key: str) -> list[str]:
         if not isinstance(name, str):
             found.append(f"{run}: {key}[{position}] has no 'file'")
             continue
+        outside = outside_run(run, name)
+        if outside is not None:
+            found.append(f"{run}: {key}[{position}] is {name!r}, {outside}")
+            continue
         try:
             data = (run / name).read_bytes()
         except OSError:
@@ -813,11 +860,96 @@ def _rehashed(run: Path, document: dict[str, Any], key: str) -> list[str]:
     return found
 
 
+def misplaced(run: Path) -> list[str]:
+    """Every `file` entry of `bodies` and `files` that names no file of `run`.
+
+    One line per entry, worded as `zoo verify` words it, from `outside_run`
+    -- the one check every reader of a manifest applies (`SPEC.md` §5.4). The
+    replayer calls this before it reads or sends anything (`SPEC.md` §6.1,
+    B4a), on **both** sides of the manifest and not only the side it sends:
+    the manifest is one document, and one claim pointing out of the run makes
+    all of it untrusted. Entries that are not objects, or carry no string
+    `file`, name nothing and are `verify`'s to report. Raises whatever `read`
+    does on a manifest that cannot be read.
+    """
+    document = read(run)
+    found: list[str] = []
+    for key in (BODIES, FILES):
+        entries = document.get(key)
+        if not isinstance(entries, list):
+            continue
+        for position, entry in enumerate(entries):
+            if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+                continue
+            why = outside_run(run, entry["file"])
+            if why is not None:
+                found.append(f"{key}[{position}] is {entry['file']!r}, {why}")
+    return found
+
+
+def outside_run(run: Path, name: str) -> str | None:
+    """Why a `file` entry does not name a file of this run, or `None` if it does.
+
+    An entry is a normalized relative path under the run directory
+    (`SPEC.md` §5.4): not absolute, no `.` or `..` part, no empty part, and --
+    symlinks followed -- resolving inside `run`; an entry whose symlinks
+    cannot be followed (a loop) does not. Anything else is a problem
+    and the file it points at is not read: the manifest is a claim about this
+    capture, and a resealed one still verifies (`SPEC.md` §5), but only about
+    bytes inside the run directory.
+    """
+    path = PurePosixPath(name)
+    if path.is_absolute():
+        return "an absolute path, outside the run directory (SPEC.md section 5.4)"
+    if name in ("", ".") or path.as_posix() != name or ".." in path.parts:
+        return (
+            "not a normalized relative path, so it may name a file outside the "
+            "run directory (SPEC.md section 5.4)"
+        )
+    try:
+        resolved = _resolved(run / name)
+        inside = resolved.is_relative_to(run.resolve())
+    except (OSError, RuntimeError):
+        return (
+            "which cannot be resolved -- a symlink loop or an unreadable link "
+            "-- so it was not read (SPEC.md section 5.4)"
+        )
+    if not inside:
+        return (
+            "which resolves outside the run directory, so it is not part of "
+            "this capture and was not read (SPEC.md section 5.4)"
+        )
+    return None
+
+
+def _resolved(path: Path) -> Path:
+    """`path` with its symlinks followed, raising if they cannot be.
+
+    Strict, so a symlink loop raises on every Python the zoo supports:
+    `RuntimeError` on 3.11 and 3.12, `OSError` on 3.13+, where a non-strict
+    resolve returns the looping path unchanged (Qodo 3 on PR #2, `SPEC.md`
+    §5.4). A path that does not exist is resolved as far as it goes, so a
+    missing file is still judged by where it would be -- reported as missing
+    by `verify` -- and a dangling symlink by where it points.
+    """
+    try:
+        return path.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        return path.resolve()
+
+
 def _listed(document: dict[str, Any]) -> set[str]:
-    """Every file the manifest accounts for, from both of its lists."""
+    """Every file the manifest accounts for, from both of its lists.
+
+    A list that is not a list accounts for nothing; `_rehashed` has already
+    said so (`SPEC.md` §5.6).
+    """
     names: set[str] = set()
     for key in (BODIES, FILES):
-        for entry in document.get(key) or []:
+        entries = document.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
             if isinstance(entry, dict) and isinstance(entry.get("file"), str):
                 names.add(entry["file"])
     return names
@@ -882,7 +1014,14 @@ def _incomplete(run: Path, document: dict[str, Any]) -> list[str]:
             f"{' nor '.join(KINDS)} (SPEC.md section 5.2) -- the audit reads "
             f"this field as the truth about the run"
         )
-    for problem in document.get(PROBLEMS) or []:
+    recorded = document.get(PROBLEMS)
+    if recorded is not None and not isinstance(recorded, list):
+        found.append(
+            f"{run}: {MANIFEST_NAME}'s {PROBLEMS!r} is not a list, so what the "
+            f"run recorded going wrong cannot be read (SPEC.md section 5.6)"
+        )
+        recorded = None
+    for problem in recorded or []:
         found.append(
             f"{run}: {MANIFEST_NAME} records a problem from the run: {problem}"
         )

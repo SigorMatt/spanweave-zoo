@@ -4,6 +4,767 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## decisions-zoo-2026-10-14b, commit 4 — the close reviews archived, Qodo 5, O-1, O-2, O-4, O-6, N-2
+
+Documentation and tests only, as `patches/decisions-zoo-2026-10-14b.md`
+accepted them. No `SPEC.md` change, no capture touched (`make verify` green),
+no committed report regenerated.
+
+- **Qodo 5:** `audit.py`'s module docstring said the two policy runs replay
+  "with the captured gaps slept (B6a)"; it now says "each replayed back to
+  back, nothing slept (B6a, B6b)", as the code does.
+- **O-1:** `PROBES.md` S8's "on no other" now reads "on no other `llm` node"
+  (25 `turn`, 2 `Agent workflow` and 1 `echo-planner` node also have outputs
+  *absent*), and S8 records that the inputs are *absent* on the same nine
+  `ChatCompletion` nodes and on 8 of the 9 `generation` nodes that carry the
+  dropped count — read from both committed Z3 reports, the same in each.
+- **N-2:** S15's Captures is the ten with `parent` edges; the Z4 sentence
+  stays, and Z4's `ROADMAP.md` row is unchanged.
+- **O-6:** `ROADMAP.md`'s Z6 Brief cell gains "(two instrumentors; one client
+  seen once — S6)".
+- **O-4:** `_origin`'s two *absent* branches are held by
+  `test_a_node_whose_line_number_is_zero_says_absent` and
+  `test_a_node_with_no_line_number_says_absent`. Dropping the `1 <=` bound
+  (a 0 wraps to the last record) and dropping the `position is None` guard (a
+  `TypeError`) both survived the suite before; each now fails one of these.
+- **O-2:** `reviews/` gains the builder's close note
+  (`REVIEW-2026-10-14-close.md`), the aux's review of the close
+  (`REVIEW-2026-10-14.md`) and Qodo's review of PR #2
+  (`QODO-2026-10-14.md`, comment `6158862024` as fetched before Qodo's
+  09:00:03Z edit); `SHA256SUMS` lists 30. `TASKS.md` dispositions all three,
+  declines Qodo's two PR #2 alternatives, and registers O-3/N-5 and O-5 as
+  series-3 threads.
+
+## decisions-zoo-2026-10-14b, commit 3 — Qodo 3 on PR #2
+
+A manifest entry that cannot be resolved, as
+`patches/decisions-zoo-2026-10-14b.md` accepted it. `SPEC.md` §5.4, §5.6,
+§6.1 and §6.4 touched. No capture touched (`make verify` green), no committed
+report regenerated.
+
+- **Qodo 3:** `outside_run` called `Path.resolve()` unguarded, so a `file`
+  entry naming a symlink loop raised `RuntimeError` out of `zoo verify` and
+  `zoo replay` on 3.11 and 3.12. On 3.13+ a non-strict resolve returns the
+  looping path unchanged, so the same entry passed the check: `verify`
+  called it missing, and `zoo replay --json` sent the other side as if the
+  manifest were sound. The path is now resolved strictly (a missing file or
+  a missing directory falls back to a non-strict resolve, so a missing file
+  is still reported as missing and a dangling symlink out is still outside),
+  and `OSError` or `RuntimeError` from it is the reason "which cannot be
+  resolved -- a symlink loop or an unreadable link -- so it was not read":
+  a `verify` problem naming the entry, exit 1, and a replay refusal naming
+  it, exit 2, nothing sent, the same on every Python. Replay's refusal now
+  reads "names a file that is not one of the run directory's", because a
+  loop is not outside it. Tests:
+  `test_a_file_entry_that_cannot_be_resolved_is_a_problem_not_a_traceback`
+  and
+  `test_a_manifest_entry_that_cannot_be_resolved_is_refused_and_nothing_sent`.
+
+## decisions-zoo-2026-10-14b, commit 2 — Qodo 4 on PR #2
+
+`zoo sink`'s signal handling, as `patches/decisions-zoo-2026-10-14b.md`
+accepted it. `SPEC.md` §3.7 touched. No capture touched (`make verify`
+green), no committed report regenerated.
+
+- **Qodo 4:** `run_sink` put the handlers it had replaced back first in its
+  `finally`, before the settle wait (up to 10 seconds), the close and the
+  seal, so a second `SIGINT`, `SIGTERM` or `SIGHUP` in that time took the
+  default action and left the capture unsealed. The handlers are now put back
+  only after `manifest.finish`, as `zoo capture` does; a repeated signal
+  during the seal asks the server to shut down again and nothing else. Test:
+  `test_a_second_signal_during_the_settle_wait_still_seals_the_manifest`.
+
+## decisions-zoo-2026-10-14b, commit 1 — Qodo 1 and Qodo 2 on PR #2
+
+The sink's two findings from Qodo's review of PR #2, as
+`patches/decisions-zoo-2026-10-14b.md` accepted them. `SPEC.md` §3.3, §3.7
+and §5.5 touched. No capture touched (`make verify` green), no committed
+report regenerated.
+
+- **Qodo 1:** an all-digit `Content-Length` longer than Python's int-string
+  conversion limit (4300 digits by default) passed the digits check and
+  `int()` raised `ValueError` out of the handler: nothing recorded, nothing
+  answered. `declared_length` now catches it and declares no length, so the
+  request is unframed as any non-length is — a zero-byte body, the answer,
+  `Connection: close` (§3.7's table gains the row). Test:
+  `test_a_length_too_long_to_convert_is_unframed`.
+- **Qodo 2:** a POST was counted as under way only from `handling()`, after
+  its head was read, so a connection accepted just before the listener
+  closed could miss both `settle()`'s wait and `close()`'s snapshot and then
+  be refused with nothing in the sealed manifest. The handler now counts it
+  from `setup()` — the accept, before a byte of the head — until it is
+  answered, refused, or its connection ends; a further POST on a kept-alive
+  connection still counts from its head (§5.5). One refused that way is the
+  `a POST not yet recorded` problem. Test:
+  `test_a_post_accepted_before_its_head_is_read_is_named_when_refused`.
+
+## B8 — series 2 closes
+
+All twelve captures audited again with one audit, `PROBES.md` consolidated,
+and the series' plan folded into `TASKS.md` and deleted. No code changed (one
+test docstring's citation moved from `WORKPLAN.md` to `TASKS.md`), no
+`SPEC.md` section touched, no capture touched (`make verify` green), so no test
+red on a parent is owed.
+
+- **Reports:** `zoo audit` on the twelve captures under `captures/` (Z1–Z6,
+  real and recorded) with the audit as B6c left it (`4b57f18`), at the
+  `audit` extra's pins (unchanged); the twelve `audit/*.md` replaced in place.
+  Findings per report unchanged: Z4 3 (spanweave-live 2, spanweave 1), every
+  other 1 (spanweave-live: every `raw/` body answered 415). Two runs of all
+  twelve, normalised for the `listening` ports and the clocks of `completed`
+  and `late_arrival` events, are identical; Z2's and Z6's equal the reports
+  B7-Z2 and B7-Z6 committed. Z1, Z3, Z4 and Z5 differ from their old reports
+  only in the layout B6b and B6c gave the audit (the node table's new
+  columns; no `--timing` on the policy runs) — every `serve` event the same.
+- **`PROBES.md`:** one list across Z1–Z6, by owner — spanweave-live 4 (L1–L4),
+  spanweave 22 (S1–S22), agentgolden 0 — each probe with all its captures, a
+  command, observed, and expected or *to establish*; a captures table; the
+  "seen again" sections merged into the first occurrence. Answered from the
+  reports' node tables, where they were *to establish* or read beside the
+  audit: S6 (Z3's 50 `llm` nodes are 25 `generation` nodes each with one
+  `ChatCompletion` child), S8 (the 18 nodes are both nodes of the last nine
+  pairs), S10 (the nine model-less nodes are those `generation` nodes, no
+  unmapped key naming a model), S11 (the two absent outputs and the two
+  `<record>.events` are the failed `http_get` nodes'), S14/S15 (body and
+  record per node; every child's record before its parent's in every
+  capture, 350 edges), L3 (the root the last record of the last body, in
+  Z3, Z1, Z2 and Z6), and S21 seen in Z3 too. S2 and S12 stay open: the
+  table gives no id for a parent absent from the graph.
+- **`ROADMAP.md`:** the six rows complete — repository and sha from each
+  local checkout, contract version from the capture's project manifest,
+  captures commit, audited "series 2 (B8; audit code `4b57f18`)"; the
+  checklist's never-run-manifest step; Z6's two operating notes; the threads
+  section now series 3's.
+- **`TASKS.md`:** series 2's registry B0–B8, the reviews' dispositions
+  (Qodo's twelve items with their commits; Qodo's wire-level-proxy
+  alternative declined), threads for series 3, and `WORKPLAN.md` §3 and §4
+  folded verbatim.
+- **`reviews/`:** Qodo's PR summary of PR #1 (comment `6127869987`) archived
+  byte for byte as `reviews/QODO-SUMMARY-2026-10-12.md`; `SHA256SUMS` 27
+  files, `sha256sum -c` green.
+- **`CLAUDE.md`, `CONTRIBUTING.md`, `OPEN_QUESTIONS.md`:** read true with no
+  plan open; each closed series' plan is in git (`22be077`, `1ed70a1`).
+- **`WORKPLAN.md`** deleted.
+
+## B7-Z6 — Z6 (`crew-of-three`) audited
+
+`zoo audit` on `captures/z6/2026-10-14-real` and `captures/z6/2026-10-14-recorded`
+with B6c's audit (`4b57f18`), at the `audit` extra's pins (unchanged). No
+`SPEC.md` section touched, no code or test changed, no capture touched
+(`make verify` green), so no test red on a parent is owed.
+
+- **Reports:** `audit/z6-2026-10-14-real.md` and `audit/z6-2026-10-14-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each. One finding
+  each: every `raw/` body answered 415 (spanweave-live). A second run differs
+  only in the `listening` ports and the clock readings of `completed` and
+  `late_arrival` events.
+- **Graphs:** one trace per capture. Real: 26 records in 11 bodies (`agent`
+  3, `chain` 1, `llm` 14, `tool` 8), 25 explicit `parent` and 18 derived
+  `temporal` edges; recorded: 16 records in 1 body (3, 1, 8, 4), 15 and 10.
+  No `orphan_parent`; live = batch = incremental (1,304,658 bytes real,
+  305,886 recorded); every record claimed by `openinference`; step 5 clean
+  (26 and 16 steps). The root's record is the last of the last body; real,
+  `--quiet 0` completes eleven times, once per body, `--root-grace 0` once by
+  `RootEnded`.
+- **`PROBES.md`:** L1, L3, S3, S7, S9 and S18 seen again in Z6, and S6 in
+  another shape (two instrumentors, but every `llm` node from the OpenAI
+  instrumentor and none from CrewAI's: no model call seen twice); new S19
+  (one `agent` node per task, `<role>._execute_core`, directly under the
+  crew's `release-notes.kickoff` `chain` — no separate task level; the
+  records' `graph.node.parent_id` names the previous agent, unmapped), S20
+  (`Delegate work to coworker.run` and `Ask question to coworker.run` are
+  `tool` nodes, each over one `ChatCompletion` carrying the coworker's
+  persona, no `agent` node for the coworker), S21 (records in a body grouped
+  by instrumentation scope, `openai` before `crewai`, not in end order) and
+  S22 (real and recorded as two shapes of one crew: the Reviewer's task has
+  15 children real — four lint passes, two delegations, one question — and
+  7 recorded, the scripted one send-back; the departure is the capture's own
+  fact). Observations only. Row premises shown not to hold: tasks are not
+  nested under agents, and the client is not seen twice. Counts restated:
+  spanweave-live 4, spanweave 22, agentgolden 0.
+- **`ROADMAP.md`:** Z6's row reads audited.
+
+## B7-Z2 — Z2 (`fan-out-researcher`) audited
+
+`zoo audit` on `captures/z2/2026-10-14-real` and `captures/z2/2026-10-14-recorded`
+with B6c's audit (`4b57f18`), at the `audit` extra's pins (unchanged). No
+`SPEC.md` section touched, no code or test changed, no capture touched
+(`make verify` green), so no test red on a parent is owed.
+
+- **Reports:** `audit/z2-2026-10-14-real.md` and `audit/z2-2026-10-14-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each, the first
+  reports with B6c's Body and Record columns. One finding each: every `raw/`
+  body answered 415 (spanweave-live). A second run differs only in the
+  `listening` ports and the clock readings of `completed` and `late_arrival`
+  events.
+- **Graphs:** one trace per capture, 23 records (`chain` 14, `llm` 6, `tool`
+  3), 22 explicit `parent` edges, 14 derived `temporal` edges, no
+  `orphan_parent`; live = batch = incremental (186,168 bytes real, 172,483
+  recorded); every record claimed by `openinference`; step 5 clean (23
+  steps). Real: the root's record is the last of the last of three bodies;
+  `--quiet 0` completes three times, `--root-grace 0` once by `RootEnded`.
+- **`PROBES.md`:** L1, L3, S3, S7 and S9 seen again in Z2; new S16 (the three
+  `FunctionTool.acall` nodes are not siblings — each under its own
+  `call_tool` chain; they start in one order and end in another, records in
+  end order; `temporal` edges order the `call_tool` parents by start; each
+  parent ends just after its `acall`, the root last), S17 (two
+  `astream_chat` `llm` nodes per step, the inner nested in the outer, beside
+  `_prepare_chat_with_tools`; each inner's first-token event after its span's
+  end) and S18 (in `--quiet 0`'s generation graphs, `sibling start_time
+  ordering` edges join orphans whose stated parents differ). Observations
+  only. Counts restated: spanweave-live 4, spanweave 18, agentgolden 0.
+- **`ROADMAP.md`:** Z2's row reads audited.
+
+## B6c — the node table names the record
+
+The maintainer's decision of 2026-10-14 (B6c). `SPEC.md` §7.3, §7.5. No
+capture touched, and no committed report under `audit/` regenerated: they keep
+the layout they were written with until B8 audits all twelve again.
+
+- **Step 4's node table gains two columns after Node**: Body (the
+  `json/NNNN.json` the node's record came from) and Record (its 1-based index
+  among the records the pinned `Endpoint` read from that body). Both come from
+  step 3's reconstruction, located by the pinned library's
+  `Node.raw.line_number` (the record's position in the partition's feed); a
+  node whose number is missing or indexes no record says *absent* in both. The
+  audit reads no payload to place it.
+- `Partition.origins` is now `(body, index)` pairs; step 3's list and the
+  routed-but-unwritten finding render them as before (`json/0001.json record 3`).
+- Tests: on Z4's real capture (two bodies), every node's Body and Record match
+  the record found independently by value in the partition's feed, and the
+  four rows span both bodies; the fixture graph's two nodes named from two
+  bodies; a node the feed does not place reads *absent* (degenerate); the
+  report's header row. Red on the parent.
+- Mutation shown caught: the record's position in the feed shown in place of
+  its index within its body.
+
+## B7-Z1 — Z1 (`ledger-clerk`) audited
+
+`zoo audit` on `captures/z1/2026-10-13-real` and `captures/z1/2026-10-13-recorded`
+with B6b's audit (`390eb24`), at the `audit` extra's pins (unchanged). No
+`SPEC.md` section touched, no code or test changed, no capture touched
+(`make verify` green), so no test red on a parent is owed.
+
+- **Reports:** `audit/z1-2026-10-13-real.md` and `audit/z1-2026-10-13-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each, the first
+  reports with B6b's node table. One finding each: every `raw/` body answered
+  415 (spanweave-live). A second run differs only in the `listening` ports and
+  the clock readings of `completed` and `late_arrival` events.
+- **Graphs:** one trace per capture, 31 records (`chain` 19, `llm` 4, `tool`
+  6, `unknown` 2), 30 explicit `parent` edges, no `orphan_parent`; live =
+  batch = incremental (266,641 bytes real, 249,322 recorded); every record
+  claimed by `openinference`; step 5 clean (31 steps).
+- **`PROBES.md`:** L1, L3, S3, S7 and S9 seen again in Z1; new S14
+  (`openinference.span.kind = PROMPT` kept as two `unknown`
+  `ChatPromptTemplate` nodes) and S15 (the row's points of interest: depth 8,
+  root to each of five `fx_rate` tool nodes; every child's record before its
+  parent's, 30 of 30, within and across bodies; `summarize` is a `chain`
+  node whose `llm` child is `ChatOpenAI`, not on the way back up from
+  `fx_rate`). Observations only. Counts restated: spanweave-live 4,
+  spanweave 15, agentgolden 0.
+- **`ROADMAP.md`:** Z1's row reads audited.
+
+## B6b — the node table names the span
+
+The maintainer's decision of 2026-10-13 (B6b). `SPEC.md` §7.3, §7.5, §7.6.
+No capture touched, and the six committed reports under `audit/` are **not**
+regenerated: they keep B6a's layout until they are audited again (B8).
+
+- **Step 4's node table gains five columns**: span name (`Node.name`), parent
+  id (each node whose `parent` edge points at it, or `—`), the unmapped
+  attribute keys on the node (from the `unmapped_attributes` diagnostics naming
+  it; names only, never values), and the inputs' and outputs' payload state as
+  `Payload.state` says it. The full order is in `SPEC.md` §7.5.
+- **No replay is `--timing`.** The two policy runs (`--quiet 0`,
+  `--root-grace 0`) replay back to back: `serve` ticks once per request, so
+  at `0` the sequence is the same timed or not (B6a's confirmation, §3). The
+  policy runs' table loses its "gap slept" column, and with nothing left to
+  sleep `audit()` loses its `sleep` seam (`SPEC.md` §7.6's row removed;
+  `cli.py` no longer passes one). `--cap` and non-zero values stay out.
+- Tests: the node table on a fixture graph (an orphan's parent id is `—`, a
+  child's is its parent's, the unmapped keys and a present input appear), the
+  report's header row, and step 2's three runs with no `--timing` anywhere in
+  the report. All red on the parent.
+- Mutation shown caught: a node with no `parent` edge shown as `none` instead
+  of `—` (both node-table tests fail).
+
+## B5d — the sink frames by the record's own parse
+
+B5c's open case; the maintainer's decision of 2026-10-13. `SPEC.md` §2.3,
+§3.7. No capture touched; the sink still decodes no framing, and
+`NNNN.headers.json` is derived as before.
+
+- **The framing headers come from §2.3's split of the recorded head**
+  (`framing_of`), never from the stdlib's `self.headers`, which splits on a
+  bare CR and a bare LF. `Content-Length:` LF ` 5` and `X: a` CR
+  `Content-Length: 5` were read by a length of `5` the record does not show;
+  each is now unframed: a zero-byte body, the answer with `Connection: close`,
+  the connection closed.
+- **Two consequences of the same rule, beyond the two named heads:** a
+  `Transfer-Encoding` that exists only in the stdlib's parse (`X: a` CR
+  `Transfer-Encoding: chunked`) no longer unframes a request whose record
+  shows `Content-Length: 5` -- it is read by its `5` and keeps its
+  connection; and a head with no CRLF at all (A3g's LF-only head) has no
+  `Content-Length` on the split, so its body is now zero bytes and its
+  connection closed. The A3g sink test and the replay test's `lf-only` shape
+  are updated to say so; their head assertions are unchanged.
+- **`SPEC.md` §3.7** states the rule once and lists the cases under it; §2.3
+  no longer says the stdlib's `Content-Length` frames the body. B5c's fold
+  check stays, as a case of the rule.
+- Tests: the two heads, each followed on the connection by a well-formed POST
+  that must not be read, with the split asserted; the stdlib-only
+  `Transfer-Encoding` edge. All red on the parent, with the two updated tests;
+  B5a--B5c's tests unchanged and green.
+- Mutation shown caught: framing by the stdlib's `Content-Length` values
+  (both new heads, the LF-only sink test and the replay `lf-only` shape fail).
+
+## B7r — every captured project audited once more, with the one audit
+
+`zoo audit` on Z4's, Z3's and Z5's six captures with B6a's audit (`07285bd`),
+at the `audit` extra's pins (unchanged). No `SPEC.md` section touched, no code
+or test changed, no capture touched (`make verify` green).
+
+- **Reports replaced:** the six `audit/z{4,3,5}-*-{real,recorded}.md`,
+  rewritten in place by `zoo audit` (same filenames; no old report kept beside
+  a new one), exit 0 each. Findings unchanged: Z4 3 each, Z3 1 each, Z5 1 each.
+- **Re-run determinism:** a second run of all six, into the scratchpad,
+  differs from the committed reports only in the `listening` ports and the
+  clock readings of `completed` and `late_arrival` events — identical line for
+  line once those are normalised. No finding about the audit's method.
+- **`PROBES.md`:** every probe cites the re-audit; observations marked
+  *(B7r)*. Moved from *to establish* / *not observable* to observed: L3
+  (`--quiet 0` completes Z3 real four times, once per body, three
+  `late_arrival`s; `--root-grace 0` once, by `RootEnded`, at the last
+  record), L4 (`Quiet(0)` completes Z5's rootless trace; under
+  `--root-grace 0` the end-of-input `Cap(0)` does, never `RootEnded`), S5 and
+  S9 (which nodes carry `unpaired_call`), S10 (the nine `llm:-` steps are the
+  nine `llm` nodes with no `model` in the graph), S11 (both `http_get` nodes
+  status `error`, one `exception` event each), S12 (which two nodes are
+  orphaned). Observed further, still partly *to establish*: L2 (Z4 under each
+  policy), S2, S3, S6, S13; S8 stays (the node table names codes, not keys).
+  No new probe, no new finding; counts and the
+  pins paragraph restated.
+- **`ROADMAP.md`:** Z3's, Z4's and Z5's rows cite the re-audit.
+
+## B6a — the audit observes every policy and names every node
+
+`OPEN_QUESTIONS.md` §8, option 1 over a timed replay (the maintainer's decision
+of 2026-10-13). `SPEC.md` §7.3, §7.5, §7.6. No capture touched, neither pin
+moved; the committed `audit/*.md` reports are not regenerated here (B7r).
+
+- **Step 2 runs `serve` three times.** The end-of-input run (`--requests N`,
+  untimed) as before, still the one step 3 compares; then `--quiet 0
+  --requests N` and `--root-grace 0 --requests N`, each replayed with
+  `--timing`. Per policy run the report tables every `completed`,
+  `late_arrival`, `written` and `released` event -- trace, index, generation
+  (counted from the receiver's events, which carry none) and reason (a
+  `completed` detail's clause before its first colon) -- with the `finished`
+  event, every body's status and the gap slept before it, and every event
+  verbatim. The Method says the zeros are the audit's values: the pinned
+  receiver documents no default. The policy runs yield no finding; one that
+  could not be completed is an incomplete step (exit 1).
+- **Step 4 adds a row per node**: id, kind, status, model, parent present
+  (yes / no / absent from graph), the diagnostic codes naming it, and its span
+  events as the record carries them (the record's `events`, verbatim as
+  compact sorted JSON beneath the table, or *absent*).
+- **`audit.audit()` takes a `sleep` seam**, keyword, no default; `cli.py`
+  passes the one real `time.sleep`. A capture's timed runs take as long as
+  its captured gaps: Z3's `real` audit now takes about 23 s, the others
+  about a second.
+- Tests: through the `serve_command` seam, the four `serve` argvs (step 1's,
+  then step 2's three with their flags) and the captured gap slept on exactly
+  the two policy runs; the policy table's reasons and generations, and the
+  generation count on a crafted event stream (`forgotten` restarts it); a
+  graph with one ERROR node whose row carries `error`, its model, `absent
+  from graph` and its events; a node stating no parent and carrying no
+  events; a row for every node of Z4's `recorded` report. Red on the parent.
+- Mutations shown caught: the policy runs replayed untimed (no gap slept);
+  the status cell not read from the node (`unset` for the ERROR node).
+
+## B5c — a folded `Content-Length` is unframeable
+
+B5b's open case; the maintainer's decision of 2026-10-13. `SPEC.md` §3.3,
+§3.7. No capture touched; the sink still decodes no framing, and
+`NNNN.headers.json` is derived as before.
+
+- **A `Content-Length` continued on a folded line** (obs-fold: the next line
+  of the head begins with a space or a tab) is unframed: a zero-byte body, the
+  usual answer with `Connection: close`, the connection closed. Before, the
+  stdlib joined `Content-Length:` CRLF ` 5` into `5` and the body was read by
+  a length the record does not show -- there the header is empty and ` 5` is
+  `unparsed`.
+- **`SPEC.md` §3.7's table** gains the row.
+- Tests: three folded cases (empty then a space fold, empty then a tab fold,
+  digits then a fold), each followed on the connection by a well-formed POST
+  that must not be read, with the head's split asserted unchanged -- the first
+  two red on the parent, the third green on it by design (its joined value was
+  never digits); one guard, a fold on another header keeps the connection.
+- Mutations shown caught: recognising only a space as a fold (the tab case
+  fails); treating a fold after any header as unframed (the guard fails).
+
+## B5b — a `Content-Length` is digits, once
+
+Review of B5a's remainder; the maintainer's decision of 2026-10-13. `SPEC.md`
+§3.3, §3.7. No capture touched; the sink still decodes no framing.
+
+- **A `Content-Length` is `1*DIGIT` and nothing else** (RFC 9110 §8.6), once
+  the spaces and tabs around it are removed. `+5`, `5_0`, and a `5` beside
+  whitespace that is not a space or tab are unframed: a zero-byte body, the
+  usual answer with `Connection: close`, the connection closed. Before,
+  `int()` read each as a length and the octets after the body were parsed as
+  the next request.
+- **Two `Content-Length` headers that differ are unframed** the same way.
+  Before, the first one won. Identical repeats are one length and keep the
+  connection, as before.
+- **`SPEC.md` §3.7's table** gains the rows; "not a number" and "negative"
+  are now one row, "not `1*DIGIT`".
+- Tests: five unframed cases (`+5`, a vertical tab before the `5`, `5_0`,
+  `5`/`6` and `6`/`5`), each followed on the connection by a well-formed POST
+  that must not be read -- all red on the parent; three kept-connection
+  guards (identical repeats, identical up to whitespace, trailing
+  whitespace), green on the parent by design.
+- Mutations shown caught: reading only the first header (2 cases fail);
+  treating any repeat as unframed (2 guards fail).
+
+## B7-Z5 — Z5 (`flaky-fetcher`) audited
+
+`zoo audit` on `captures/z5/2026-10-13-real` and `captures/z5/2026-10-13-recorded`,
+at the `audit` extra's pins (unchanged). No `SPEC.md` section touched, no code
+or test changed, no capture touched (`zoo verify` green on both before the audit).
+
+- **Reports:** `audit/z5-2026-10-13-real.md` and `audit/z5-2026-10-13-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each. One finding
+  each: the `raw/` body answered 415 (spanweave-live).
+- **Graphs:** one trace per capture, 4 records (`chain` 2, `tool` 2, no `llm`,
+  no root), live = batch = incremental byte for byte (17,691 bytes); every
+  record claimed by `openinference`; step 5 clean.
+- **`PROBES.md`:** L1, S3 and S7 seen again in Z5; new L4 (no root: one
+  completion, the end-of-input `Cap(0)`; `Quiet` and `RootEnded` not exercised
+  by the audit), S11 (two `http_get` tool nodes; `<record>.events` unmapped; no
+  status shown), S12 (`orphan_parent` × 2), S13 (real and recorded bodies
+  differ in 380 of 5,934 bytes; graphs equal in size, not byte-identical —
+  trace ids differ). Observations only; the open ones are marked *to establish*.
+- **`ROADMAP.md`:** Z5's row reads audited.
+
+## B7-Z3 — Z3 (`echo-planner`) audited
+
+`zoo audit` on `captures/z3/2026-10-13-real` and `captures/z3/2026-10-13-recorded`,
+at the `audit` extra's pins (unchanged). No `SPEC.md` section touched, no code
+or test changed, no capture touched (`zoo verify` green on both before the audit).
+
+- **Reports:** `audit/z3-2026-10-13-real.md` and `audit/z3-2026-10-13-recorded.md`,
+  as `zoo audit` wrote them (default `--out audit`), exit 0 each. One finding
+  each: every `raw/` body answered 415 (spanweave-live). A second run differs
+  only in the `listening` port and a `completed` event's clock readings (§7.3).
+- **Graphs:** one trace per capture, 102 records, live = batch = incremental
+  byte for byte; every record claimed by `openinference`; step 5 clean.
+- **`PROBES.md`:** L1 and S3 seen again in Z3; new L3 (root in the last of four
+  bodies: one completion, at the end of input), S6 (two instrumentors: 50 `llm`
+  nodes), S7 (unmapped OpenInference keys, 363 kB), S8
+  (`droppedAttributesCount` on 18 nodes; the 599 SDK lines are not in the
+  capture), S9 (`unpaired_call` × 48), S10 (nine `llm` steps with no model).
+  Observations only; the open ones are marked *to establish*.
+- **`ROADMAP.md`:** Z3's row reads audited.
+
+## B5a — a request with `Transfer-Encoding` is never read by its `Content-Length`
+
+Review of B5's remainder; the maintainer's decision of 2026-10-13. `SPEC.md`
+§3.3, §3.7. No capture touched; the sink still decodes no framing.
+
+- **Any `Transfer-Encoding` makes a POST unframed**, whatever its
+  `Content-Length` says: a zero-byte body, the usual answer with `Connection:
+  close`, and the connection closed. Before, a POST carrying both headers with
+  a positive length was read by that length -- the first octets of its chunk
+  frames recorded as the body and the rest parsed as the next request (a stray
+  `400`/`501`, or a second request nobody sent).
+- **A negative `Content-Length` closes too**, with or without
+  `Transfer-Encoding`. Before, with none, it was a zero-byte body on a kept
+  connection, and the octets after it were read as the next request.
+- **`SPEC.md` §3.7 now has a table** of every framing case and its outcome.
+- Tests: a POST with both headers followed by its chunk frames and a
+  well-formed POST on one connection, a negative length alone likewise, and
+  three new framings in the unframed parametrization (positive with
+  `chunked`, positive with another `Transfer-Encoding`, negative alone) -- all
+  red on the parent.
+- Mutation shown caught: dropping the `Transfer-Encoding` check (4 cases
+  fail).
+
+## B4a — the replayer refuses a path outside the run
+
+`OPEN_QUESTIONS.md` §7, option 1. `SPEC.md` §5.4, §6.1, §6.4, §6.5, §7.2. No
+capture touched; every bad manifest in the tests is on a copy in a tmp dir.
+
+- **`zoo replay` applies B4's path rule before reading anything** (`SPEC.md`
+  §6.1): every `file` entry of `bodies` and `files`, on the side it sends and
+  the side it does not, goes through `manifest.outside_run` -- the function
+  `verify` uses, now public, with `manifest.misplaced` listing the entries.
+  An absolute entry, a non-normalized one (`..`) or one resolving outside the
+  run through a symlink is a refusal naming the entry, exit 2, nothing read
+  and nothing sent. Before, `raw/../../outside.body` passed the `raw/` prefix
+  filter and was sent (exit 0), and an absolute entry was refused only by
+  accident, without being named.
+- **The audit is unchanged**: such a run fails `verify`, so §7.2 already
+  refuses it before step 1; a new test asserts the refusal names the entry
+  (an absolute and a `..` entry, on fixture copies).
+- Tests: 12 replay cases (absolute and `..` on the raw and json sides, a `..`
+  in `files`, a symlink out; each sent `--raw` and `--json`) red on the
+  parent, a check that `planned` reads no body or head before refusing, and
+  the committed capture yielding no misplaced entry.
+- Mutation shown caught: checking only the side being sent (8 of the 12
+  cases fail).
+
+## B2b — the per-body cost is a count, not a clock
+
+`test_sixteen_hundred_bodies_cost_the_same_each` failed on the macOS leg again
+at `7275b12`, on CPU time this time (510 -> 1,333 us/body). No capture touched;
+the bytes the recorder writes are unchanged.
+
+- **A new seam, `open_file`** (`SPEC.md` §3.6): the recorder opens every file
+  it writes to record a body -- the body, both headers files, the journal
+  append -- through it, binary. The default is the real filesystem.
+- **What a body costs** is defined once, in §3.6: the files opened through the
+  seam for that body, each as mode, octets read, octets written. The test
+  records 1,600 bodies through a counting seam and asserts body 1,600's cost
+  **equals** body 1's. A `sys.addaudithook` watch fails the test if the
+  recorder opens a file under the run any other way while recording, so a
+  rescan cannot bypass the count. No time is measured or asserted.
+- Mutation shown caught: B2a's O(n) rescan of the journal in
+  `manifest._journal`, both outside the seam (a bypassed open) and through it
+  (body 1,600 reads 185,484 octets, body 1 reads none).
+
+## B6 — the audit says "not run" when it cannot vouch
+
+Qodo Q4, Q5 (`TASKS.md`, "Series 2"). `SPEC.md` §7.3, §7.5, §7.6.
+
+- **(a) A step-3 reconstruction that does not match `serve` runs nothing
+  after it** (`SPEC.md` §7.3). When the in-process re-read's statuses are not
+  `serve`'s answers, or its record count is not `serve`'s `routed`, no
+  partition is compared and steps 4 and 5 are not run: the report renders
+  steps 3, 4 and 5 as *Not run*, step 3 naming the difference, and none of
+  them yields a finding; exit 1. Before, step 3 was marked incomplete and its
+  findings, `inspect` and the signature smoke were emitted anyway. Steps 1
+  and 2's findings stand.
+- **(b) A `serve` command that cannot be executed is `serve did not start`**
+  (`SPEC.md` §7.5): `Popen` raising `OSError` becomes that step's problem
+  (`serve did not start: FileNotFoundError: …`), the report is still written,
+  exit 1. Before, the `OSError` escaped and no report was written.
+- **A `reread` seam** on `audit.audit()` (`SPEC.md` §7.6), default the
+  module's `reread`, so a test drives the mismatch without a defect in
+  spanweave-live.
+- **Tests** (`tests/test_audit_real.py`, `needs_audit`): statuses that do not
+  match, and one record fewer than `routed`, each through the seam on the Z4
+  `recorded` capture — exit 1, no step ≥ 3 finding, steps 3–5 *Not run*, no
+  `inspect` in the report; a nonexistent serve command — exit 1, both serve
+  steps `serve did not start: `, steps 3–5 *Not run*, the report written, and
+  `zoo audit` through the CLI exits 1 with the report on disk. All three red
+  on the parent.
+- **Mutation shown caught**: `found = None` in the mismatch branch replaced by
+  `pass` — both mismatch tests are red (step-3 findings emitted).
+
+## B5 — the wire is honest at its edges
+
+Qodo Q9, Q11, Q3 (`TASKS.md`, "Series 2"). `SPEC.md` §3.3, §3.7, §4.3, §6.2,
+§6.3.
+
+- **(a) A POST the sink cannot frame closes its connection** (`SPEC.md` §3.3,
+  §3.7). No `Content-Length`, a non-numeric one, or a non-positive one with a
+  `Transfer-Encoding` beside it: still recorded as a zero-byte body and
+  answered as before, now with `Connection: close`, and the connection is
+  closed after the answer. Kept alive, a chunked POST's chunks were read as
+  the next request line and drew a stray `400`. The sink still decodes no
+  framing (decision of 2026-10-12, B5(a)); B3's no-answer close after the
+  journals close is unchanged. `Content-Length: 0` with no
+  `Transfer-Encoding` keeps its connection.
+- **(b) An IPv6 literal is bracketed in `Host`** (`SPEC.md` §4.3, §6.2):
+  `forward.authority` writes `[::1]:4318`, used by `zoo replay`'s send and by
+  `HttpForward`. Before, `--to http://[::1]:4318` sent `Host: ::1:4318`.
+- **(c) `replay --timing` measures each gap from the body before it in the
+  capture, sent or not** (`SPEC.md` §6.3): a body whose head cannot be read
+  still advances the previous receipt to its own `received_at` (or to none,
+  when that is unreadable too, and the next gap is said not computed).
+- **Tests**: `tests/test_sink.py` — a chunked POST then a well-formed one on
+  one connection is one body, one `200`, `Connection: close`, no `400`; each
+  unframed shape (no length, `five`, `0` + TE, `-3` + TE) likewise; the
+  rejected side (`404`) likewise; `Content-Length: 0` keeps the connection.
+  `tests/test_replay.py` — `--to http://[::1]:<port>` into a real IPv6
+  listener receives `Host: [::1]:<port>`; `forward.authority`;
+  `HttpForward("::1", …)`; a skipped first and a skipped middle body; a
+  skipped body with no `headers.json`. All red on the parent except the
+  keep-alive guard.
+- **Mutation shown caught**: `if self._unframed:` in `_answer` replaced by
+  `if False:` — the chunked test and the five unframed cases are red.
+
+## B4 — `verify` trusts nothing a manifest says about where a file is
+
+Qodo Q10, Q12 (`TASKS.md`, "Series 2"). `SPEC.md` §5.4, §5.6.
+
+- **A list that is not a list is a problem, not a `TypeError`**: `"files": 1`
+  and `"problems": 1` used to crash `zoo verify` (in `_listed` and
+  `_incomplete`); each is now one line (`'files' is not a list`, `'problems'
+  is not a list`) and a non-zero exit, as `_rehashed` already did.
+- **A `file` entry is a normalized relative path under the run directory**
+  (`SPEC.md` §5.4): one that is absolute, has a `.`/`..`/empty part, or —
+  symlinks followed — resolves outside `run.resolve()` is a problem naming
+  the entry, and the file it points at is **not read**. Before, a resealed
+  manifest listing an outside file with its correct digest verified. The seal
+  decision of 2026-10-11 stands: a resealed manifest still verifies, within
+  the run directory.
+- **Tests** (`tests/test_manifest.py`): `"files": 1`, `"problems": 1`, an
+  absolute entry, a `../../../` entry and a symlink out (each resealed, each
+  asserting the outside file is never read), a `raw/../raw/0001.body` entry
+  that lands back inside; all red on the parent. A symlink that stays inside
+  the run directory still verifies.
+- **Mutation shown caught**: the lexical checks kept and the
+  `resolve().is_relative_to(run.resolve())` check removed — the symlink case
+  verifies (exit 0) and is red.
+
+## B3a — standalone `zoo sink` seals only once nothing can write
+
+B3's close-then-seal extended to `run_sink` (decisions log 2026-10-13: "nothing
+writes after the seal" has no exception). `SPEC.md` §3.3, §3.7, §5.5.
+
+- **`zoo sink` stops in B3's order**: the loop returns and the listening socket
+  is closed, every POST still being handled is waited for (the bound
+  `zoo capture` uses, `capture.FLUSH_WAIT`, 10 s), the recorder's journals are
+  closed (`Recorder.close`, B3's mechanism, not a second one), and only then is
+  the manifest assembled and sealed. Before, it sealed while a handler could
+  still write a body and a journal line into the sealed run.
+- A POST still being handled at the close is a `problems` entry
+  (`a POST not yet recorded: still being handled when the journals closed; …`,
+  or the body it had recorded), printed as a `!` line after
+  `zoo sink: stopped.`; the late body is recorded nowhere and answered nothing.
+- **`zoo sink` exits 1** when the sealed manifest records a problem (that one,
+  or an unreadable journal line `finish` reported, which it used to ignore), 0
+  otherwise — as `zoo capture` does.
+- **Test**: `test_a_post_the_standalone_sink_outwaits_writes_nothing_after_the_seal`
+  holds a POST in `before_record` past a shortened bound; every sealed file is
+  byte-identical after it is released, it gets no answer, and `zoo verify`
+  fails on that one problem only. Red on the parent (sealed at 0 bodies, then
+  `raw/0001.body` written and answered `200`).
+- **Mutation shown caught**: `run_sink` without the `recorder.close()` call
+  (the wait kept) — the late handler is answered `200` and writes after the
+  seal.
+
+## B2a — the per-body cost test measures the recorder, not the runner
+
+The registry's "macOS wall-clock cost test" (`TASKS.md`, series 1), failed
+again at B2's first CI run. Tests only: no behaviour change, `SPEC.md` §3.5
+(the claim under test) unchanged, no capture touched.
+
+- **`test_sixteen_hundred_bodies_cost_the_same_each`** times each body's
+  `record` call by **CPU time** (`time.process_time`), not by wall clock, and
+  compares the **median** of the first hundred bodies of a 1,600-body run with
+  the median of the last hundred. The bound stays (last < 2.0 × first); the
+  method and the bound are stated in the test's docstring.
+- **Mutation shown caught**: an O(n) rescan of the journal per body (each
+  append first re-reads and parses every line already written) — median
+  561 → 3,870 µs/body, ratio 6.89, red. Unmutated: ratio 1.04–1.16.
+
+## Between runs: export contract 1.3, the Z5 brief amendment, ROADMAP rows for Z3 and Z5
+
+Docs only: no behaviour change, no capture touched.
+
+- **`EXPORT-CONTRACT.md` 1.2 → 1.3**, from Z3's and Z5's reports: the real
+  run is the operator's, not the implementer's (§1, §5); `MANIFEST.json` is
+  written before the first model call (§1); §4 states the gateway's surface
+  (chat completions with tools and streaming) and that a model id may contain
+  `/` and is passed through unchanged; a closing "Changes from 1.2" paragraph.
+- **`ZOO-BRIEFS.md`, Z5**: the retry edge backs off a scripted 3 s, the same
+  in both modes, so a run that exits via `os._exit` outlasts the batch
+  processor's delay.
+- **`README.md`, Provenance**: both documents' new sha256s, "contract version
+  1.3", Z4's 1.0 described as 1.3 minus all three closing change sections,
+  and Z3 and Z5 named as built against 1.2.
+- **`ROADMAP.md`**: the Z3 and Z5 rows filled (repository, contract,
+  captures; not yet audited), and two operating notes — the Agents SDK's
+  reading of `vendor/` in a model id, and the batch processor exporting
+  nothing from a short run that exits via `os._exit`.
+
+## B3 — nothing writes to a capture after its seal
+
+Qodo Q2, Q7 (`TASKS.md`, "Series 2").
+
+- **`SPEC.md` §4.6, §5.5**: `zoo capture`'s shutdown waits for the raw sink's
+  handlers a second time, as long, after the Collector's stop has failed the
+  forwards still waiting on it, and then **closes both recorders' journals**
+  before it assembles the manifest. A recorder that is closed writes nothing:
+  a forward that completes afterwards is journalled nowhere and is in no list
+  (Q2), and a body that arrives afterwards is recorded nowhere. A POST still
+  being handled at the close is one `problems` entry naming its body (or
+  `a POST not yet recorded`) and one `!` line (§4.2). So a capture whose
+  forward outlived every bound is sealed, every digest holds, and `zoo
+  verify` names the one problem the run recorded.
+- **`SPEC.md` §3.3**: a POST that reaches a closed recorder is not answered —
+  the connection is closed with no status, since `200` means "recorded".
+- **`SPEC.md` §5.5, §5.6**: the journals are decoded a line at a time; a line
+  that is not UTF-8 is a `problems` entry naming the journal and the line,
+  like a line that is not a JSON object, and `finish` still writes `ended_at`
+  and the seal (Q7).
+- **Tests**: a forward held past the flush bound (injected `flush_wait` and a
+  forward the test releases) completes after the seal and leaves every file
+  byte-identical, `verify`'s only line the recorded problem; a byte `0xff` in
+  either journal yields a sealed, complete manifest listing the problem; a
+  POST to a closed recorder writes nothing and is not answered.
+
+## B2 — signals cover the whole life of a capture, and of the sink
+
+Qodo Q1, Q6, Q8 (`TASKS.md`, "Series 2").
+
+- **`SPEC.md` §4.6**: `zoo capture` installs its stop handlers **before** it
+  starts anything. A `SIGINT`, `SIGTERM` or `SIGHUP` during the readiness wait
+  ends the start as a refusal does — the Collector (its own session, A3e)
+  stopped, both sinks closed, `refusing to start: <signal> arrived before the
+  capture was ready …`, exit 2, no run directory. From the moment the run
+  directory is made a signal only asks the run to stop. Every step of the
+  start after the Collector is up — its log, the clock, the label, serving,
+  the readiness line — is inside the same unwind that stops it (Q8). The
+  launcher stops the child on any way out from the moment it exists, not only
+  from its readiness wait.
+- **`SPEC.md` §3.7**: `zoo sink` stops on `SIGTERM` and `SIGHUP` as on Ctrl-C:
+  `serve_forever` returns, and the manifest is assembled and sealed (Q6).
+  §5.5 says a failure anywhere in the start unwinds through `stop()`.
+- **Tests**: a stop signal (each of the three) while the stand-in Collector is
+  bound and not yet ready leaves no Collector process and no run directory,
+  exit 2; a `manifest.label` that raises stops the Collector and closes both
+  sinks; a readiness line that cannot be printed still ends in a sealed
+  capture; `SIGTERM`/`SIGHUP` to a standalone `zoo sink` give a sealed,
+  verified manifest. The `slow` stand-in and `ZooCapture(becoming_ready=True)`
+  are the harness for the readiness window.
+
+## B1 — the test harness does not lose a port race
+
+`OPEN_QUESTIONS.md` §6, option 4: no product change. `zoo capture` still picks
+no port and refuses a held one (`SPEC.md` §4.6).
+
+- **`SPEC.md` §4.2, §4.6**: `--port 0` and `--json-port 0` — already accepted —
+  are stated: a port the kernel chooses, read back from the two lines after
+  the readiness line. `--collector-port` is not given that meaning.
+- **`tests/ports.py`** (new): the suite's one `free_port()` pick, and a
+  bounded retry (5) of a whole start whose refusal names an address in use,
+  logging every port tried and failing after the last naming them all. Any
+  other refusal is not retried.
+- **`ZooCapture`** (`tests/test_shutdown.py`) passes `--port 0 --json-port 0`
+  and reads the bound ports back; it picks only the Collector's two ports,
+  through the retry, and is up when constructed. The in-process captures in
+  `test_shutdown.py`, `test_collector_real.py`'s protobuf test and
+  `test_capture.py`'s ready-Collector test start through the same retry.
+- **Tests**: a Collector port held under the first pick is picked again and
+  the run reaches readiness; sinks on `0` print two ports a test POSTs to; a
+  refusal naming no address in use is not retried; the retry is bounded and
+  names every port tried.
+
+## B0 — the two reviews of the close, archived and dispositioned
+
+Docs only: no behaviour change, no capture touched, no `SPEC.md` section.
+
+- **`reviews/QODO-2026-10-12.md`** (new): Qodo's review of PR #1 (comment
+  `6127903067`), byte for byte — the API's `body` without the trailing newline
+  `gh api --jq .body` adds. Its sha256 appended to `reviews/SHA256SUMS`, now
+  26 files, `sha256sum -c` green.
+- **`TASKS.md`, "Series 2"**: Qodo's twelve items Q1–Q12 and the close
+  review's two carried threads (the port race, the PR wording), each pointing
+  at the batch that closes it.
+
 ## Between series: export contract 1.2 and ROADMAP.md
 
 Docs only: no behaviour change, no capture touched.

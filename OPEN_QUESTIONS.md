@@ -17,10 +17,12 @@ thing.
 Each entry says what was asked, what the options were, what was decided, who
 decided it, and where the decision now lives.
 
-A citation of `WORKPLAN.md` below is to series 1's plan, which was deleted at
-that series' close: its §3 (decisions log) and §4 (resume notes) are folded
-verbatim into `TASKS.md`, and the whole file as it last stood is
-`git show 22be077:WORKPLAN.md`.
+A citation of `WORKPLAN.md` below is to the plan of the series that asked the
+question — §1–§5 to series 1's, §6–§8 to series 2's — each deleted at its
+series' close. Their §3 (decisions log) and §4 (resume notes) are folded
+verbatim into `TASKS.md`, and each whole file as it last stood is
+`git show 22be077:WORKPLAN.md` (series 1) and `git show 1ed70a1:WORKPLAN.md`
+(series 2).
 
 ---
 
@@ -300,3 +302,259 @@ reports a raise as a finding naming its owner. Option 3 is rejected for the
 reason the batch gave; option 2 would leave the one consumer smoke of the
 series untaken for the cost of a line in `pyproject.toml`. Applied in
 WORKPLAN.md §3 by the same commit.
+
+## 6. B1: `zoo capture` does not pick the Collector's port, so there is nothing to pick again
+
+**Status: open, 2026-10-12. Asked by B1, which stopped before writing any
+code or test: the row's premise does not hold of the code, and each way of
+making it hold is a rule `SPEC.md` does not state.**
+
+**The conflict.** B1's row (`WORKPLAN.md` §1, series 2) says "`zoo capture`
+picks the Collector's port, writes it into the config and launches the child",
+and asks that a bind failure make it "pick again, up to N". `TASKS.md`
+registers the thread the same way ("taken between the zoo's pick and the
+Collector's bind"). But `zoo capture` picks nothing: the Collector's receiver
+port is `--collector-port`, default `4320` (`SPEC.md` §4.6's option table),
+handed unchanged to the child through `ZOO_COLLECTOR_OTLP_HTTP`
+(`collector.Binary.environment`) **and**, before the launch, to the forward
+(`cli.run_capture` builds `forward.HttpForward(args.host, args.collector_port)`).
+The pick in the failing run was the **test harness's**: `ZooCapture` in
+`tests/test_shutdown.py` calls `free_port()` (bind port 0, read it, close) for
+all four ports and passes them on the command line.
+
+**Facts gathered, so the decision need not re-gather them.**
+
+- The CI failure (`gh run view 38273980263 --attempt 1 --log-failed`, PR run
+  at `e50a56e`): `zoo capture: refusing to start: the Collector exited with 1
+  before it reported ready on 127.0.0.1:43383`, the stand-in's own log ending
+  `OSError: [Errno 98] Address already in use`. So it was the Collector's port,
+  as registered; the refusal was the one §4.6 specifies for a held port.
+- `SPEC.md` §4.6 makes a held Collector port a refusal, and
+  `tests/test_capture.py::test_a_foreign_listener_on_the_collector_port_is_refused_and_writes_nothing`
+  holds that for an operator-named port. A retry that moved off an
+  operator-named port would turn that refusal into a success on a port the
+  operator did not choose.
+- `SPEC.md` §4.2: "The app's port is the one thing the zoo does not move" —
+  read as permission, the Collector's port is internal and movable; read
+  narrowly, it says nothing about it.
+- The same harness picks the raw and json sink ports the same way, and the
+  `zoo capture` subprocess binds them only after interpreter start-up, so the
+  window is at least as wide for them; a retry on the Collector's port alone
+  does not close the harness's race. The two readiness lines after the ready
+  line already print the raw and json ports (§4.2), so a harness could pass
+  `0` for those and read them back.
+- Binding a probe socket to pick a port is a socket outside an injected seam
+  unless a seam is added (`CLAUDE.md`, "One seam"); the forward would have to
+  learn the port after the launch (e.g. from the `Running` handle) rather than
+  from `args`.
+- The real Collector's bind failure reads `bind: address already in use`; the
+  stand-in's reads `OSError: [Errno 98] Address already in use`. "A log that
+  shows the bind failure" needs a stated marker either way.
+
+**The options, each with its cost.**
+
+1. **`--collector-port 0` means the zoo picks**, through a new `pick` seam
+   (§4.8), and only a picked port is retried: on a Collector that exits before
+   ready with an address-in-use line in its log, pick again, up to N (say 5),
+   and the refusal after N names every port tried. An operator-named port held
+   stays the refusal it is today; the default stays `4320`. The forward takes
+   the port the launcher ended on. `ZooCapture` passes `--collector-port 0`.
+   Cost: a new CLI meaning and a new seam; the sink ports' harness race is
+   left (or fixed in the same batch by passing `0` and reading the printed
+   ports — a second concern).
+2. **The zoo always picks the Collector's port** (default becomes "picked"),
+   on §4.2's reading that only the app's port is fixed, with the same retry;
+   `--collector-port` given explicitly disables the retry. Cost: a default
+   behaviour change in §4.6's table, `--help` and the README; an operator can
+   no longer predict the port without reading the ready lines.
+3. **Retry on any port, explicit or not**, picking a new one after a bind
+   failure. Cost: contradicts §4.6's held-port refusal and the foreign-listener
+   test; the operator's choice is overridden silently. Not recommended.
+4. **No product change: the race is the harness's, and is fixed there.** The
+   harness lets the subprocess choose (raw and json sinks at `0`, read back
+   from the printed lines) and, for the Collector port, retries the whole
+   `ZooCapture` start when the refusal names an address in use, bounded.
+   Cost: the maintainer's 2026-10-12 decision ("the retry is bounded and every
+   port tried is named") then describes the harness, not `zoo capture`, and
+   §4.6 does not change.
+
+**The decision (2026-10-12, maintainer).** Option 4. `zoo capture` is
+unchanged: it names its ports and a held one is §4.6's refusal. The harness
+stops picking for the two sinks (`0`, read back from the ready lines; `0`
+made acceptable for them if it is not) and retries its own start, bounded,
+when the refusal names an address in use. The series-1 thread and the
+2026-10-12 decision log entry are corrected to say "harness". Options 1–3
+are declined: each adds a product rule for a race only the test suite runs.
+
+## 7. B4a: the audit already refuses such a manifest, and §7.2 says a refusal writes no report
+
+**Status: open, 2026-10-13. Asked by B4a, which stopped before writing any
+code or test: the row's audit outcome contradicts `SPEC.md` §7.2, and each way
+of reconciling them is a rule the spec does not state.**
+
+**The conflict.** B4a's row (`WORKPLAN.md` §1, series 2) asks that "a manifest
+with an absolute entry and one with `..` make ... `zoo audit` write an
+incomplete report naming the entry". But such a manifest does not verify: B4
+(`99edcbd`) made `manifest.problems` -- through `_outside`, the function the
+row names as the shared check -- report an absolute, non-normalized or
+symlinked-out `file` entry as a problem. And `audit.audit()` calls
+`manifest.problems(run)` **first**, before any step reads a file, and refuses
+on any problem, exactly as §7.2 specifies: "the run does not verify (§5.6)"
+is a refusal, "exit **2**, no report written". So an incomplete report (exit
+1, §7.5) for this manifest would mean the audit *not* refusing a run that does
+not verify -- a change to §7.2's rule, not an application of B4's.
+
+**Facts gathered, so the decision need not re-gather them.** Observed at
+`a3daaf8` on copies of `tests/fixtures/capture` with `bodies[0].file` edited
+(scratchpad, never a real capture):
+
+- absolute entry (`/…/outside.body`): `zoo audit` exits 2, no report, and the
+  refusal line's first problem is `bodies[0] is '/…/outside.body', an
+  absolute path, outside the run directory (SPEC.md section 5.4)`. Nothing is
+  read: the check precedes step 1.
+- `..` entry (`raw/../../../outside.body`): `zoo audit` exits 2 the same way,
+  naming `bodies[0] is 'raw/../../../outside.body', not a normalized relative
+  path ...`.
+- `zoo replay --raw`, absolute entry: exit 2, but only **by accident** -- the
+  entry does not start with `raw/`, so `planned` filtered it out and the
+  refusal reads "holds no body under raw/", not naming the entry.
+- `zoo replay --raw`, `..` entry: the entry passes the `raw/` prefix filter and
+  **is read** (`run / "raw/../../../outside.body"` is opened; here it did not
+  exist, so "not sent", exit 1). This is the defect the row is about, and it is
+  the replayer's alone: the replayer never calls `verify`.
+- The audit's own reads (`serve` → `replay.planned`/`replay.replay`, and
+  `_request` in step 3) all take their names from `replay.planned`, so a check
+  in `planned` covers them too -- but behind the verify refusal that path is
+  unreachable through `zoo audit`.
+
+**The options, each with its cost.**
+
+1. **The audit keeps §7.2; the row's audit clause reads "refuses, naming the
+   entry".** `replay.planned` checks every `bodies` entry with `_outside`
+   (made public in `manifest`, one function for every reader) and raises
+   `ReplayRefused` naming the first bad entry, before anything is read or sent
+   -- so `zoo replay` exits 2 naming it, and the audit's `serve` inherits the
+   same check (defence in depth, rendered "step N not run" if ever reached).
+   The audit test asserts what is true today: exit 2, no report, the refusal
+   naming the entry. §5.4's "the rule exists for `zoo verify`" becomes "for
+   every reader of the manifest (`verify`, `replay`, `audit`)". Cost: the
+   row's "incomplete report" is corrected rather than delivered; the audit
+   half of the batch adds a test, not a behaviour.
+2. **A path-confinement problem is not a refusal for the audit.** The audit
+   refuses on every verify problem except an entry outside the run, which
+   instead makes the steps reading it "not run" and writes an incomplete
+   report (exit 1). Cost: an exception in §7.2, whose reason ("an audit of
+   bytes that are not the bytes recorded would be a reproduction of nothing")
+   applies to this case as much as any; a report would exist for a capture
+   `zoo verify` fails.
+3. **The audit never refuses on verify; every verify problem becomes an
+   incomplete report.** Cost: §7.2 and §7.5 both change; `make check`'s
+   "an unverified capture is not audited" guarantee goes; larger than the row.
+
+**A smaller question inside option 1.** Should `zoo replay --raw` refuse on a
+bad entry under `json/` (the side it is not sending)? (a) Yes -- any bad
+`bodies` entry makes the manifest one this cannot replay honestly, as it makes
+it one `verify` fails; (b) no -- only the entries it would read. (a) is the
+simpler rule and the one `verify` already follows.
+
+**Recommended:** option 1, with (a). It is B4's rule applied to the one reader
+that lacks it, and it leaves §7.2's refusal, which already names the entry and
+reads nothing, standing.
+
+**The decision (2026-10-13, maintainer).** Option 1. The audit keeps §7.2 and
+its test asserts the refusal names the entry; `zoo replay` gets B4's check on
+both sides of the manifest, and refuses before sending. Options 2 and 3 are
+declined: an incomplete report for a manifest `verify` rejects would have the
+audit read what `verify` would not, and every verify failure as an
+incomplete report would make the audit a second `verify` with a worse
+answer.
+
+---
+
+## 8. B6a: the pinned receiver documents no default for `--quiet` or `--root-grace`
+
+**Status: open, 2026-10-13. Asked by B6a, which stopped before writing any
+code, test or `SPEC.md` change: the row asks for `--quiet <default>` and
+`--root-grace <default>`, "the receiver's documented defaults at the pinned
+sha", and the batch brief makes an undocumented default a halt point. There
+is none, so the two values are a policy the zoo's spec does not state.**
+
+**Facts gathered at spanweave-live `cddc694` (the pin in `pyproject.toml`'s
+`audit` extra, installed and matching), so the decision need not re-gather
+them.**
+
+- `spanweave-live serve --help`: `--quiet S` "complete a trace that has had no
+  record for S seconds on this process's monotonic clock (SPEC.md 5.3)";
+  `--root-grace S` "complete a trace S seconds after an ended root was first
+  seen (SPEC.md 5.3) ...". Neither help text names a default.
+- `spanweave_live/cli.py`: both are `add_argument(..., type=float)` with **no
+  `default=`**, so each is `None` when absent, and `_policies` adds `Quiet` /
+  `RootEnded` only when given. Absent is "no such policy", not a number.
+- README.md, "The CLI": "Give several and they compose as any-of; **give none
+  and only end of input completes a trace**. The other flags are bounds, each
+  of them the caller's number rather than a default this library invented".
+  Its examples use `--quiet 30` (with `tail`) and `--root-grace 5` (with
+  `serve`) -- examples, not stated defaults.
+- SPEC.md §5 ("a policy the caller chose about when to stop"), §5.3 (the
+  three boundaries, inclusive; "`Quiet(0)` completes a trace on the first tick
+  after any record, which is legal"), §8.1 (flag table, no default column;
+  composition order `--quiet`, `--root-grace`, `--cap`), §8.5 ("The CLI ticks
+  **once per yield** ... per request served"; at the `--requests` count every
+  trace still held completes under `Cap(0)`).
+
+**What follows for the audit, whatever value is chosen.** Each policy run
+must still pass `--requests N` (without it `serve` never stops), so every
+trace a policy does not complete earlier is completed at end of input by
+`Cap(0)` -- the `completed` events' `policy`/reason is what distinguishes the
+two. `serve` ticks once per request, and the audit replays the bodies back to
+back (no `--timing`, so no sleep), so a positive number of seconds is a
+comparison against wall-clock gaps of milliseconds: `--quiet 30` or
+`--root-grace 5` would in practice never fire before end of input, every
+completion would read `Cap(0)`, and whether one did fire would depend on the
+machine's speed -- a report that could differ run to run for reasons not in
+the capture.
+
+**The options, each with its cost.**
+
+1. **Zero for both: `--quiet 0` and `--root-grace 0`.** `Quiet(0)` fires at
+   the first tick after any record (the receiver's own §5.3 sentence), so the
+   run shows which request's tick completed each trace; `RootEnded(0)` fires
+   at the first tick after an ended root is seen, so a root that arrived last
+   (Z3's, L3) and a trace with no root (Z5's, L4) show as the policy firing,
+   or not, before `Cap(0)`. Both are inclusive boundaries and need no clock
+   gap, so the observation is deterministic across machines. Cost: zero is
+   the zoo's choice, not the receiver's default; the Method says so in place
+   of the row's "documented defaults", and the row's wording is corrected.
+2. **The README's example values: `--quiet 30` and `--root-grace 5`.**
+   Closest to "documented". Cost: they are examples for a long-running
+   receiver, not defaults; under a back-to-back replay neither fires before
+   end of input, so the two extra runs observe what the `Cap(0)` run already
+   does, and L3/L4 stay "to establish" -- and the outcome is timing-dependent.
+3. **The README values with `zoo replay --timing`** (the captured gaps,
+   §6.3), so a policy sees the exporter's own pauses. Cost: the audit takes as
+   long as the capture did, sleeps on the real clock through §6.3's seam, and
+   whether a 5 s or 30 s boundary is crossed depends on scheduling as well as
+   on the capture -- non-deterministic reports, against `SPEC.md` §7.3's "the
+   clock readings ... differ from run to run; nothing else in a report does".
+4. **Ask spanweave-live for documented defaults.** A change in a pinned
+   library and a pin bump -- both halt points of their own -- and its README
+   states that it deliberately has none.
+
+**Recommended:** option 1. It is the only one under which the two extra runs
+observe something the end-of-input run does not, deterministically, and it
+answers the question B6a exists to answer ("what did each policy do with a
+rootless trace / a root that came last"). The row and the Method would say
+"`--quiet 0`, `--root-grace 0`: the receiver documents no default (README,
+'The CLI'), so the audit chooses the smallest legal value, at which each
+policy fires at the first tick its condition holds (its SPEC §5.3)".
+
+The second half of the row (step 4's per-node table) does not depend on this
+question; it was not started either, because the row is one batch and one
+commit.
+
+**The decision (2026-10-13, maintainer).** Option 1, with the two policy
+runs replayed under `--timing`: `--quiet 0` and `--root-grace 0` are the
+audit's values, stated in the Method, and the captured inter-body gaps make
+each body's verdict observable and the sequence deterministic. The untimed
+end-of-input run stays the one step 3 compares. Options 2 and 3 are declined
+for the reasons the batch gave; option 4 because the pin is the record.

@@ -45,8 +45,10 @@ nothing else (`split_head`), so a bare CR or LF stays inside the value it
 arrived in. The stdlib's parse had done worse than truncate: a value of
 `otel\\rX-Injected: yes` came out of it as two headers, one of which no client
 sent. The stdlib's parse is still what the sink *handled* the request with --
-its `Content-Length`, the content type it echoes, the path that chose the
-directory -- and it is no longer what the record says the request carried.
+the content type it echoes, the path that chose the directory -- and it is no
+longer what the record says the request carried. B5d took the framing out of
+it (`SPEC.md` §3.7): a body is read by the framing headers on the record's own
+split (`framing_of`), so the record and the framing cannot disagree.
 
 A3g took the parse out of the forward too (`SPEC.md` §4.3): the tee hands the
 Collector the recorded octets, with only the `Host` line and the hop-by-hop
@@ -70,6 +72,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import pairwise
 from pathlib import Path
 
 from spanweave_zoo import manifest
@@ -129,6 +132,80 @@ def field_name(line: str) -> str | None:
     if colon and name and all(character in _TCHAR for character in name):
         return name
     return None
+
+
+# The characters of a `Content-Length` (RFC 9110 §8.6: `1*DIGIT`). ASCII digits
+# and nothing else: `int()` would also take a sign, an underscore, whitespace
+# other than `_OWS`, and digits from other scripts.
+_DIGITS = frozenset("0123456789")
+
+
+def declared_length(values: list[str]) -> int | None:
+    """The body length a request's `Content-Length` values declare, or `None`.
+
+    `SPEC.md` §3.7 (B5b): each value, less the optional whitespace around it
+    (`_OWS`, as §2.3's split removes it), must be one or more ASCII digits;
+    repeats count as one length only when they are all equal. No value, a
+    value that is not digits, or two that differ declare nothing, and the
+    request is unframed. So do digits too many for `int()` to convert -- past
+    the interpreter's int-string conversion limit it raises `ValueError`
+    (Qodo 1 on PR #2): a value the sink cannot read as a length is no length.
+    Pure: the values decide it, never the body.
+    """
+    distinct = {value.strip(_OWS) for value in values}
+    if len(distinct) != 1:
+        return None
+    (value,) = distinct
+    if not value or not set(value) <= _DIGITS:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def folds_a_length(head: bytes) -> bool:
+    """Whether a `Content-Length` in the recorded head continues on a fold.
+
+    `SPEC.md` §3.7 (B5c): on §2.3's split of the octets -- Latin-1, CRLF and
+    nothing else -- a line that is a `Content-Length` header (any case),
+    followed by a line beginning with a space or a horizontal tab (RFC 9112
+    §5.2's obsolete line folding). The stdlib's parse joins that fold into the
+    value and frames by it; the record lists the fold as `unparsed`, no part
+    of any header. A request where the two would disagree declares no length.
+    Pure: the head's octets decide it, never the body.
+    """
+    lines = head.decode("latin-1").split("\r\n")
+    for line, following in pairwise(lines[1:]):
+        name = field_name(line)
+        if (
+            name is not None
+            and name.lower() == "content-length"
+            and following[:1] in (" ", "\t")
+        ):
+            return True
+    return False
+
+
+def framing_of(head: bytes) -> tuple[bool, list[str]]:
+    """The framing headers the record shows: a `Transfer-Encoding`, the lengths.
+
+    `SPEC.md` §3.7 (B5d): the sink frames a body by its own parse of the
+    head -- `split_head`, the one `NNNN.headers.json` shows -- and never by
+    the stdlib's header object, which splits on a bare CR and a bare LF and so
+    can see a framing header the record does not, or miss one it does.
+    Whether any header named `Transfer-Encoding` (any case) is present, and
+    every `Content-Length` value (any case) in the order received. Pure: the
+    head's octets decide it, never the body.
+    """
+    pairs = split_head(head)["headers"]
+    assert isinstance(pairs, list)
+    names = [str(name).lower() for name, _ in pairs]
+    chunked = "transfer-encoding" in names
+    lengths = [
+        str(value) for (name, value) in pairs if str(name).lower() == "content-length"
+    ]
+    return chunked, lengths
 
 
 def split_head(head: bytes) -> dict[str, object]:
@@ -206,6 +283,24 @@ class CaptureExists(Exception):
     """
 
 
+# What `close()` says of a POST still being handled as the journals close
+# (`SPEC.md` §4.2, §5.5): the body it names, or this when it had recorded none.
+NOT_YET_RECORDED = "a POST not yet recorded"
+STILL_HANDLED = (
+    "still being handled when the journals closed; what its handler had not "
+    "yet written is not in this capture"
+)
+
+
+class RecorderClosed(Exception):
+    """A POST that reached a recorder after its journals were closed.
+
+    The capture is sealed or about to be (`SPEC.md` §5.5): nothing more may be
+    written into it, so the body is recorded nowhere, and the handler answers
+    nothing rather than a status that would claim it was.
+    """
+
+
 class Recorder:
     """Writes one capture: bodies, headers, and the manifest's digests.
 
@@ -228,6 +323,7 @@ class Recorder:
         after_record: Callable[[manifest.BodyEntry], None] | None = None,
         after_forward: Callable[[manifest.ForwardEntry], None] | None = None,
         create_directory: bool = True,
+        open_file: manifest.OpenFile = manifest.open_binary,
     ) -> None:
         self.raw = raw
         self.run = raw.parent
@@ -242,6 +338,9 @@ class Recorder:
         self._before_record = before_record
         self._after_record = after_record
         self._after_forward = after_forward
+        # Every file `record` opens goes through this (`SPEC.md` §3.6), so a
+        # test can count what recording one body costs, body by body.
+        self._open_file = open_file
         self._lock = threading.Lock()
         self._counters: dict[Path, int] = {self.raw: 0, self.rejected: 0}
         self.forwards: list[manifest.ForwardEntry] = []
@@ -251,6 +350,15 @@ class Recorder:
         # before it stops the Collector (`SPEC.md` §4.6).
         self._busy = 0
         self._quiet = threading.Condition()
+        # The POSTs under way, by handling thread, and the body each has
+        # recorded so far (`None` until it has): what `close()` names when a
+        # handler is still running as the journals close (`SPEC.md` §5.5). The
+        # key is the thread's identity, used for nothing but finding its slot.
+        self._open: dict[int, str | None] = {}
+        # Set once by `close()`, under `_lock`: from then on nothing this
+        # recorder holds is written into the run directory -- no body, no
+        # journal line -- so the manifest sealed after it stays true.
+        self._closed = False
 
         for directory, suffix in (
             (self.raw, body_suffix),
@@ -285,17 +393,47 @@ class Recorder:
         if create_directory:
             self.raw.mkdir(parents=True, exist_ok=True)
 
+    def admit(self) -> None:
+        """Count the calling handler's POST as under way, if it is not yet.
+
+        Called from a handler's `setup()`, once its connection is accepted and
+        before a byte of the head is read (`SPEC.md` §5.5; Qodo 2 on PR #2):
+        a POST accepted just before the listener closed is then waited for by
+        `settle()` and, if the wait gives up on it, named by `close()` --
+        never refused with nothing in the capture to say a POST was lost.
+        """
+        handler = threading.get_ident()
+        with self._quiet:
+            if handler not in self._open:
+                self._busy += 1
+                self._open[handler] = None
+
+    def release(self) -> None:
+        """The calling handler's POST is over: answered, refused, or none came.
+
+        Idempotent, so every way out of a handler can call it.
+        """
+        handler = threading.get_ident()
+        with self._quiet:
+            if handler in self._open:
+                self._busy -= 1
+                del self._open[handler]
+                self._quiet.notify_all()
+
     @contextmanager
     def handling(self) -> Iterator[None]:
-        """Count one POST as under way for as long as the block runs."""
-        with self._quiet:
-            self._busy += 1
+        """Count one POST as under way for as long as the block runs.
+
+        The first POST on a connection is already counted, from `admit()`; a
+        further one on a kept-alive connection is counted from here, once its
+        head has been read -- until then the connection is idle, and an idle
+        connection is not a POST (`SPEC.md` §5.5).
+        """
+        self.admit()
         try:
             yield
         finally:
-            with self._quiet:
-                self._busy -= 1
-                self._quiet.notify_all()
+            self.release()
 
     def settle(self, timeout: float) -> bool:
         """Wait, at most `timeout` seconds, for every POST under way to finish.
@@ -305,6 +443,32 @@ class Recorder:
         """
         with self._quiet:
             return self._quiet.wait_for(lambda: self._busy == 0, timeout=timeout)
+
+    def close(self) -> list[str]:
+        """Close the journals: nothing is written into the run after this.
+
+        What `zoo capture` calls once every bounded wait of its shutdown is
+        over and before the manifest is sealed (`SPEC.md` §4.6, §5.5). A body
+        that arrives afterwards, or a forward that completes afterwards, is
+        refused and recorded nowhere -- so a handler the waits gave up on can
+        no longer append to a journal the sealed manifest has already hashed.
+
+        Returns one line per POST still being handled at the close -- counted
+        from its connection's accept (`admit`), so one whose head had not yet
+        been read is among them -- naming the body it had recorded, or saying
+        it had recorded none: each is a
+        `problems` entry, because what that handler had yet to write -- a
+        forward's outcome, or the whole body -- is not in the capture.
+        """
+        with self._lock, self._quiet:
+            self._closed = True
+            still = sorted(
+                self._open.values(), key=lambda file: (file is None, file or "")
+            )
+        return [
+            f"{file if file is not None else NOT_YET_RECORDED}: {STILL_HANDLED}"
+            for file in still
+        ]
 
     def accepts(self, path: str) -> bool:
         """Whether `path` is the traces endpoint, compared exactly.
@@ -340,25 +504,41 @@ class Recorder:
         # path, and naming it `.json` would be a claim about its contents.
         suffix = self.body_suffix if accepted else BODY_SUFFIX
         with self._lock:
+            if self._closed:
+                raise RecorderClosed(
+                    f"{self.run}: the journals are closed; this POST is not recorded"
+                )
             number = self._counters[directory] + 1
             self._counters[directory] = number
             stem = f"{number:04d}"
             directory.mkdir(parents=True, exist_ok=True)
             body_file = directory / (stem + suffix)
-            body_file.write_bytes(body)
+            manifest.write_bytes(body_file, body, open_file=self._open_file)
             # The unmodified record, then the zoo's split of it (`SPEC.md`
             # §2.3), and the two facts the octets of a head cannot carry.
-            (directory / (stem + HEADERS_RAW_SUFFIX)).write_bytes(head)
+            manifest.write_bytes(
+                directory / (stem + HEADERS_RAW_SUFFIX),
+                head,
+                open_file=self._open_file,
+            )
             parsed = split_head(head)
             parsed["bytes"] = len(body)
             parsed["received_at"] = self._now()
-            manifest.write_json(directory / (stem + HEADERS_SUFFIX), parsed)
+            manifest.write_json(
+                directory / (stem + HEADERS_SUFFIX),
+                parsed,
+                open_file=self._open_file,
+            )
             entry = manifest.BodyEntry(
                 file=body_file.relative_to(self.run).as_posix(),
                 sha256=manifest.digest(body),
                 bytes=len(body),
             )
-            manifest.journal_body(self.run, entry)
+            manifest.journal_body(self.run, entry, open_file=self._open_file)
+            with self._quiet:
+                handler = threading.get_ident()
+                if handler in self._open:
+                    self._open[handler] = entry.file
 
         if self._after_record is not None:
             self._after_record(entry)
@@ -391,8 +571,15 @@ class Recorder:
         else:
             outcome = manifest.ForwardEntry(file=entry.file, status=status)
         with self._lock:
+            # A forward that outlived every bounded wait of the shutdown
+            # completes after the journals closed: its outcome is refused and
+            # recorded nowhere, and `close()` already named its body as a
+            # problem (`SPEC.md` §5.5). Checked and journalled under one lock,
+            # so a close cannot fall between the two.
+            if self._closed:
+                return
             self.forwards.append(outcome)
-        manifest.journal_forward(self.run, outcome)
+            manifest.journal_forward(self.run, outcome, open_file=self._open_file)
         if self._after_forward is not None:
             self._after_forward(outcome)
 
@@ -459,7 +646,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     `HTTP/1.1` with an explicit `Content-Length: 0` on every answer, so a real
     exporter's keep-alive connection is honoured and no answer is framed by
-    closing the socket.
+    closing the socket. The one exception is a request the sink could not
+    frame (`SPEC.md` §3.3, B5): answered the same way, with `Connection:
+    close`, and its connection closed after the answer.
     """
 
     protocol_version = "HTTP/1.1"
@@ -468,18 +657,42 @@ class _Handler(BaseHTTPRequestHandler):
 
     _stream: _Head
     _head: bytes = b""
+    # Whether the request being answered gave no framing the sink can read
+    # (`_read_body`); if so its connection is closed after the answer.
+    _unframed: bool = False
 
     def setup(self) -> None:
-        """Wrap the request stream before anything reads a byte off it."""
+        """Wrap the request stream before anything reads a byte off it.
+
+        And count this connection's POST as under way from here, its accept,
+        before its head is read (`SPEC.md` §5.5; Qodo 2 on PR #2), so a
+        shutdown that closes the journals before the head arrives names it.
+        """
         super().setup()
         self._stream = _Head(self.rfile)
         self.rfile = self._stream
+        self._recorder.admit()
 
     def handle_one_request(self) -> None:
-        """One request on this connection, so one head (`SPEC.md` §2.3)."""
+        """One request on this connection, so one head (`SPEC.md` §2.3).
+
+        Whatever it was -- a POST, another method, or a connection closed with
+        no request at all -- it is over when this returns, so the count
+        `setup()` began ends here if `do_POST` did not end it already.
+        """
         self._head = b""
         self._stream.begin()
-        super().handle_one_request()
+        try:
+            super().handle_one_request()
+        finally:
+            self._recorder.release()
+
+    def finish(self) -> None:
+        """Close the streams, and end the count if nothing else has."""
+        try:
+            super().finish()
+        finally:
+            self._recorder.release()
 
     def parse_request(self) -> bool:
         """The stdlib's parse, and the octets it was made from, kept both.
@@ -503,11 +716,18 @@ class _Handler(BaseHTTPRequestHandler):
         with recorder.handling():
             body = self._read_body()
             accepted = recorder.accepts(self.path)
-            recorder.record(
-                head=self._head,
-                body=body,
-                accepted=accepted,
-            )
+            try:
+                recorder.record(
+                    head=self._head,
+                    body=body,
+                    accepted=accepted,
+                )
+            except RecorderClosed:
+                # The capture is sealed (`SPEC.md` §5.5): no answer, and the
+                # connection closed, because any status would say the body
+                # was received into a capture that does not hold it.
+                self.close_connection = True
+                return
             self._answer(HTTPStatus.OK if accepted else HTTPStatus.NOT_FOUND)
 
     def _read_body(self) -> bytes:
@@ -517,28 +737,52 @@ class _Handler(BaseHTTPRequestHandler):
         one -- is recorded as a zero-byte body (`SPEC.md` §3.7): reading a
         `Transfer-Encoding` means decoding a framing, and the sink decodes
         nothing. What it could see is what the capture says it saw.
+
+        B5 (a): such a request is also **unframed** -- the sink does not know
+        where its body ends, so it cannot know where the next request on the
+        connection begins -- and `_answer` closes the connection after it
+        rather than read whatever follows (a chunked body's chunks) as a
+        request. Unframed is (`SPEC.md` §3.7's table): any
+        `Transfer-Encoding`, whatever `Content-Length` says beside it -- the
+        request-smuggling shape, never read by its length (B5a); no
+        `Content-Length`; or none that `declared_length` reads as one (B5b);
+        or one continued on a folded line, which the stdlib joins and the
+        record does not (`folds_a_length`, B5c). Every framing header is read
+        from the record's own split of the head (`framing_of`, B5d), never
+        from the stdlib's `self.headers`: the record and the framing cannot
+        disagree.
+        A `Content-Length` it does not read is itself a recorded fact: it
+        stays in the head, and the body is what we could read, which is
+        nothing.
         """
-        declared = self.headers.get("Content-Length")
-        if declared is None:
+        self._unframed = True
+        encoded, lengths = framing_of(self._head)
+        if encoded:
             return b""
-        try:
-            length = int(declared)
-        except ValueError:
-            # A `Content-Length` that is not a number is itself a recorded
-            # fact: it stays in `headers.json`, and the body is what we could
-            # read, which is nothing.
+        if folds_a_length(self._head):
             return b""
-        if length <= 0:
+        length = declared_length(lengths)
+        if length is None:
             return b""
+        self._unframed = False
         return self.rfile.read(length)
 
     def _answer(self, status: HTTPStatus) -> None:
-        """Empty body, the request's own content type echoed, nothing else."""
+        """Empty body, the request's own content type echoed, nothing else.
+
+        After a request the sink could not frame (`_read_body`), the answer
+        also says `Connection: close` and the connection is closed once it is
+        sent (`SPEC.md` §3.3): the sink decodes no framing, so it refuses to
+        guess where the next request begins (decision of 2026-10-12, B5(a)).
+        """
         self.send_response(status)
         content_type = self.headers.get("Content-Type")
         if content_type is not None:
             self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", "0")
+        if self._unframed:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:

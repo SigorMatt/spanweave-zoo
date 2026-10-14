@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -493,6 +494,47 @@ def test_a_journal_line_that_cannot_be_read_is_a_problem_not_a_dropped_body(
     assert "is not a JSON object" in out
 
 
+@pytest.mark.parametrize(
+    "journal", [manifest.JOURNAL_NAME, manifest.FORWARD_JOURNAL_NAME]
+)
+def test_a_journal_byte_that_is_not_utf8_is_a_problem_and_the_manifest_is_sealed(
+    tmp_path, journal
+):
+    # B3 (b), Qodo Q7. A journal is decoded line by line, so a byte that is
+    # not UTF-8 is a problem naming its line -- like a line that is not a JSON
+    # object -- and `finish` still writes `ended_at` and the seal, rather than
+    # raising before either and leaving a capture that was never completed
+    # (SPEC.md sections 5.5, 5.6). The lines around it are still read.
+    run = tmp_path / "captures" / "z4" / "run-1"
+    (run / "raw").mkdir(parents=True)
+    (run / "raw" / "0001.body").write_bytes(BODY)
+    manifest.label(run, kind="real", collector_version="0.162.0", started_at=STARTED)
+    entry = manifest.BodyEntry(
+        file="raw/0001.body", sha256=manifest.digest(BODY), bytes=len(BODY)
+    )
+    manifest.journal_body(run, entry)
+    manifest.journal_forward(run, manifest.ForwardEntry(file=entry.file, status=200))
+    with (run / journal).open("ab") as written:
+        written.write(b'{"file": "raw/0002.b\xffdy"}\n')
+
+    found = manifest.finish(run, ended_at=ENDED)
+
+    assert found == [
+        f"{journal} line 2 is not UTF-8, so what it recorded is not "
+        f"listed in {manifest.MANIFEST_NAME}"
+    ]
+    document = manifest.read(run)
+    assert document[manifest.ENDED_AT] == ENDED
+    assert document[manifest.SEAL] == manifest.seal_of(document)
+    assert document[manifest.PROBLEMS] == found
+    assert [listed["file"] for listed in document[manifest.BODIES]] == [entry.file]
+    assert document[manifest.FORWARDS] == [{"file": entry.file, "status": 200}]
+    # Sealed and complete: the only thing `verify` has to say is the problem.
+    assert manifest.problems(run) == [
+        f"{run}: {manifest.MANIFEST_NAME} records a problem from the run: {found[0]}"
+    ]
+
+
 # --- A3b: the project's own manifest is copied at the end (`SPEC.md` §5.3) --
 
 
@@ -554,51 +596,150 @@ def test_a_project_manifest_the_zoo_cannot_date_is_copied_with_a_problem(
     capsys.readouterr()
 
 
-# --- A3b: 1,600 bodies cost the same each (`SPEC.md` §3.5) ------------------
+# --- A3b, B2b: 1,600 bodies cost the same each (`SPEC.md` §3.5, §3.6) -------
 
 BODIES = 1600
-SAMPLE = 100
-# Generous on purpose, and still nowhere near what it catches. What is under
-# test is that the cost of recording a body does not GROW with the length of
-# the run: the first hundred bodies of a run and its last hundred are timed,
-# and a manifest rewritten after every POST makes the last hundred cost many
-# times the first because each one re-serializes a document with fifteen
-# hundred entries in it. Journalling makes the two the same within noise, so
-# the bound has to hold on a machine running four other jobs in CI -- not to be
-# tight.
-BOUND = 2.0
 
 
-def _record(recorder: sink.Recorder, first: int, last: int) -> float:
-    """Record bodies `first`..`last` and return the seconds it took."""
-    started = time.perf_counter()
-    for number in range(first, last):
-        recorder.record(
-            head=HEAD,
-            body=b"body %04d" % number,
-            accepted=True,
+class _Counted:
+    """One file opened through the `open_file` seam, and the octets it moved."""
+
+    def __init__(self, handle, mode: str) -> None:
+        self._handle = handle
+        self.mode = mode
+        self.octets_read = 0
+        self.octets_written = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._handle.close()
+
+    def write(self, data: bytes) -> int:
+        self.octets_written += len(data)
+        return self._handle.write(data)
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._handle.read(size)
+        self.octets_read += len(data)
+        return data
+
+    def flush(self) -> None:
+        self._handle.flush()
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+class _Watch:
+    """The counting `open_file` (`SPEC.md` §3.6), and the opens that bypass it.
+
+    `opened` is every file the recorder opened through the seam since the last
+    `take()`. `bypassed` is every file under `root` opened while `watching`
+    *without* going through the seam, seen by a `sys.addaudithook` hook on the
+    interpreter's `open` event: a count of the seam's traffic is worth nothing
+    if the recorder can read a journal behind its back, so a file it opens any
+    other way is a failure of its own.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = str(root)
+        self.opened: list[_Counted] = []
+        self.bypassed: list[str] = []
+        self.watching = False
+        self._inside = False
+
+    def __call__(self, path: Path, mode: str) -> _Counted:
+        self._inside = True
+        try:
+            handle = path.open(mode)
+        finally:
+            self._inside = False
+        counted = _Counted(handle, mode)
+        self.opened.append(counted)
+        return counted
+
+    def audit(self, event: str, args: tuple[object, ...]) -> None:
+        if not self.watching or self._inside or event != "open":
+            return
+        target = args[0]
+        if isinstance(target, (str, bytes, Path)):
+            name = os.fsdecode(target)
+            if name.startswith(self.root):
+                self.bypassed.append(name)
+
+    def take(self) -> tuple[tuple[str, int, int], ...]:
+        """This body's cost: each file opened, as (mode, read, written)."""
+        cost = tuple(
+            (counted.mode, counted.octets_read, counted.octets_written)
+            for counted in self.opened
         )
-    return time.perf_counter() - started
+        self.opened = []
+        return cost
+
+
+# An audit hook cannot be removed, so there is one for the whole session and it
+# forwards to whichever `_Watch` is current; with none, it returns at once.
+_CURRENT_WATCH: list[_Watch] = []
+
+
+def _forward_audit(event: str, args: tuple[object, ...]) -> None:
+    if _CURRENT_WATCH:
+        _CURRENT_WATCH[-1].audit(event, args)
+
+
+_HOOKED: list[bool] = []
 
 
 def test_sixteen_hundred_bodies_cost_the_same_each(tmp_path):
-    # The A3b row's fifth acceptance test. Writing the run directory is the
-    # only expensive thing a capture does per POST, so the measurement is of
-    # the recorder itself: one 1,600-body run, with its first hundred bodies
-    # and its last hundred timed.
+    """The A3b row's fifth acceptance test (`SPEC.md` §3.5), as a count (B2b).
+
+    Writing the run directory is the only thing a capture does per POST that
+    could grow with the run, so the measurement is of the recorder itself:
+    one 1,600-body run, every body recorded through a counting `open_file`
+    seam (`SPEC.md` §3.6). A body's cost is the files the recorder opened to
+    record it -- for each, its mode, the octets read from it and the octets
+    written to it -- and the cost of body 1,600 must EQUAL the cost of body 1.
+
+    A count, not a clock: CPU time on the macOS runner put the last hundred
+    bodies at 2.6 times the first with no code change (`TASKS.md`, B2b),
+    and a wall clock did worse (B2a). The count cannot be noisy, and it catches
+    what the clock was there to catch: a manifest rewritten per POST writes
+    more octets every body, an O(n) rescan of the journal reads more, and a
+    rescan that opens the journal some other way than the seam is a bypassed
+    open. Nothing here is timed, so nothing timed is asserted.
+    """
+    if not _HOOKED:
+        sys.addaudithook(_forward_audit)
+        _HOOKED.append(True)
+    watch = _Watch(tmp_path)
     recorder = sink.Recorder(
-        tmp_path / "captures" / "z4" / "run-1" / "raw", now=lambda: STARTED
+        tmp_path / "captures" / "z4" / "run-1" / "raw",
+        now=lambda: STARTED,
+        open_file=watch,
     )
-    first = _record(recorder, 0, SAMPLE) / SAMPLE * 1e6
-    _record(recorder, SAMPLE, BODIES - SAMPLE)
-    last = _record(recorder, BODIES - SAMPLE, BODIES) / SAMPLE * 1e6
-    print(
-        f"\n{BODIES} bodies: first {SAMPLE} {first:.0f} us/body, "
-        f"last {SAMPLE} {last:.0f} us/body, ratio {last / first:.2f}"
+    costs = []
+    _CURRENT_WATCH.append(watch)
+    watch.watching = True
+    try:
+        for number in range(1, BODIES + 1):
+            recorder.record(head=HEAD, body=b"body %04d" % number, accepted=True)
+            costs.append(watch.take())
+    finally:
+        watch.watching = False
+        _CURRENT_WATCH.remove(watch)
+
+    first, last = costs[0], costs[-1]
+    print(f"\n{BODIES} bodies: body 1 cost {first}, body {BODIES} cost {last}")
+    assert watch.bypassed == [], (
+        f"the recorder opened {len(watch.bypassed)} file(s) outside the "
+        f"open_file seam, starting {watch.bypassed[:1]}"
     )
-    assert last < BOUND * first, (
-        f"per-body cost grew with the run: {first:.0f} us/body over the first "
-        f"{SAMPLE} bodies, {last:.0f} us/body over the last {SAMPLE} of 1,600"
+    assert first, "the recorder opened nothing through the seam for body 1"
+    assert last == first, (
+        f"per-body cost grew with the run: body 1 opened {first}, body "
+        f"{BODIES} opened {last} -- each as (mode, octets read, octets written)"
     )
     # And the digests are all there, in the journal, waiting for the end of the
     # run: nothing was traded away for the cost.
@@ -765,3 +906,158 @@ def test_the_seal_is_over_the_document_and_not_its_whitespace(tmp_path):
     document = json.loads(path.read_text(encoding="utf-8"))
     path.write_text(json.dumps(document, indent=7), encoding="utf-8")
     assert manifest.problems(run) == []
+
+
+# --- B4: what a manifest says about *where* a file is (`SPEC.md` §5.4, §5.6) --
+#
+# Qodo Q10 and Q12. Every manifest below is resealed by hand, so the seal agrees
+# and the one thing wrong is the one under test: the decision of 2026-10-11
+# stands -- a resealed manifest still verifies -- but only *within the run
+# directory*. A list that is not a list is a problem line, not a `TypeError`;
+# a `file` entry that is absolute, has a `..` in it, or resolves outside the run
+# directory (symlinks followed) is a problem naming the entry, and the file it
+# points at is never read.
+
+OUTSIDE = b"bytes from somewhere that is not this capture"
+
+
+def _resealed(run: Path, change) -> None:
+    def change_and_reseal(document: dict[str, object]) -> None:
+        change(document)
+        document["seal"] = canonical_seal(document)
+
+    rewrite_manifest(run, change_and_reseal)
+
+
+@pytest.mark.parametrize("key", ["files", "problems"])
+def test_a_manifest_list_that_is_not_a_list_is_a_problem_not_a_crash(
+    tmp_path, capsys, key
+):
+    run = hand_written_capture(tmp_path)
+    _resealed(run, lambda document: document.update({key: 1}))
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert f"{key!r} is not a list" in out
+    assert "seal" not in out, "the manifest was resealed; only the list is wrong"
+
+
+def _list_outside(run: Path, entry: str) -> None:
+    """Add a `files` entry naming `entry`, with the outside file's own digest.
+
+    The digest and the length agree with the bytes the entry points at, so a
+    verify that followed it would find nothing wrong -- which is the defect.
+    """
+
+    def change(document: dict[str, object]) -> None:
+        document[manifest.FILES].append(  # type: ignore[attr-defined]
+            {"bytes": len(OUTSIDE), "file": entry, "sha256": manifest.digest(OUTSIDE)}
+        )
+
+    _resealed(run, change)
+
+
+def _reads(monkeypatch) -> list[Path]:
+    """Every path `Path.read_bytes` is called on, from here on."""
+    seen: list[Path] = []
+    original = Path.read_bytes
+
+    def recording(self: Path) -> bytes:
+        seen.append(self)
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", recording)
+    return seen
+
+
+@pytest.mark.parametrize("how", ["absolute", "dot-dot", "symlink"])
+def test_a_file_entry_that_points_outside_the_run_is_a_problem_and_is_not_read(
+    tmp_path, capsys, monkeypatch, how
+):
+    run = hand_written_capture(tmp_path)
+    outside = tmp_path / "outside.body"
+    outside.write_bytes(OUTSIDE)
+    if how == "absolute":
+        entry = str(outside.resolve())
+    elif how == "dot-dot":
+        entry = "../../../outside.body"
+        assert (run / entry).resolve() == outside.resolve()
+    else:
+        (run / "raw" / "elsewhere.body").symlink_to(outside)
+        entry = "raw/elsewhere.body"
+    _list_outside(run, entry)
+    reads = _reads(monkeypatch)
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert entry in out
+    assert "outside the run directory" in out
+    assert "seal" not in out, "the manifest was resealed; only the entry is wrong"
+    assert outside.resolve() not in [path.resolve() for path in reads]
+
+
+@pytest.mark.parametrize("key", ["bodies", "files"])
+def test_a_file_entry_that_cannot_be_resolved_is_a_problem_not_a_traceback(
+    tmp_path, capsys, key
+):
+    # Qodo 3 on PR #2 (decisions-zoo-2026-10-14b, commit 3): a symlink that
+    # names itself cannot be resolved. On 3.11 and 3.12 `Path.resolve()`
+    # raises `RuntimeError` on the loop, and on 3.13+ a strict resolve raises
+    # `OSError`; either way the entry is a problem naming it, the same on
+    # every Python (`SPEC.md` §5.4), never a crash out of `zoo verify`.
+    run = hand_written_capture(tmp_path)
+    loop = run / "raw" / "loop.body"
+    loop.symlink_to(loop)
+    entry = "raw/loop.body"
+
+    def change(document: dict[str, object]) -> None:
+        if key == "bodies":
+            document[manifest.BODIES][0]["file"] = entry  # type: ignore[index]
+        else:
+            document[manifest.FILES].append(  # type: ignore[attr-defined]
+                {"bytes": len(BODY), "file": entry, "sha256": manifest.digest(BODY)}
+            )
+
+    _resealed(run, change)
+
+    assert cli.verify(tmp_path / "captures") == 1
+    out = capsys.readouterr().out
+    assert f"{key}[" in out and repr(entry) in out, out
+    assert "cannot be resolved" in out, out
+    assert "seal" not in out, "the manifest was resealed; only the entry is wrong"
+
+
+def test_a_dot_dot_entry_that_lands_back_inside_is_still_a_problem(tmp_path, capsys):
+    # The rule is on the entry as written, not only on where it lands: entries
+    # are normalized relative paths (`SPEC.md` §5.4), and `raw/../raw/...` is
+    # not one even though it names a file the capture holds.
+    run = hand_written_capture(tmp_path)
+
+    def change(document: dict[str, object]) -> None:
+        document[manifest.BODIES][0]["file"] = "raw/../raw/0001.body"  # type: ignore[index]
+
+    _resealed(run, change)
+
+    assert cli.verify(tmp_path / "captures") == 1
+    assert "raw/../raw/0001.body" in capsys.readouterr().out
+
+
+def test_a_symlink_that_stays_inside_the_run_verifies(tmp_path, capsys):
+    # The confinement is *where*, not *whether* (decisions log, 2026-10-12): a
+    # symlink resolving inside the run directory is a file of the capture and
+    # is re-hashed like any other.
+    run = hand_written_capture(tmp_path)
+    (run / "raw" / "again.body").symlink_to(run / "raw" / "0001.body")
+
+    def change(document: dict[str, object]) -> None:
+        document[manifest.FILES].append(  # type: ignore[attr-defined]
+            {
+                "bytes": len(BODY),
+                "file": "raw/again.body",
+                "sha256": manifest.digest(BODY),
+            }
+        )
+
+    _resealed(run, change)
+
+    assert cli.verify(tmp_path / "captures") == 0, capsys.readouterr().out

@@ -20,14 +20,19 @@ from __future__ import annotations
 import gzip
 import http.client
 import json
+import re
+import signal
 import socket
+import subprocess
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from spanweave_zoo import cli, manifest, sink
+from spanweave_zoo import capture, cli, manifest, sink
 
 # Deliberately binary, with a NUL and a 0xff in it: a protobuf export is not
 # text, and a sink that round-trips only text is broken in the one case that
@@ -335,11 +340,16 @@ def test_an_lf_only_head_is_one_unparsed_entry_and_nothing_else(tmp_path):
     # `unparsed`, and a `method` and `path` read out of the first line -- the
     # json omitted the whole header block without saying so. Under the
     # ratified rule it is one `unparsed` entry, verbatim, and no field claims
-    # a request line, a method or a path the split never found.
+    # a request line, a method or a path the split never found. B5d: the
+    # sink frames by that split (`SPEC.md` §3.7), which shows no
+    # `Content-Length` here, so the POST is unframed -- a zero-byte body and
+    # an answer that says close -- although the stdlib's parse reads `5`.
     raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
     with running(raw) as (_, port):
         answer = send_octets(port, LF_ONLY_HEAD, b"hello")
     assert answer.startswith(b"HTTP/1.1 200"), answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert body_of(raw) == b""
     assert head_of(raw) == LF_ONLY_HEAD
     recorded = headers_of(raw)
     assert recorded["unparsed"] == [LF_ONLY_HEAD.decode("latin-1")]
@@ -347,7 +357,7 @@ def test_an_lf_only_head_is_one_unparsed_entry_and_nothing_else(tmp_path):
     for key in ("request_line", "method", "path"):
         assert key not in recorded, f"{key} claimed from a head with no CRLF"
     assert (recorded["bytes"], recorded["received_at"]) == (
-        5,
+        0,
         "2026-10-09T12:00:01+00:00",
     )
 
@@ -719,3 +729,705 @@ def test_binding_a_sink_resolves_no_name(tmp_path, monkeypatch):
         assert server.server_port == server.server_address[1]
     finally:
         server.server_close()
+
+
+# --- B2 (c): a sink stopped by a signal still seals its capture --------------
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+@pytest.mark.parametrize(
+    "number", [signal.SIGTERM, signal.SIGHUP], ids=lambda n: n.name
+)
+def test_a_standalone_sink_stopped_by_a_signal_seals_its_manifest(tmp_path, number):
+    # Qodo Q6. `zoo sink` stopped only on Ctrl-C: a supervisor's SIGTERM, or
+    # the SIGHUP of a terminal that went away, killed it by the default
+    # action, and `manifest.finish` never ran -- a capture with bodies and no
+    # `ended_at`, which `zoo verify` rightly fails. Both now end
+    # `serve_forever` as Ctrl-C does, and the manifest is sealed (SPEC.md
+    # section 3.1). The sink binds port 0 and says which it got: no pick.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "spanweave_zoo.cli",
+            "sink",
+            "--port",
+            "0",
+            "--out",
+            str(raw),
+        ],
+        cwd=REPO,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        assert process.stdout is not None
+        first = process.stdout.readline().decode("utf-8")
+        found = re.search(r" on http://[^ ]+:(\d+)$", first.rstrip("\n"))
+        assert found is not None, first
+        assert post(int(found.group(1)), "/v1/traces", PROTOBUF)[0] == 200
+        process.send_signal(number)
+        output, _ = process.communicate(timeout=60)
+    except BaseException:
+        process.kill()
+        process.wait(timeout=60)
+        raise
+    printed = first + output.decode("utf-8", "replace")
+    assert process.returncode == 0, printed
+    assert "zoo sink: stopped. 1 body/bodies." in printed
+    document = manifest.read(raw.parent)
+    assert manifest.ENDED_AT in document, document
+    assert body_of(raw) == PROTOBUF
+    assert cli.verify(raw.parent) == 0
+
+
+def test_a_post_after_the_journals_close_is_recorded_nowhere_and_not_answered(
+    tmp_path,
+):
+    # B3 (a), degenerate. A keep-alive connection can still deliver a POST
+    # once the recorder's journals are closed (SPEC.md section 5.5): it writes
+    # nothing into the run, and it is answered nothing -- a 200 would say
+    # "recorded" (section 3.3) of a body the capture does not hold.
+    raw = tmp_path / "run" / "raw"
+    with running(raw) as (recorder, port):
+        assert recorder.close() == []
+        head = (
+            b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(PROTOBUF)
+        )
+        assert send_octets(port, head, PROTOBUF) == b""
+    assert list(raw.iterdir()) == []
+    assert not (raw.parent / manifest.JOURNAL_NAME).exists()
+    assert manifest.read(raw.parent)[manifest.BODIES] == []
+
+
+# --- B3a: standalone `zoo sink` seals only once nothing can write ------------
+
+
+def snapshot(run: Path) -> dict[str, bytes]:
+    """Every file in a run directory, by its path under it, and its bytes."""
+    return {
+        path.relative_to(run).as_posix(): path.read_bytes()
+        for path in sorted(run.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_a_post_the_standalone_sink_outwaits_writes_nothing_after_the_seal(
+    tmp_path, monkeypatch, capsys
+):
+    # B3a. B3 closed `zoo capture`'s journals before the seal; `zoo sink` sealed
+    # while a POST was still being handled, and that handler then wrote a body
+    # and a journal line into a capture whose manifest had already hashed it
+    # -- a sealed run that `zoo verify` failed on an unlisted file and a
+    # journal digest. Now `run_sink` stops accepting, waits for its handlers
+    # for a bound, closes the journals, then seals (SPEC.md sections 3.7,
+    # 5.5): the handler held past the bound is the one recorded problem, its
+    # body is recorded nowhere and answered nothing, and every sealed file is
+    # byte-identical afterwards. The handler is held through `before_record`
+    # (section 3.6), so nothing here sleeps; the one wait is the sink's own
+    # bound, shortened.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    held = threading.Event()
+    release = threading.Event()
+    servers: list[Any] = []
+    bound = threading.Event()
+
+    def hold(body: bytes) -> None:
+        held.set()
+        assert release.wait(TIMEOUT), "the test never released the handler"
+
+    class HeldRecorder(sink.Recorder):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, before_record=hold, **kwargs)
+
+    real_make_server = sink.make_server
+
+    def make_server(*args: Any, **kwargs: Any) -> Any:
+        server = real_make_server(*args, **kwargs)
+        servers.append(server)
+        bound.set()
+        return server
+
+    monkeypatch.setattr(sink, "Recorder", HeldRecorder)
+    monkeypatch.setattr(sink, "make_server", make_server)
+    monkeypatch.setattr(capture, "FLUSH_WAIT", 0.2)
+
+    answers: list[bytes] = []
+
+    def client() -> None:
+        assert bound.wait(TIMEOUT), "the sink never bound"
+        port = servers[0].server_address[1]
+        head = (
+            b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\nConnection: close\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(PROTOBUF)
+        )
+        try:
+            answers.append(send_octets(port, head, PROTOBUF))
+        except OSError as error:  # a reset is no answer too
+            answers.append(repr(error).encode())
+
+    def stopper() -> None:
+        # What `zoo sink`'s signal handler does: ask the loop to end, from a
+        # thread of its own, once the POST is under way.
+        assert held.wait(TIMEOUT), "the POST never reached the recorder"
+        servers[0].shutdown()
+
+    threads = [threading.Thread(target=t, daemon=True) for t in (client, stopper)]
+    for thread in threads:
+        thread.start()
+    try:
+        status = cli.run_sink("127.0.0.1", 0, raw)
+        sealed = snapshot(raw.parent)
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=TIMEOUT)
+    assert not any(thread.is_alive() for thread in threads)
+
+    # The handler, released after the seal, wrote nothing and answered nothing.
+    assert answers == [b""], answers
+    assert snapshot(raw.parent) == sealed, "something was written after the seal"
+    assert not (raw / "0001.body").exists()
+
+    document = manifest.read(raw.parent)
+    assert manifest.ENDED_AT in document
+    late = [p for p in document[manifest.PROBLEMS] if sink.STILL_HANDLED in p]
+    assert late == [f"{sink.NOT_YET_RECORDED}: {sink.STILL_HANDLED}"], document
+    printed = capsys.readouterr().out
+    assert f"  ! {late[0]}" in printed
+    assert status == 1, printed
+
+    # `zoo verify` fails on that one problem, and never on a digest or the seal.
+    found = manifest.problems(raw.parent)
+    assert len(found) == 1, found
+    assert found[0].endswith(f"records a problem from the run: {late[0]}"), found
+    assert cli.verify(raw.parent) == 1
+
+
+# --- B5 (a): a POST the sink cannot frame closes its connection --------------
+
+# A well-formed POST, sent after an unframed one on the same connection. If
+# the sink kept the connection open it would read this -- or the unframed
+# one's leftover framing -- as the next request.
+WELL_FORMED = (
+    b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+    b"Content-Length: %d\r\n\r\n" % len(PROTOBUF)
+) + PROTOBUF
+
+
+def test_a_post_accepted_before_its_head_is_read_is_named_when_refused(
+    tmp_path, monkeypatch, capsys
+):
+    # Qodo 2 on PR #2, `SPEC.md` §3.7, §5.5. A POST was counted as under way
+    # only once `handling()` began -- after its head was read. A connection
+    # accepted before the listener closed, whose handler had not reached
+    # `handling()` while `settle()` and `close()` ran, was in neither: the
+    # wait did not wait for it, `close()` did not name it, and its body was
+    # then refused with nothing in the sealed manifest saying a POST was
+    # lost. Now a POST counts from the handler's `setup()`, before a byte of
+    # its head is read: the wait waits for it, and when the bound runs out it
+    # is the one problem, `a POST not yet recorded`. The handler is held just
+    # after `setup()` -- accepted, its head not yet read -- so nothing sleeps
+    # but the sink's own bound, shortened.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    accepted = threading.Event()
+    release = threading.Event()
+    servers: list[Any] = []
+    bound = threading.Event()
+
+    real_setup = sink._Handler.setup
+
+    def held_setup(self: Any) -> None:
+        real_setup(self)
+        accepted.set()
+        assert release.wait(TIMEOUT), "the test never released the handler"
+
+    real_make_server = sink.make_server
+
+    def make_server(*args: Any, **kwargs: Any) -> Any:
+        server = real_make_server(*args, **kwargs)
+        servers.append(server)
+        bound.set()
+        return server
+
+    monkeypatch.setattr(sink._Handler, "setup", held_setup)
+    monkeypatch.setattr(sink, "make_server", make_server)
+    monkeypatch.setattr(capture, "FLUSH_WAIT", 0.2)
+
+    answers: list[bytes] = []
+
+    def client() -> None:
+        assert bound.wait(TIMEOUT), "the sink never bound"
+        port = servers[0].server_address[1]
+        head = (
+            b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\nConnection: close\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(PROTOBUF)
+        )
+        try:
+            answers.append(send_octets(port, head, PROTOBUF))
+        except OSError as error:  # a reset is no answer too
+            answers.append(repr(error).encode())
+
+    def stopper() -> None:
+        # The signal handler's act, once the connection has been accepted.
+        assert accepted.wait(TIMEOUT), "the sink never accepted the connection"
+        servers[0].shutdown()
+
+    threads = [threading.Thread(target=t, daemon=True) for t in (client, stopper)]
+    for thread in threads:
+        thread.start()
+    try:
+        status = cli.run_sink("127.0.0.1", 0, raw)
+        sealed = snapshot(raw.parent)
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=TIMEOUT)
+    assert not any(thread.is_alive() for thread in threads)
+
+    # Released after the seal, the handler read its head, was refused, and
+    # wrote and answered nothing.
+    assert answers == [b""], answers
+    assert snapshot(raw.parent) == sealed, "something was written after the seal"
+    assert not (raw / "0001.body").exists()
+
+    document = manifest.read(raw.parent)
+    assert manifest.ENDED_AT in document
+    problems = document.get(manifest.PROBLEMS, [])
+    late = [p for p in problems if sink.STILL_HANDLED in p]
+    assert late == [f"{sink.NOT_YET_RECORDED}: {sink.STILL_HANDLED}"], document
+    assert f"  ! {late[0]}" in capsys.readouterr().out
+    assert status == 1
+    assert cli.verify(raw.parent) == 1
+
+
+class SecondSignalEscaped(Exception):
+    """The handler `zoo sink` replaced ran: a repeated signal got past it."""
+
+
+def test_a_second_signal_during_the_settle_wait_still_seals_the_manifest(
+    tmp_path, monkeypatch, capsys
+):
+    # Qodo 4 on PR #2, `SPEC.md` §3.7. `run_sink` put the replaced handlers
+    # back first in its `finally`, before the settle wait (up to 10 seconds),
+    # the close and the seal; a second SIGINT, SIGTERM or SIGHUP in that wait
+    # took the default action -- a `KeyboardInterrupt` or a kill -- and the
+    # manifest was never sealed. Now its own handlers stay installed until
+    # `manifest.finish` has returned, as `zoo capture`'s do (section 4.6): a
+    # repeated signal asks the server to shut down again and nothing else.
+    # The handler `zoo sink` replaces is the test's own, which raises, so a
+    # signal that reaches it fails here rather than interrupting pytest. Both
+    # signals are SIGINTs; the second is raised on the main thread from inside
+    # `settle()`, the wait it must not break, and nothing here sleeps.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    servers: list[Any] = []
+    bound = threading.Event()
+    shutdowns: list[threading.Event] = [threading.Event(), threading.Event()]
+    calls: list[str] = []
+
+    real_make_server = sink.make_server
+
+    def make_server(*args: Any, **kwargs: Any) -> Any:
+        server = real_make_server(*args, **kwargs)
+        real_shutdown = server.shutdown
+
+        def shutdown() -> None:
+            calls.append("shutdown")
+            real_shutdown()
+            shutdowns[min(len(calls), 2) - 1].set()
+
+        server.shutdown = shutdown
+        servers.append(server)
+        bound.set()
+        return server
+
+    class SignalledRecorder(sink.Recorder):
+        def settle(self, timeout: float) -> bool:
+            # The second signal, in the wait: on the main thread, so its
+            # Python handler runs before this returns.
+            signal.raise_signal(signal.SIGINT)
+            assert shutdowns[1].wait(TIMEOUT), "the second signal asked nothing"
+            return super().settle(timeout)
+
+    def escaped(number: int, frame: Any) -> None:
+        calls.append(signal.Signals(number).name)
+        raise SecondSignalEscaped(signal.Signals(number).name)
+
+    monkeypatch.setattr(sink, "make_server", make_server)
+    monkeypatch.setattr(sink, "Recorder", SignalledRecorder)
+
+    def stopper() -> None:
+        assert bound.wait(TIMEOUT), "the sink never bound"
+        signal.raise_signal(signal.SIGINT)
+
+    original = signal.signal(signal.SIGINT, escaped)
+    thread = threading.Thread(target=stopper, daemon=True)
+    try:
+        thread.start()
+        status = cli.run_sink("127.0.0.1", 0, raw)
+        # Put back once the seal is done, and only then.
+        assert signal.getsignal(signal.SIGINT) is escaped
+    finally:
+        signal.signal(signal.SIGINT, original)
+        thread.join(timeout=TIMEOUT)
+    assert not thread.is_alive()
+
+    # The second signal did what the first did, and the replaced handler
+    # never ran.
+    assert calls == ["shutdown", "shutdown"], calls
+    document = manifest.read(raw.parent)
+    assert manifest.ENDED_AT in document
+    assert document.get(manifest.PROBLEMS, []) == []
+    assert "zoo sink: stopped. 0 body/bodies." in capsys.readouterr().out
+    assert status == 0
+    assert cli.verify(raw.parent) == 0
+
+
+def statuses(answer: bytes) -> list[bytes]:
+    """Every status line in what came back, in order."""
+    return re.findall(rb"HTTP/1\.[01] \d{3}", answer)
+
+
+def test_a_chunked_post_then_a_well_formed_one_is_one_body_and_no_stray_400(
+    tmp_path,
+):
+    # B5 (a), Q9, `SPEC.md` §3.3/§3.7. The sink decodes no framing, so the
+    # chunked POST is a zero-byte body -- and its chunks are still on the
+    # connection. Kept alive, the sink read them as a request line and
+    # answered a 400 no exporter asked for. Closed, nothing after the answer
+    # is read: one body recorded, one answer, and that answer says close.
+    raw = tmp_path / "run" / "raw"
+    chunked = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+        b"Content-Type: application/x-protobuf\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        b"5\r\nhello\r\n0\r\n\r\n"
+    )
+    with running(raw) as (_, port):
+        answer = send_octets(port, chunked + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert [entry["file"] for entry in manifest.read(raw.parent)["bodies"]] == [
+        "raw/0001.body"
+    ]
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        b"",
+        b"Content-Length: five\r\n",
+        b"Content-Length: 0\r\nTransfer-Encoding: chunked\r\n",
+        b"Content-Length: -3\r\nTransfer-Encoding: chunked\r\n",
+        b"Content-Length: 5\r\nTransfer-Encoding: chunked\r\n",
+        b"Transfer-Encoding: gzip\r\nContent-Length: 5\r\n",
+        b"Content-Length: -3\r\n",
+    ],
+    ids=[
+        "no-length",
+        "non-numeric",
+        "zero-with-te",
+        "negative-with-te",
+        "positive-with-te",
+        "positive-with-any-te",
+        "negative",
+    ],
+)
+def test_every_post_the_sink_cannot_frame_closes_its_connection(tmp_path, framing):
+    # B5 (a): each framing the row names is recorded as a zero-byte body
+    # (`SPEC.md` §3.7), answered 200 with `Connection: close`, and nothing
+    # sent after it on that connection is read as a request.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+
+
+def test_a_post_with_both_framings_is_never_read_by_its_length(tmp_path):
+    # B5a, `SPEC.md` §3.7: `Content-Length` beside a `Transfer-Encoding` is the
+    # request-smuggling shape. Read by its length, the sink took the first five
+    # octets of the chunk frames as the body and parsed the rest as the next
+    # request -- a 400 no exporter asked for, or a second request nobody sent.
+    # Any `Transfer-Encoding` makes the POST unframed whatever the length says:
+    # a zero-byte body, one answer that says close, and nothing after it read.
+    raw = tmp_path / "run" / "raw"
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+        b"Content-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    frames = b"5\r\nhello\r\n0\r\n\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + frames + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+
+
+def test_a_negative_length_alone_closes_its_connection(tmp_path):
+    # B5a, `SPEC.md` §3.7: a negative `Content-Length` frames nothing, so the
+    # sink cannot know where the next request begins. Kept alive, the octets
+    # after it were read as a second request and recorded as a second body.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\nContent-Length: -3\r\n\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"abc" + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+
+
+def test_an_unframed_post_to_another_path_is_404_and_closes_too(tmp_path):
+    # B5 (a), the rejected side (`SPEC.md` §3.4): same recording, same close.
+    raw = tmp_path / "run" / "raw"
+    head = (
+        b"POST /elsewhere HTTP/1.1\r\nHost: zoo\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"0\r\n\r\n" + WELL_FORMED)
+    assert statuses(answer) == [b"HTTP/1.1 404"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert not raw.exists() or list(raw.glob("*.body")) == []
+    assert (raw.parent / sink.REJECTED_DIR / "0001.body").read_bytes() == b""
+
+
+def test_a_framed_post_keeps_its_connection(tmp_path):
+    # B5 (a), the other edge: `Content-Length: 0` with no `Transfer-Encoding`
+    # is a framing -- an empty body -- and the connection is kept, so the
+    # well-formed POST after it is recorded as the second body. Closing here
+    # would refuse a keep-alive the request was entitled to.
+    raw = tmp_path / "run" / "raw"
+    empty = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\nContent-Length: 0\r\n\r\n"
+    last = WELL_FORMED.replace(b"Host: zoo\r\n", b"Host: zoo\r\nConnection: close\r\n")
+    with running(raw) as (_, port):
+        answer = send_octets(port, empty + last)
+    assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
+    assert answer.count(b"Connection: close") == 0
+    assert [body_of(raw, 1), body_of(raw, 2)] == [b"", PROTOBUF]
+
+
+# --- B5b: a `Content-Length` is digits, once ---------------------------------
+
+# A well-formed POST that asks to close, so a sink that wrongly keeps the
+# connection after the first POST answers this one too and the read still ends
+# at EOF -- the wrong outcome is a second status, never a timeout.
+LAST = WELL_FORMED.replace(b"Host: zoo\r\n", b"Host: zoo\r\nConnection: close\r\n")
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        b"Content-Length: +5\r\n",
+        # Whitespace inside the value that `int()` discards and RFC 9110 §5.5's
+        # optional whitespace (space, tab) is not -- a vertical tab. A leading
+        # space never reaches the value: it is that optional whitespace.
+        b"Content-Length: \x0b5\r\n",
+        b"Content-Length: 5_0\r\n",
+        b"Content-Length: 5\r\nContent-Length: 6\r\n",
+        b"Content-Length: 6\r\nContent-Length: 5\r\n",
+    ],
+    ids=[
+        "plus-sign",
+        "inner-whitespace",
+        "underscore",
+        "differing-5-6",
+        "differing-6-5",
+    ],
+)
+def test_a_length_that_is_not_digits_once_closes_its_connection(tmp_path, framing):
+    # B5b, `SPEC.md` §3.7: a `Content-Length` is `1*DIGIT` (RFC 9110 §8.6) and
+    # nothing else, and two that differ are no length. `int()` read `+5`,
+    # `\v5` and `5_0` as lengths, and the first of two headers won: the body
+    # was read by a length the request never validly declared, and what
+    # followed was parsed as the next request. Now each is unframed: a
+    # zero-byte body, one answer that says close, nothing after it read.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello!" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        b"Content-Length: 5\r\nContent-Length: 5\r\n",
+        b"Content-Length: 5\r\nContent-Length: \t5 \r\n",
+        b"Content-Length: 5 \r\n",
+    ],
+    ids=["identical", "identical-but-whitespace", "trailing-whitespace"],
+)
+def test_identical_lengths_are_one_length_and_keep_the_connection(tmp_path, framing):
+    # B5b, `SPEC.md` §3.7, the other edge: a repeated `Content-Length` whose
+    # values are equal once the optional whitespace around them is removed
+    # (RFC 9110 §5.5, `SPEC.md` §2.3) declares one length, so the body is
+    # those octets and the connection is kept -- the POST after it is the
+    # second body. Optional whitespace is not part of a value either way.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
+    assert answer.count(b"Connection: close") == 0
+    assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]
+
+
+def test_a_length_too_long_to_convert_is_unframed(tmp_path):
+    # Qodo 1 on PR #2, `SPEC.md` §3.7: an all-digit `Content-Length` longer
+    # than Python's int-string conversion limit passes the digits check, and
+    # `int()` then raised `ValueError` out of the handler -- no body recorded,
+    # no answer, a traceback. It is a value the sink cannot read as a length,
+    # so it is unframed as any non-length is: a zero-byte body, the answer,
+    # `Connection: close`. The limit is pinned to the interpreter's default
+    # for the test, so `PYTHONINTMAXSTRDIGITS=0` cannot make it vacuous.
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    try:
+        raw = tmp_path / "run" / "raw"
+        framing = b"Content-Length: " + b"9" * 4301 + b"\r\n"
+        head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+        with running(raw) as (_, port):
+            answer = send_octets(port, head + b"hello" + LAST)
+    finally:
+        sys.set_int_max_str_digits(previous)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+
+
+# --- B5c: a folded `Content-Length` is unframeable ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("framing", "headers", "unparsed"),
+    [
+        # The stdlib joins the fold and frames by `5`; the record's split
+        # says `Content-Length` is empty and lists ` 5` as `unparsed`.
+        (b"Content-Length:\r\n 5\r\n", [["Content-Length", ""]], [" 5"]),
+        (b"Content-Length:\r\n\t5\r\n", [["Content-Length", ""]], ["\t5"]),
+        # A fold after digits: the stdlib's value was never digits, so this
+        # one was unframed before B5c too -- it stays so.
+        (b"Content-Length: 5\r\n 0\r\n", [["Content-Length", "5"]], [" 0"]),
+    ],
+    ids=["empty-then-space-fold", "empty-then-tab-fold", "digits-then-fold"],
+)
+def test_a_folded_length_closes_its_connection(tmp_path, framing, headers, unparsed):
+    # B5c, `SPEC.md` §3.7: a `Content-Length` whose value continues on a
+    # folded line (obs-fold, a line beginning with a space or a tab) declares
+    # no length. `http.server`'s parse joined the fold and framed the body by
+    # a length the record (`SPEC.md` §2.3) does not show -- there the header
+    # is empty and the fold is `unparsed` -- and the record and the framing
+    # must agree. Unframed: a zero-byte body, one answer that says close,
+    # nothing after it read, and the head's split unchanged.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+    split = headers_of(raw)
+    assert split["headers"] == [["Host", "zoo"], *headers]
+    assert split["unparsed"] == unparsed
+
+
+def test_a_fold_on_another_header_keeps_the_connection(tmp_path):
+    # B5c's other edge: only the framing headers decide framing (`SPEC.md`
+    # §3.7). A fold on a header that is not `Content-Length` leaves the length
+    # declared, so the body is its octets and the POST after it is the second.
+    raw = tmp_path / "run" / "raw"
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+        b"Content-Length: 5\r\nX-Note: a\r\n b\r\n\r\n"
+    )
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
+    assert answer.count(b"Connection: close") == 0
+    assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]
+
+
+# --- B5d: the sink frames by the record's own parse --------------------------
+
+
+@pytest.mark.parametrize(
+    ("framing", "headers"),
+    [
+        # A bare LF, then a space: the stdlib's reader ends the line at the LF
+        # and joins ` 5` to it as a fold, so its parse says `5`. On §2.3's
+        # CRLF split it is one line, and the value is `\n 5` -- not digits.
+        (b"Content-Length:\n 5\r\n", [["Content-Length", "\n 5"]]),
+        # A bare CR inside another header's value: `email`'s parser splits the
+        # line on it and finds a `Content-Length: 5`. The record's split finds
+        # one header, `X`, whose value holds the CR -- and no length at all.
+        (b"X: a\rContent-Length: 5\r\n", [["X", "a\rContent-Length: 5"]]),
+    ],
+    ids=["lf-then-space", "bare-cr-in-another-value"],
+)
+def test_a_length_only_the_stdlib_reads_closes_its_connection(
+    tmp_path, framing, headers
+):
+    # B5d, `SPEC.md` §3.7: the sink frames a body by its own parse of the head
+    # -- §2.3's split, the one `NNNN.headers.json` shows -- and never by the
+    # stdlib's header object, which splits on a bare CR and a bare LF. Before,
+    # each head here was read by a `Content-Length: 5` the record does not
+    # show, and what followed was parsed as the next request. Now each is
+    # unframed: a zero-byte body, one answer that says close, nothing after it
+    # read -- exactly as the head's split shows it.
+    raw = tmp_path / "run" / "raw"
+    head = b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n" + framing + b"\r\n"
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200"], answer
+    assert b"\r\nConnection: close\r\n" in answer
+    assert sorted(path.name for path in raw.glob("*.body")) == ["0001.body"]
+    assert body_of(raw) == b""
+    assert head_of(raw) == head
+    split = headers_of(raw)
+    assert split["headers"] == [["Host", "zoo"], *headers]
+    assert "unparsed" not in split
+
+
+def test_a_transfer_encoding_only_the_stdlib_reads_frames_nothing(tmp_path):
+    # B5d's other edge, the same rule from the other side: a
+    # `Transfer-Encoding` that exists only in the stdlib's parse -- split out
+    # of another header's value at a bare CR -- is not in the record, so the
+    # record's `Content-Length: 5` frames the body. Five octets, the
+    # connection kept, and the POST after it is the second body.
+    raw = tmp_path / "run" / "raw"
+    head = (
+        b"POST /v1/traces HTTP/1.1\r\nHost: zoo\r\n"
+        b"X: a\rTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n"
+    )
+    with running(raw) as (_, port):
+        answer = send_octets(port, head + b"hello" + LAST)
+    assert statuses(answer) == [b"HTTP/1.1 200", b"HTTP/1.1 200"], answer
+    assert answer.count(b"Connection: close") == 0
+    assert [body_of(raw, 1), body_of(raw, 2)] == [b"hello", PROTOBUF]
+    assert headers_of(raw)["headers"] == [
+        ["Host", "zoo"],
+        ["X", "a\rTransfer-Encoding: chunked"],
+        ["Content-Length", "5"],
+    ]

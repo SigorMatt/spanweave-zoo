@@ -30,14 +30,13 @@ import gzip
 import http.client
 import json
 import queue
-import socket
 import time
 from pathlib import Path
 
 import pytest
 
 from spanweave_zoo import capture, cli, collector, forward, manifest
-from tests import otlp, test_shutdown
+from tests import otlp, ports, test_shutdown
 
 REPO = Path(__file__).resolve().parent.parent
 COLLECTOR_DIR = REPO / "collector"
@@ -90,20 +89,6 @@ class Clock:
         return f"2026-10-09T12:00:{self.ticks:02d}+00:00"
 
 
-def free_port() -> int:
-    """A port the Collector can have.
-
-    The Collector must be told its receiver's port before it starts, so this
-    cannot be `port=0` the way every sink in the suite is: the number has to
-    exist first. Bound on the loopback and released immediately, and if
-    something does take it in between, the Collector fails to listen and the
-    readiness check refuses -- loudly, rather than hanging.
-    """
-    with socket.socket() as probe:
-        probe.bind((HOST, 0))
-        return int(probe.getsockname()[1])
-
-
 def post(port: int, body: bytes, headers: dict[str, str]) -> int:
     connection = http.client.HTTPConnection(HOST, port, timeout=30)
     try:
@@ -130,7 +115,7 @@ def test_the_binary_on_disk_is_the_pinned_version():
     launcher = collector.Binary(
         pinned,
         host=HOST,
-        http_port=free_port(),
+        http_port=ports.free_port(),
         grpc_port=0,
         sleep=time.sleep,
     )
@@ -161,31 +146,34 @@ def test_a_protobuf_export_through_the_tee_comes_back_as_json_with_the_same_ids(
         },
     )
     pinned = collector.pin(COLLECTOR_DIR)
-    collector_port = free_port()
     arrived: queue.Queue[str] = queue.Queue()
 
-    started = capture.Capture(
-        run,
-        now=Clock(),
-        launcher=collector.Binary(
-            pinned,
+    def build(collector_port: int) -> capture.Capture:
+        return capture.Capture(
+            run,
+            now=Clock(),
+            launcher=collector.Binary(
+                pinned,
+                host=HOST,
+                http_port=collector_port,
+                grpc_port=0,
+                sleep=time.sleep,
+            ),
+            forward=forward.HttpForward(HOST, collector_port, timeout=30.0),
+            pin=pinned,
+            kind="recorded",
+            project_manifest=project_manifest,
             host=HOST,
-            http_port=collector_port,
-            grpc_port=0,
-            sleep=time.sleep,
-        ),
-        forward=forward.HttpForward(HOST, collector_port, timeout=30.0),
-        pin=pinned,
-        kind="recorded",
-        project_manifest=project_manifest,
-        host=HOST,
-        raw_port=0,
-        json_port=0,
-        on_record=lambda entry: (
-            arrived.put(entry.file) if entry.file.startswith("json/") else None
-        ),
-    )
-    started.start()
+            raw_port=0,
+            json_port=0,
+            on_record=lambda entry: (
+                arrived.put(entry.file) if entry.file.startswith("json/") else None
+            ),
+        )
+
+    # The Collector's port is picked, and a start refused on an address in use
+    # is started again (B1, `tests/ports.py`).
+    started = ports.started_capture(build)
     try:
         assert (
             post(
@@ -292,7 +280,6 @@ def test_ctrl_c_to_the_process_group_with_the_real_collector(tmp_path):
     # interrupted.
     zoo = test_shutdown.ZooCapture(tmp_path, COLLECTOR_DIR)
     try:
-        zoo.wait_for(test_shutdown.READY_LINE)
         assert test_shutdown.post(zoo.port, PROTOBUF) == 200
         zoo.wait_for("json/0001.json")
     except BaseException:

@@ -9,8 +9,12 @@ While a series is open there is also a `WORKPLAN.md` — the orchestrator's
 execution state: which batch is next and what it must contain. **It is edited
 only by the orchestrator**, and a sub-agent executing a batch never edits it.
 It exists only for the life of a series and is deleted at the close, with §3
-(the decisions log) folded into `TASKS.md`, which is the registry **between**
-series: one line per batch with the commit that closed it.
+(the decisions log) and §4 (the resume notes) folded into `TASKS.md`, which is
+the registry **between** series: one line per batch with the commit that
+closed it. Between series there is no `WORKPLAN.md`, and nothing here needs
+one. Each closed series' plan lives in git, and `TASKS.md` names the commit
+for each: series 1's is `git show 22be077:WORKPLAN.md`, series 2's
+`git show 1ed70a1:WORKPLAN.md`.
 
 ## What this project is
 

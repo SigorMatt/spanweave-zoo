@@ -13,6 +13,7 @@ fake receiver could only confirm what the test already believed.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tomllib
@@ -21,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from spanweave_zoo import cli
-from tests.test_replay import Clock, crafted, head_octets
+from tests.test_replay import Clock, _misplaced_copy, crafted, head_octets
 
 # Not `pytest.importorskip` at module level: that skips the whole module at
 # collection, before `-m` deselects anything, so the skip lands in every
@@ -44,6 +45,9 @@ pytestmark = [
 REPO = Path(__file__).resolve().parent.parent
 FIXTURE = REPO / "tests" / "fixtures" / "capture"
 RECORDED = REPO / "captures" / "z4" / "2026-10-12-recorded"
+# Two `json/` bodies, 0.202147 s apart by their receipt times: the smallest
+# committed capture with two bodies for the policy runs to see.
+REAL = REPO / "captures" / "z4" / "2026-10-12-real"
 
 OWNERS = {"spanweave", "spanweave-live", "agentgolden"}
 
@@ -156,6 +160,330 @@ def test_the_method_section_states_the_completion_once(fixture_audit):
     _, text = fixture_audit
     assert text.count("Run.finish()") == 1
     assert "--requests" in text
+
+
+# --- B6a: step 2 under each policy, step 4 per node (SPEC.md 7.3) -----------
+
+
+def recording_serve(log: Path) -> tuple[str, ...]:
+    """The real `serve`, run as it is run, with every argv it was given
+    appended to `log` first: the `serve_command` seam (`SPEC.md` 7.6)."""
+    return (
+        sys.executable,
+        "-c",
+        "import json, runpy, sys\n"
+        f"with open({str(log)!r}, 'a', encoding='utf-8') as seen:\n"
+        "    seen.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "sys.argv = ['spanweave-live', *sys.argv[1:]]\n"
+        "runpy.run_module('spanweave_live.cli', run_name='__main__')\n",
+    )
+
+
+def test_step_two_runs_serve_three_times_none_of_them_timed(tmp_path):
+    # OPEN_QUESTIONS.md section 8's decision: the end-of-input run as before,
+    # then `--quiet 0` and `--root-grace 0`, each with `--requests N`. B6b:
+    # no replay is `--timing` -- `serve` ticks once per request, so at `0`
+    # the sequence is the same timed or not, and the audit has no `sleep`.
+    log = tmp_path / "argv.jsonl"
+    result = audit.audit(
+        REAL, out=tmp_path / "audit", serve_command=recording_serve(log)
+    )
+    assert result.exit == 0, result.incomplete
+    seen = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    base = ["serve", "--port", "0", "--out", "graphs"]
+    assert seen == [
+        [*base, "--requests", "2"],
+        [*base, "--requests", "2"],
+        [*base, "--quiet", "0", "--requests", "2"],
+        [*base, "--root-grace", "0", "--requests", "2"],
+    ]
+    assert [run.policy for run in result.policy_runs] == [
+        ("--quiet", "0"),
+        ("--root-grace", "0"),
+    ]
+    for run in result.policy_runs:
+        assert [o.slept for o in run.outcomes] == [None, None]
+        assert [o.status for o in run.outcomes] == [200, 200]
+    text = result.path.read_text(encoding="utf-8")
+    for flag in ("--quiet 0", "--root-grace 0"):
+        assert f"--out graphs {flag} --requests 2" in text, flag
+    assert "--timing" not in text
+    # The Method says whose values the zeros are.
+    method = text.split("## Method", 1)[1].split("## Findings", 1)[0]
+    assert "the audit's" in method and "--quiet 0" in method
+
+
+def test_each_policy_run_tables_its_completions_with_reason_and_generation(
+    tmp_path,
+):
+    result = audit.audit(REAL, out=tmp_path)
+    assert result.exit == 0, result.incomplete
+    quiet, grace = result.policy_runs
+    completed = [e for e in audit.policy_events(quiet) if e.code == "completed"]
+    assert completed
+    for event in completed:
+        assert event.reason == "the quiet policy fired on Quiet(seconds=0.0)"
+        assert event.generation >= 1
+    finished = quiet.finished()
+    assert finished is not None and finished.get("exit") == 0
+    text = result.path.read_text(encoding="utf-8")
+    assert "the quiet policy fired on Quiet(seconds=0.0)" in text
+    assert grace.lines and "## Step 3" in text
+
+
+def test_generations_count_completions_and_restart_on_forgotten():
+    # `SPEC.md` 7.3: the stderr events carry no generation; the audit counts
+    # the receiver's own -- the nth `completed` of a trace is generation n.
+    def line(code, trace, index, detail="d"):
+        return json.dumps(
+            {"code": code, "detail": detail, "index": index, "trace_id": trace}
+        )
+
+    served = audit.Served(source="json", files=[], command=[])
+    served.lines = [
+        line("completed", "t", 1, "the quiet policy fired on Quiet(seconds=0.0): x"),
+        line("written", "t", 1, "graphs/t.json"),
+        line("late_arrival", "t", 2),
+        line("completed", "t", 2, "the cap policy fired on Cap(records=0): y"),
+        line("released", "t", 2, "released"),
+        line("forgotten", "t", 2),
+        line("completed", "t", 3, "the cap policy fired on Cap(records=0): z"),
+    ]
+    rows = [(e.code, e.generation, e.reason) for e in audit.policy_events(served)]
+    assert rows == [
+        ("completed", 1, "the quiet policy fired on Quiet(seconds=0.0)"),
+        ("written", 1, "graphs/t.json"),
+        ("late_arrival", 2, ""),
+        ("completed", 2, "the cap policy fired on Cap(records=0)"),
+        ("released", 2, "released"),
+        ("completed", 1, "the cap policy fired on Cap(records=0)"),
+    ]
+
+
+def _error_graph():
+    import spanweave
+
+    span = {
+        "trace_id": "t1",
+        "start_time": "1791811632860513997",
+        "end_time": "1791811632878070667",
+    }
+    records = [
+        {
+            **span,
+            "span_id": "a1",
+            "parent_id": "p0",
+            "name": "chat m-1",
+            "kind": 3,
+            "attributes": {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": "m-1",
+            },
+            "status": "ERROR",
+            "events": [{"name": "exception", "timeUnixNano": "1"}],
+        },
+        {
+            **span,
+            "span_id": "b1",
+            "parent_id": "a1",
+            "name": "execute_tool x",
+            "kind": 1,
+            "attributes": {
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.call.arguments": '{"x":1}',
+            },
+            "status": "OK",
+        },
+    ]
+    builder = spanweave.Builder()
+    for record in records:
+        builder.feed(record)
+    return builder.graph()
+
+
+def _cells(row: str) -> list[str]:
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+
+# Where `_error_graph`'s two records came from, in the order fed: one body
+# each, as a capture of two bodies would carry them.
+ERROR_ORIGINS = [("json/0001.json", 1), ("json/0002.json", 1)]
+
+
+def test_the_node_table_names_an_error_node_with_its_status():
+    lines = audit.node_table(_error_graph(), ERROR_ORIGINS)
+    [error] = [row for row in lines if row.startswith("| `a1` |")]
+    assert _cells(error) == [
+        "`a1`",
+        "`json/0001.json`",
+        "1",
+        "chat m-1",
+        "llm",
+        "error",
+        "`m-1`",
+        "absent from graph",
+        "—",
+        "`orphan_parent`, `timestamp_unit_suspect`, `unmapped_attributes`",
+        "`<record>.events`, `<record>.kind`",
+        "absent",
+        "absent",
+        "1",
+    ]
+    [child] = [row for row in lines if row.startswith("| `b1` |")]
+    assert _cells(child)[1:9] == [
+        "`json/0002.json`",
+        "1",
+        "execute_tool x",
+        "tool",
+        "ok",
+        "absent",
+        "yes",
+        "`a1`",
+    ]
+    assert _cells(child)[10:] == ["`<record>.kind`", "present", "absent", "absent"]
+    # The events, as the record carries them, beneath the table.
+    assert '[{"name":"exception","timeUnixNano":"1"}]' in "\n".join(lines)
+
+
+def test_a_node_whose_record_states_no_parent_and_carries_no_events():
+    import spanweave
+
+    builder = spanweave.Builder()
+    builder.feed(
+        {
+            "trace_id": "t1",
+            "span_id": "r1",
+            "name": "invoke_agent",
+            "kind": 1,
+            "attributes": {"gen_ai.operation.name": "invoke_agent"},
+            "status": "UNSET",
+        }
+    )
+    [row] = [
+        r
+        for r in audit.node_table(builder.graph(), [("json/0003.json", 7)])
+        if r.startswith("| `r1` |")
+    ]
+    cells = _cells(row)
+    assert cells[1:3] == ["`json/0003.json`", "7"]
+    assert cells[3] == "invoke_agent"
+    assert cells[5] == "unset"
+    assert cells[7:9] == ["no", "—"]
+    assert cells[13] == "absent"
+
+
+def test_a_node_whose_record_the_feed_does_not_place_says_absent():
+    # B6c, degenerate: a node whose `line_number` indexes no record of the
+    # feed it is given is not placed by a guess -- both cells say *absent*.
+    lines = audit.node_table(_error_graph(), ERROR_ORIGINS[:1])
+    [child] = [row for row in lines if row.startswith("| `b1` |")]
+    assert _cells(child)[1:3] == ["absent", "absent"]
+    [error] = [row for row in lines if row.startswith("| `a1` |")]
+    assert _cells(error)[1:3] == ["`json/0001.json`", "1"]
+
+
+def _renumbered(graph, node_id, line_number):
+    """`graph` with one node's `RawRecord.line_number` replaced. The pinned
+    spanweave numbers every fed record from 1, so neither a 0 nor a missing
+    number reaches a committed report; SPEC §7.3 still promises *absent*
+    for both, and this is how a test builds such a node."""
+    import dataclasses
+
+    import spanweave
+
+    nodes = tuple(
+        dataclasses.replace(
+            node, raw=dataclasses.replace(node.raw, line_number=line_number)
+        )
+        if node.id == node_id
+        else node
+        for node in graph.nodes()
+    )
+    return spanweave.Graph.of(
+        graph.trace_id, nodes, graph.edges(), graph.diagnostics, graph.meta
+    )
+
+
+def test_a_node_whose_line_number_is_zero_says_absent():
+    # O-4: a 0 indexes no record of a feed numbered from 1. Without the
+    # `1 <=` bound it would wrap to `origins[-1]` and name the last record.
+    graph = _renumbered(_error_graph(), "a1", 0)
+    lines = audit.node_table(graph, ERROR_ORIGINS)
+    [error] = [row for row in lines if row.startswith("| `a1` |")]
+    assert _cells(error)[1:3] == ["absent", "absent"]
+    [child] = [row for row in lines if row.startswith("| `b1` |")]
+    assert _cells(child)[1:3] == ["`json/0002.json`", "1"]
+
+
+def test_a_node_with_no_line_number_says_absent():
+    # O-4: a record the library did not number is placed nowhere. Without
+    # the `position is None` guard the comparison would raise instead.
+    graph = _renumbered(_error_graph(), "a1", None)
+    lines = audit.node_table(graph, ERROR_ORIGINS)
+    [error] = [row for row in lines if row.startswith("| `a1` |")]
+    assert _cells(error)[1:3] == ["absent", "absent"]
+    [child] = [row for row in lines if row.startswith("| `b1` |")]
+    assert _cells(child)[1:3] == ["`json/0002.json`", "1"]
+
+
+def test_the_report_carries_a_row_for_every_node(recorded_audit):
+    result, text = recorded_audit
+    step4 = text.split("## Step 4 ", 1)[1].split("## Step 5 ", 1)[0]
+    assert (
+        "| Node | Body | Record | Span name | Kind | Status | Model | Parent | "
+        "Parent id | Diagnostics | Unmapped keys | Inputs | Outputs | Span events |"
+    ) in step4
+    for partition in result.partitions:
+        if partition.graph is None or partition.live is None:
+            continue
+        for node in partition.graph.nodes():
+            [row] = [r for r in step4.splitlines() if r.startswith(f"| `{node.id}` |")]
+            assert _cells(row)[3:6] == [
+                node.name,
+                node.kind.value,
+                node.status.value,
+            ], node.id
+
+
+@pytest.fixture(scope="module")
+def real_audit(tmp_path_factory):
+    out = tmp_path_factory.mktemp("audit")
+    result = audit.audit(REAL, out=out)
+    return result, result.path.read_text(encoding="utf-8")
+
+
+def test_the_node_table_names_the_body_and_record_each_node_came_from(real_audit):
+    # B6c, on a capture of two bodies: Z4's real run, whose one trace is fed
+    # three records from json/0001.json and one from json/0002.json. Each
+    # node's record is found here by value among the records the partition
+    # fed -- independently of the audit's own reading -- and the row must
+    # name that record's body and its index within it.
+    result, text = real_audit
+    assert result.exit == 0, result.incomplete
+    step4 = text.split("## Step 4 ", 1)[1].split("## Step 5 ", 1)[0]
+    placed = []
+    for partition in result.partitions:
+        if partition.graph is None or partition.live is None:
+            continue
+        section = step4.split(f"### `{partition.name}`", 1)[1].split("\n### ", 1)[0]
+        for node in partition.graph.nodes():
+            [index] = [
+                i
+                for i, record in enumerate(partition.feed)
+                if record == node.raw.source
+            ]
+            body, position = partition.origins[index]
+            [row] = [
+                r for r in section.splitlines() if r.startswith(f"| `{node.id}` |")
+            ]
+            assert _cells(row)[1:3] == [f"`{body}`", str(position)], node.id
+            placed.append((body, position))
+    assert sorted(placed) == [
+        ("json/0001.json", 1),
+        ("json/0001.json", 2),
+        ("json/0001.json", 3),
+        ("json/0002.json", 1),
+    ]
 
 
 # --- the owner rules (SPEC.md section 7.4) ------------------------------------
@@ -284,6 +612,77 @@ def test_a_serve_that_never_starts_leaves_the_audit_incomplete(tmp_path):
     assert any("listening" in reason for reason in result.incomplete)
 
 
+def test_a_serve_command_that_cannot_be_executed_still_writes_the_report(
+    tmp_path, monkeypatch
+):
+    # SPEC.md sections 7.5 and 7.6: `Popen` raising `OSError` is `serve did
+    # not start`, an incomplete step -- the report is still written and the
+    # exit is 1, not a traceback and no report (Qodo Q5, B6 (b)).
+    missing = (str(tmp_path / "no-such-serve"),)
+    out = tmp_path / "audit"
+    result = audit.audit(FIXTURE, out=out, serve_command=missing)
+    assert result.exit == 1
+    started = [r for r in result.incomplete if "serve did not start: " in r]
+    assert [r.split(":", 1)[0] for r in started] == [
+        "step 1",
+        "step 2",
+        "step 2 (--quiet 0)",
+        "step 2 (--root-grace 0)",
+    ]
+    assert result.findings == []
+    text = result.path.read_text(encoding="utf-8")
+    assert "Incomplete: serve did not start: " in text
+    for number in (3, 4, 5):
+        section = text.split(f"## Step {number} ", 1)[1]
+        assert section.split("\n\n", 2)[1].startswith("Not run: "), number
+    # And through the CLI, which passes no seam: exit 1, the report written.
+    monkeypatch.setitem(audit.audit.__kwdefaults__, "serve_command", missing)
+    again = tmp_path / "cli"
+    assert cli.main(["audit", str(FIXTURE), "--out", str(again)]) == 1
+    assert (again / "fixtures-capture.md").is_file()
+
+
+def test_a_reread_that_does_not_match_serve_runs_no_step_after_it(tmp_path):
+    # SPEC.md section 7.3: the reconstruction is checked before it is
+    # believed, and when it does not match what serve reported step 3 is
+    # incomplete -- no partition is compared, steps 4 and 5 are not run, and
+    # no finding is made from any of them (Qodo Q4, B6 (a)). The mismatch is
+    # driven through the `reread` seam (section 7.6), on the Z4 capture whose
+    # honest audit has step-3 findings and runs steps 4 and 5.
+    def short(run, files):
+        found = audit.reread(run, files)
+        found.statuses = [599 for _ in found.statuses]
+        return found
+
+    result = audit.audit(RECORDED, out=tmp_path, reread=short)
+    assert result.exit == 1
+    [mismatch] = [r for r in result.incomplete if r.startswith("step 3")]
+    assert "does not match serve" in mismatch
+    assert [f for f in result.findings if f.step >= 3] == []
+    assert result.partitions == []
+    text = result.path.read_text(encoding="utf-8")
+    for number in (3, 4, 5):
+        section = text.split(f"## Step {number} ", 1)[1]
+        assert section.split("\n\n", 2)[1].startswith("Not run: "), number
+    assert "spanweave inspect graphs/" not in text
+    assert "does not match serve" in text.split("## Step 3 ", 1)[1]
+
+
+def test_a_routed_count_that_does_not_match_is_the_same_refusal(tmp_path):
+    # The other half of the check: statuses equal, one record fewer than
+    # serve's `routed`.
+    def fewer(run, files):
+        found = audit.reread(run, files)
+        found.partitions[0].feed.pop()
+        found.partitions[0].origins.pop()
+        return found
+
+    result = audit.audit(RECORDED, out=tmp_path, reread=fewer)
+    assert result.exit == 1
+    assert any("routed" in r for r in result.incomplete if r.startswith("step 3"))
+    assert [f for f in result.findings if f.step >= 3] == []
+
+
 def test_a_capture_that_does_not_verify_is_refused(tmp_path, capsys):
     run = tmp_path / "fixtures" / "capture"
     shutil.copytree(FIXTURE, run)
@@ -292,6 +691,20 @@ def test_a_capture_that_does_not_verify_is_refused(tmp_path, capsys):
     out = tmp_path / "audit"
     assert cli.main(["audit", str(run), "--out", str(out)]) == 2
     assert "does not verify" in capsys.readouterr().err
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("case", ["raw-absolute", "raw-dotdot"])
+def test_a_manifest_path_outside_the_run_is_refused_naming_it(tmp_path, capsys, case):
+    # B4a (`OPEN_QUESTIONS.md` §7, option 1): such a run does not verify
+    # (`SPEC.md` §5.4, §5.6), so the audit refuses it before reading anything
+    # (§7.2) -- exit 2, no report -- and the refusal names the entry.
+    run, entry = _misplaced_copy(tmp_path, case)
+    out = tmp_path / "audit"
+    assert cli.main(["audit", str(run), "--out", str(out)]) == 2
+    err = capsys.readouterr().err
+    assert "does not verify" in err
+    assert repr(entry) in err, err
     assert not out.exists()
 
 
