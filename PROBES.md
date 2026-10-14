@@ -482,11 +482,19 @@ for e in d["edges"]:
   `ChatCompletion` children `json/0003.json` records 3–8 and `json/0004.json`
   records 1–3; recorded, the same nine pairs (`generation` records 74, 77, …,
   98; `ChatCompletion` records 17–25 of `json/0001.json`). On the same nine
-  `ChatCompletion` nodes, and on no other, the outputs are *absent*; on the
-  same nine `generation` nodes the model is *absent* (S10). The record carries
-  a count of what the SDK dropped; what was dropped is not in the export as
-  received. The 599 `Attributes dict is full` lines the operator saw are the
-  SDK's stderr and no file under `captures/z3/` holds them.
+  `ChatCompletion` nodes, and on no other `llm` node, the outputs are
+  *absent*; on the same nine `generation` nodes the model is *absent* (S10).
+  The record carries a count of what the SDK dropped; what was dropped is not
+  in the export as received. The 599 `Attributes dict is full` lines the
+  operator saw are the SDK's stderr and no file under `captures/z3/` holds
+  them.
+- **Observed — inputs, bearing on what is to establish:** the inputs are
+  *absent* on the same nine `ChatCompletion` nodes, and on 8 of the 9
+  `generation` nodes that carry the count — all but the first pair's
+  (`c6bc024ad4607d9a`, `json/0003.json` record 15, real; `bca4b37a7c99fd30`,
+  `json/0001.json` record 74, recorded), whose inputs are *present*. Each of
+  the other 32 `llm` nodes, the 16 pairs that carry no count, has inputs and
+  outputs *present*. Both graphs alike.
 - **To establish:** whether spanweave should surface a span's dropped-attribute
   count as more than an unmapped key. The exporter's attribute limit is the
   instrumentation's, not any of the three libraries'.
@@ -657,7 +665,7 @@ for e in d["edges"]:
 - **From:** step 4's Body and Record columns, all twelve reports; Z1's brief
   ("nesting depth and parent-before-child ordering in a real exporter's
   batches"). Not a finding.
-- **Captures:** all twelve.
+- **Captures:** the ten with `parent` edges — all but Z4's two.
 - **Command:** step 4.
 - **Observed — ordering:** for every `parent` edge in every graph, the child's
   record precedes its parent's (body first, then record): Z1 30 of 30, Z2 22

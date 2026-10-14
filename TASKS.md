@@ -624,9 +624,10 @@ byte as `reviews/QODO-2026-10-12.md` — the comment's `body` exactly as the API
 returns it, without the trailing newline `gh api --jq .body` adds. Qodo's PR
 summary of the same PR (comment `6127869987`, 2026-10-12), which carries the
 one design alternative Qodo raised, is kept the same way as
-`reviews/QODO-SUMMARY-2026-10-12.md` (B8). `reviews/SHA256SUMS` lists 27
-files: series 1's 25, and the two Qodo comments; `cd reviews && sha256sum -c
-SHA256SUMS`. All twelve items were accepted (decisions log below,
+`reviews/QODO-SUMMARY-2026-10-12.md` (B8). `reviews/SHA256SUMS` lists 30
+files: series 1's 25, the two Qodo comments on PR #1, and the three reviews of
+this series' close (below, "Dispositions of the reviews"); `cd reviews &&
+sha256sum -c SHA256SUMS`. All twelve items were accepted (decisions log below,
 2026-10-12, "series").
 
 ### Registry
@@ -706,17 +707,80 @@ series 2", at series 1's close):
 - **The port race**: `test_the_collector_killed_by_hand_mid_capture_is_a_problem` failed once in CI (`e50a56e`, PR run attempt 1) with the Collector's port taken between the **harness's** pick and the Collector's bind; `zoo capture` picks no port (`OPEN_QUESTIONS.md` §6). **B1**, `d99ba97`: the harness picks no sink port (`--port 0`, `--json-port 0`) and retries a start lost to a race on `--collector-port`, bounded, naming every port tried.
 - **The PR wording**: PR #1's body says the merge is a fast-forward; `--merge` wrote `ebe12cf`. **B8**: the closing PR `zoo` → `main` is a merge commit, as PR #1 was, and its text says so. The PR itself is opened after this commit.
 
-No other review was taken in this series: no aux review file was written under
-`patches/`, so none is archived beyond the two Qodo comments.
+**The three reviews of the close**, archived and dispositioned after it by
+`patches/decisions-zoo-2026-10-14b.md`, four commits on `zoo` after `fe9c08f`:
+
+- **The builder's close note** (`reviews/REVIEW-2026-10-14-close.md`): 0
+  blockers, 0 should-fix, notes N-1 to N-6. N-3, N-5 and N-6 are the aux's
+  O-1, O-3 and O-2 and are dispositioned there.
+- **The aux's review of the close** (`reviews/REVIEW-2026-10-14.md`, with its
+  section (i), which records Qodo's review of PR #2): 0 blockers, should-fix
+  O-1 and O-2, notes O-3 to O-6, and its reading of N-1 to N-6.
+- **Qodo's review of PR #2** (`reviews/QODO-2026-10-14.md`, comment
+  `6158862024`, 2026-10-14T01:30:59Z, `qodo-code-review[bot]`: 5 bugs, 0 rule
+  violations; its five inline comments duplicate the five findings). Qodo
+  edited the comment at 2026-10-14T09:00:03Z, after re-reviewing `8721cd5`,
+  striking findings 1–4 through as resolved. The archive is the copy fetched
+  before that edit, the comment's `body` exactly as the API then returned it,
+  without the trailing newline `gh api --jq .body` adds: the review the series
+  answered, not Qodo's later verdict on the answer.
+
+Their dispositions:
+
+- Qodo 1 (an oversized `Content-Length` gets no response) and Qodo 2 (shutdown
+  can omit an accepted request): accepted, commit 1, `a763334`.
+- Qodo 4 (a second stop signal kills `zoo sink` unsealed): accepted, commit 2,
+  `8c0c58d`.
+- Qodo 3 (a looping symlink crashes `verify` and `replay`): accepted, commit 3,
+  `8721cd5`.
+- Qodo 5 (the audit's module docstring says the policy runs sleep the gaps):
+  accepted, commit 4 (this commit): "each replayed back to back, nothing slept
+  (B6a, B6b)".
+- O-1 (S8's "on no other" is false as written), O-2 (archive the reviews of
+  the close), O-4 (`_origin`'s two *absent* branches untested: two
+  `node_table` cases, `line_number=0` and `line_number=None`), O-6 (the Z6
+  Brief cell, "one client seen twice") and N-2 (S15's Captures narrowed to the
+  ten with `parent` edges; Z4's ROADMAP row unchanged): accepted, commit 4
+  (this commit).
+- N-1 (the Audited cell names the audit code, not `<B8 sha>`): no change. A
+  commit cannot contain its own sha; the audit-code sha is what reproduces a
+  report, and the registry above names B8's commit.
+- N-4 (the wire-level-proxy decline sits under Dispositions, not Threads): no
+  change. The B8 decision says only that TASKS carries the decline with its
+  reason, and the disposition names the condition on which it would become a
+  thread; its placement follows the decision, and nothing is missing.
+- O-3 / N-5 (the reports' Method step 4 names neither Body nor Record) and
+  O-5 (B6c's two-body test takes its expected body and index from
+  `partition.origins`): series-3 threads (below).
+- **Qodo's PR summary of PR #2** (comment `6158846844`, not archived; its
+  "High-Level Assessment"): two alternative approaches, "Centralize capture
+  shutdown in one coordinator" and "Use a separate HTTP server and parser".
+  **Declined**, beside the wire-level-proxy decline above. Qodo's own
+  recommendation: "Keep the targeted recorder, manifest, and replay
+  hardening. It preserves the existing capture format and makes trust
+  boundaries explicit; a shared shutdown abstraction is worth considering
+  only if the two lifecycles diverge further." They have not diverged: commit
+  2 makes `zoo sink` seal under its handlers as `zoo capture` does, and the
+  sink parses nothing (standing rule 3).
+
+No other review was taken in this series.
 
 ### Threads for series 3
 
-Registered here at the close. None is acted on in this series. Each says where
-it was raised.
+Registered here at the close, the first two after it
+(`decisions-zoo-2026-10-14b`, from the aux's review of the close). None is
+acted on in this series. Each says where it was raised.
 
 - **A head the derivation marks `unparsed`, or that carries a bare CR, may
   close its connection** (decision 2026-10-14, "B5d"): after the answer,
   defensively, without changing the record. A thread, not a row.
+- **The report's Method string names Body and Record, then regenerate all
+  twelve** (O-3, the close note's N-5; `spanweave_zoo/audit.py`'s step 4
+  sentence, unchanged by B6c, `4b57f18`).
+- **B6c's two-body test asserts against the bytes, not
+  `partition.origins`** (O-5): its expected body and index come from the
+  audit's own partition, so its claim of independence holds only for the
+  final literal.
 - **The `PID set at arming:` wording** (`~/spanweave-ops/status_check.sh`):
   owned by **spanweave-ops**, not this repository; not acted on here (as
   series 1's R-8).

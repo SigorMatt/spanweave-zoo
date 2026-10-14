@@ -4,6 +4,37 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## decisions-zoo-2026-10-14b, commit 4 — the close reviews archived, Qodo 5, O-1, O-2, O-4, O-6, N-2
+
+Documentation and tests only, as `patches/decisions-zoo-2026-10-14b.md`
+accepted them. No `SPEC.md` change, no capture touched (`make verify` green),
+no committed report regenerated.
+
+- **Qodo 5:** `audit.py`'s module docstring said the two policy runs replay
+  "with the captured gaps slept (B6a)"; it now says "each replayed back to
+  back, nothing slept (B6a, B6b)", as the code does.
+- **O-1:** `PROBES.md` S8's "on no other" now reads "on no other `llm` node"
+  (25 `turn`, 2 `Agent workflow` and 1 `echo-planner` node also have outputs
+  *absent*), and S8 records that the inputs are *absent* on the same nine
+  `ChatCompletion` nodes and on 8 of the 9 `generation` nodes that carry the
+  dropped count — read from both committed Z3 reports, the same in each.
+- **N-2:** S15's Captures is the ten with `parent` edges; the Z4 sentence
+  stays, and Z4's `ROADMAP.md` row is unchanged.
+- **O-6:** `ROADMAP.md`'s Z6 Brief cell gains "(two instrumentors; one client
+  seen once — S6)".
+- **O-4:** `_origin`'s two *absent* branches are held by
+  `test_a_node_whose_line_number_is_zero_says_absent` and
+  `test_a_node_with_no_line_number_says_absent`. Dropping the `1 <=` bound
+  (a 0 wraps to the last record) and dropping the `position is None` guard (a
+  `TypeError`) both survived the suite before; each now fails one of these.
+- **O-2:** `reviews/` gains the builder's close note
+  (`REVIEW-2026-10-14-close.md`), the aux's review of the close
+  (`REVIEW-2026-10-14.md`) and Qodo's review of PR #2
+  (`QODO-2026-10-14.md`, comment `6158862024` as fetched before Qodo's
+  09:00:03Z edit); `SHA256SUMS` lists 30. `TASKS.md` dispositions all three,
+  declines Qodo's two PR #2 alternatives, and registers O-3/N-5 and O-5 as
+  series-3 threads.
+
 ## decisions-zoo-2026-10-14b, commit 3 — Qodo 3 on PR #2
 
 A manifest entry that cannot be resolved, as

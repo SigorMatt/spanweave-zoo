@@ -7,8 +7,8 @@ else the zoo does needs the `audit` extra (`SPEC.md` §7.1).
 
 Five steps (`SPEC.md` §7.3): the exporter's bytes into `spanweave-live serve`;
 the Collector's JSON into `serve` three times -- once completed by its end of
-input, then under `--quiet 0` and `--root-grace 0` with the captured gaps
-slept (B6a);
+input, then under `--quiet 0` and `--root-grace 0`, each replayed back to
+back, nothing slept (B6a, B6b);
 each written graph against `spanweave.build` of the same records; `spanweave
 inspect`, the graph's diagnostics and one row per node; `agentgolden`'s
 signature as a smoke.

@@ -382,6 +382,50 @@ def test_a_node_whose_record_the_feed_does_not_place_says_absent():
     assert _cells(error)[1:3] == ["`json/0001.json`", "1"]
 
 
+def _renumbered(graph, node_id, line_number):
+    """`graph` with one node's `RawRecord.line_number` replaced. The pinned
+    spanweave numbers every fed record from 1, so neither a 0 nor a missing
+    number reaches a committed report; SPEC §7.3 still promises *absent*
+    for both, and this is how a test builds such a node."""
+    import dataclasses
+
+    import spanweave
+
+    nodes = tuple(
+        dataclasses.replace(
+            node, raw=dataclasses.replace(node.raw, line_number=line_number)
+        )
+        if node.id == node_id
+        else node
+        for node in graph.nodes()
+    )
+    return spanweave.Graph.of(
+        graph.trace_id, nodes, graph.edges(), graph.diagnostics, graph.meta
+    )
+
+
+def test_a_node_whose_line_number_is_zero_says_absent():
+    # O-4: a 0 indexes no record of a feed numbered from 1. Without the
+    # `1 <=` bound it would wrap to `origins[-1]` and name the last record.
+    graph = _renumbered(_error_graph(), "a1", 0)
+    lines = audit.node_table(graph, ERROR_ORIGINS)
+    [error] = [row for row in lines if row.startswith("| `a1` |")]
+    assert _cells(error)[1:3] == ["absent", "absent"]
+    [child] = [row for row in lines if row.startswith("| `b1` |")]
+    assert _cells(child)[1:3] == ["`json/0002.json`", "1"]
+
+
+def test_a_node_with_no_line_number_says_absent():
+    # O-4: a record the library did not number is placed nowhere. Without
+    # the `position is None` guard the comparison would raise instead.
+    graph = _renumbered(_error_graph(), "a1", None)
+    lines = audit.node_table(graph, ERROR_ORIGINS)
+    [error] = [row for row in lines if row.startswith("| `a1` |")]
+    assert _cells(error)[1:3] == ["absent", "absent"]
+    [child] = [row for row in lines if row.startswith("| `b1` |")]
+    assert _cells(child)[1:3] == ["`json/0002.json`", "1"]
+
+
 def test_the_report_carries_a_row_for_every_node(recorded_audit):
     result, text = recorded_audit
     step4 = text.split("## Step 4 ", 1)[1].split("## Step 5 ", 1)[0]
