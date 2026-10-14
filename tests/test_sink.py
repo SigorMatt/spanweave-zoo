@@ -1006,6 +1006,88 @@ def test_a_post_accepted_before_its_head_is_read_is_named_when_refused(
     assert cli.verify(raw.parent) == 1
 
 
+class SecondSignalEscaped(Exception):
+    """The handler `zoo sink` replaced ran: a repeated signal got past it."""
+
+
+def test_a_second_signal_during_the_settle_wait_still_seals_the_manifest(
+    tmp_path, monkeypatch, capsys
+):
+    # Qodo 4 on PR #2, `SPEC.md` §3.7. `run_sink` put the replaced handlers
+    # back first in its `finally`, before the settle wait (up to 10 seconds),
+    # the close and the seal; a second SIGINT, SIGTERM or SIGHUP in that wait
+    # took the default action -- a `KeyboardInterrupt` or a kill -- and the
+    # manifest was never sealed. Now its own handlers stay installed until
+    # `manifest.finish` has returned, as `zoo capture`'s do (section 4.6): a
+    # repeated signal asks the server to shut down again and nothing else.
+    # The handler `zoo sink` replaces is the test's own, which raises, so a
+    # signal that reaches it fails here rather than interrupting pytest. Both
+    # signals are SIGINTs; the second is raised on the main thread from inside
+    # `settle()`, the wait it must not break, and nothing here sleeps.
+    raw = tmp_path / "captures" / "z4" / "run-1" / "raw"
+    servers: list[Any] = []
+    bound = threading.Event()
+    shutdowns: list[threading.Event] = [threading.Event(), threading.Event()]
+    calls: list[str] = []
+
+    real_make_server = sink.make_server
+
+    def make_server(*args: Any, **kwargs: Any) -> Any:
+        server = real_make_server(*args, **kwargs)
+        real_shutdown = server.shutdown
+
+        def shutdown() -> None:
+            calls.append("shutdown")
+            real_shutdown()
+            shutdowns[min(len(calls), 2) - 1].set()
+
+        server.shutdown = shutdown
+        servers.append(server)
+        bound.set()
+        return server
+
+    class SignalledRecorder(sink.Recorder):
+        def settle(self, timeout: float) -> bool:
+            # The second signal, in the wait: on the main thread, so its
+            # Python handler runs before this returns.
+            signal.raise_signal(signal.SIGINT)
+            assert shutdowns[1].wait(TIMEOUT), "the second signal asked nothing"
+            return super().settle(timeout)
+
+    def escaped(number: int, frame: Any) -> None:
+        calls.append(signal.Signals(number).name)
+        raise SecondSignalEscaped(signal.Signals(number).name)
+
+    monkeypatch.setattr(sink, "make_server", make_server)
+    monkeypatch.setattr(sink, "Recorder", SignalledRecorder)
+
+    def stopper() -> None:
+        assert bound.wait(TIMEOUT), "the sink never bound"
+        signal.raise_signal(signal.SIGINT)
+
+    original = signal.signal(signal.SIGINT, escaped)
+    thread = threading.Thread(target=stopper, daemon=True)
+    try:
+        thread.start()
+        status = cli.run_sink("127.0.0.1", 0, raw)
+        # Put back once the seal is done, and only then.
+        assert signal.getsignal(signal.SIGINT) is escaped
+    finally:
+        signal.signal(signal.SIGINT, original)
+        thread.join(timeout=TIMEOUT)
+    assert not thread.is_alive()
+
+    # The second signal did what the first did, and the replaced handler
+    # never ran.
+    assert calls == ["shutdown", "shutdown"], calls
+    document = manifest.read(raw.parent)
+    assert manifest.ENDED_AT in document
+    assert document.get(manifest.PROBLEMS, []) == []
+    assert "zoo sink: stopped. 0 body/bodies." in capsys.readouterr().out
+    assert status == 0
+    assert cli.verify(raw.parent) == 0
+
+
 def statuses(answer: bytes) -> list[bytes]:
     """Every status line in what came back, in order."""
     return re.findall(rb"HTTP/1\.[01] \d{3}", answer)

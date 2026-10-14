@@ -286,25 +286,33 @@ def run_sink(host: str, port: int, out: Path) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        _restore_signals(previous)
-        # Close-then-seal, as `zoo capture` does it (`SPEC.md` §3.7, §5.5;
-        # B3a): the listener is closed so nothing new is accepted, every POST
-        # already being handled is waited for -- for at most the same bound
-        # `zoo capture` gives its sinks (§4.6) -- and then the journals are
-        # closed, so a handler that outlived the wait writes nothing into a
-        # capture whose manifest is about to be sealed. Each one still running
-        # is a `problems` entry, written before the assembly.
-        server.server_close()
-        recorder.settle(capture.FLUSH_WAIT)
-        for problem in recorder.close():
-            problems.append(problem)
-            manifest.append_problem(recorder.run, problem)
-        # The run is over, so the manifest is assembled from the journal
-        # (`SPEC.md` §5.5). `zoo sink` declares no `kind` and carries no
-        # project manifest -- it is the sink alone, with nothing behind it --
-        # but what it did record is covered and `ended_at` says the capture is
-        # complete, which is what `zoo verify` asks of it.
-        problems += manifest.finish(recorder.run, ended_at=_system_clock())
+        # The handlers stay installed until the seal, as `zoo capture`'s do
+        # (`SPEC.md` §3.7, §4.6; Qodo 4 on PR #2): a repeated signal during
+        # the wait, the close or the assembly asks the server to shut down
+        # again -- which does nothing, the loop having returned -- rather than
+        # taking the default action and leaving the capture unsealed.
+        try:
+            # Close-then-seal, as `zoo capture` does it (`SPEC.md` §3.7, §5.5;
+            # B3a): the listener is closed so nothing new is accepted, every
+            # POST already being handled is waited for -- for at most the same
+            # bound `zoo capture` gives its sinks (§4.6) -- and then the
+            # journals are closed, so a handler that outlived the wait writes
+            # nothing into a capture whose manifest is about to be sealed.
+            # Each one still running is a `problems` entry, written before the
+            # assembly.
+            server.server_close()
+            recorder.settle(capture.FLUSH_WAIT)
+            for problem in recorder.close():
+                problems.append(problem)
+                manifest.append_problem(recorder.run, problem)
+            # The run is over, so the manifest is assembled from the journal
+            # (`SPEC.md` §5.5). `zoo sink` declares no `kind` and carries no
+            # project manifest -- it is the sink alone, with nothing behind
+            # it -- but what it did record is covered and `ended_at` says the
+            # capture is complete, which is what `zoo verify` asks of it.
+            problems += manifest.finish(recorder.run, ended_at=_system_clock())
+        finally:
+            _restore_signals(previous)
     print(f"\nzoo sink: stopped. {manifest.body_count(recorder.run)} body/bodies.")
     for problem in problems:
         print(f"  ! {problem}")
@@ -375,7 +383,9 @@ def _shut_down_on_signal(server: socketserver.BaseServer) -> dict[int, Any]:
     The handler asks the server to shut down from a thread of its own --
     `shutdown()` waits for `serve_forever` to return, and `serve_forever` is
     running on the very thread the handler interrupted -- so the loop returns
-    as it would on its own, and the caller's `finally` seals the manifest.
+    as it would on its own, and the caller's `finally` seals the manifest --
+    with this handler still installed, so a repeated signal during the seal
+    asks for a shutdown again and nothing else (Qodo 4 on PR #2).
 
     Returns the handlers it replaced, so a caller can put them back.
     """

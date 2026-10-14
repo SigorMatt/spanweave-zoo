@@ -579,7 +579,14 @@ either killed the sink before its manifest was assembled — bodies on disk and
 no `ended_at`, a capture `zoo verify` rightly fails. Each ends the serving loop
 the way Ctrl-C does: the handler only asks the server to shut down, the loop
 returns, the listening socket is closed, and the manifest is assembled and
-sealed (§5.5) before `zoo sink` exits.
+sealed (§5.5) before `zoo sink` exits. **It seals under its own handlers**
+(Qodo 4 on PR #2): they stay installed through the wait, the close and the
+seal below, as `zoo capture`'s do through its shutdown (§4.6), and the
+handlers they replaced are put back only once the manifest is sealed. A second
+signal in that time asks the server to shut down again, which does nothing
+since the loop has already returned. It does nothing else: a repeated Ctrl-C,
+or a supervisor's `SIGTERM` sent twice, does not get the default action and
+leave the capture unsealed.
 
 It **seals the way `zoo capture` does** (B3a): close, then seal, with no
 exception for the sink alone. Once the loop has returned and the listening

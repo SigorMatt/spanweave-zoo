@@ -4,6 +4,20 @@ Pre-release. Nothing here is frozen: the CLI, the capture layout and
 `MANIFEST.json` all still move. Entries are by batch id (`TASKS.md`'s registry; while a series is open, its
 `WORKPLAN.md` §1).
 
+## decisions-zoo-2026-10-14b, commit 2 — Qodo 4 on PR #2
+
+`zoo sink`'s signal handling, as `patches/decisions-zoo-2026-10-14b.md`
+accepted it. `SPEC.md` §3.7 touched. No capture touched (`make verify`
+green), no committed report regenerated.
+
+- **Qodo 4:** `run_sink` put the handlers it had replaced back first in its
+  `finally`, before the settle wait (up to 10 seconds), the close and the
+  seal, so a second `SIGINT`, `SIGTERM` or `SIGHUP` in that time took the
+  default action and left the capture unsealed. The handlers are now put back
+  only after `manifest.finish`, as `zoo capture` does; a repeated signal
+  during the seal asks the server to shut down again and nothing else. Test:
+  `test_a_second_signal_during_the_settle_wait_still_seals_the_manifest`.
+
 ## decisions-zoo-2026-10-14b, commit 1 — Qodo 1 and Qodo 2 on PR #2
 
 The sink's two findings from Qodo's review of PR #2, as
